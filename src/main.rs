@@ -444,6 +444,7 @@ impl Downstream {
         info!("{:?}: read Remainder: {}", self.token, remainder.len());
         self.read_buf = remainder;
     }
+
     fn is_closed(&self) -> bool {
         self.socket.is_none()
     }
@@ -542,19 +543,26 @@ fn main() {
         panic!("Could not init logger from file {}: {}", LOG_FILE, e);
     }
     let matches = App::new("chain-repl-test")
-        .arg(Arg::with_name("bind").short("l").takes_value(true).required(true))
-        .arg(Arg::with_name("next").short("n").takes_value(true).required(true))
+        .arg(Arg::with_name("bind").short("l").takes_value(true))
+        .arg(Arg::with_name("next").short("n").takes_value(true))
         .get_matches();
-
-    let listen_addr = value_t_or_exit!(matches.value_of("bind"), std::net::SocketAddr);
-    let listener = TcpListener::bind(&listen_addr).expect("bind");
-    let next_addr = value_t_or_exit!(matches.value_of("next"), std::net::SocketAddr);
 
     let mut event_loop = mio::EventLoop::new().expect("Create event loop");
     let mut service = ChainRepl::new();
 
-    service.set_downstream(&mut event_loop, next_addr);
-    service.listen(&mut event_loop, listener);
-    info!("running chain-repl-test listener at: {:?}; next: {:?}", listen_addr, next_addr);
+    if let Some(listen_addr) = matches.value_of("bind") {
+        let listen_addr = listen_addr.parse::<std::net::SocketAddr>().expect("parse bind address");
+        info!("Binding to address {:?}", listen_addr);
+        let listener = TcpListener::bind(&listen_addr).expect("bind");
+        service.listen(&mut event_loop, listener);
+    }
+
+    if let Some(next_addr) = matches.value_of("next") {
+        let next_addr = next_addr.parse::<std::net::SocketAddr>().expect("parse next address");
+        info!("Forwarding to address {:?}", next_addr);
+        service.set_downstream(&mut event_loop, next_addr);
+    }
+
+    info!("running chain-repl-test listener");
     event_loop.run(&mut service).expect("Run loop");
 }
