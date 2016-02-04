@@ -1,11 +1,12 @@
 [package]
+authors = ["Ceri Storey <ceri@lshift.net>"]
 name = "chain-repl-test"
 version = "0.1.0"
-authors = ["Ceri Storey <ceri@lshift.net>"]
 
 [dependencies]
-mio = "0.4.1"
 bytes = "0.2.10"
+clap = "*"
 log = "*"
 log4rs = "*"
-clap = "*"
+mio = "0.4.1"
+rustc-serialize = "0.3.16"
