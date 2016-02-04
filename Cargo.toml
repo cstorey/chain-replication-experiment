@@ -1,0 +1,6 @@
+[package]
+name = "chain-repl-test"
+version = "0.1.0"
+authors = ["Ceri Storey <ceri@lshift.net>"]
+
+[dependencies]
