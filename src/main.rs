@@ -36,7 +36,7 @@ enum Role {
 
 #[derive(Debug)]
 enum ChainReplMsg {
-    Operation(mio::Token, Operation),
+    Operation(mio::Token, Option<u64>, Operation),
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
 }
@@ -87,14 +87,14 @@ impl ChainRepl {
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
-            ChainReplMsg::Operation(source, s) => {
-                let seqno = self.next_seqno();
+            ChainReplMsg::Operation(source, seqno, s) => {
+                let seqno = seqno.unwrap_or_else(|| self.next_seqno());
                 if let Some(_) = self.downstream_slot {
                     self.pending_operations.insert(seqno, source);
-                    self.downstream().expect("Downstream").send_to_downstream(s);
+                    self.downstream().expect("Downstream").send_to_downstream(seqno, s);
                     // Wait for acks.
                 } else {
-                    info!("Terminus! {:?}", s);
+                    info!("Terminus! {:?}/{:?}", seqno, s);
                     let resp = match s {
                         Operation::Set(s) => {
                             self.state = s;
@@ -163,8 +163,8 @@ impl ChainRepl {
 }
 
 trait Proto {
-    fn encode_response(&mut self, s: OpResp) -> Vec<u8>;
-    fn decode_operation(&self, slice: &[u8]) -> Operation;
+    fn process_operation(&self, token: mio::Token, slice: &[u8], to_parent: &mut VecDeque<ChainReplMsg>);
+    fn encode_response(&mut self, OpResp) -> Vec<u8>;
 }
 
 #[derive(Debug)]
@@ -181,7 +181,7 @@ struct LineConn<T> {
 
 impl<T: Proto + std::fmt::Debug> LineConn<T> {
     fn new(socket: TcpStream, token: mio::Token, protocol: T) -> LineConn<T> {
-        debug!("New client connection {:?} from {:?}", token, socket.local_addr());
+        trace!("New client connection {:?} from {:?}", token, socket.local_addr());
         LineConn {
             socket: socket,
             sock_status: mio::EventSet::none(),
@@ -206,7 +206,7 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
     // Event updates arrive here
     fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
         self.sock_status.insert(events);
-        debug!("LineConn::handle_event: {:?}; this time: {:?}; now: {:?}",
+        trace!("LineConn::handle_event: {:?}; this time: {:?}; now: {:?}",
                 self.socket.peer_addr(), events, self.sock_status);
     }
 
@@ -233,21 +233,18 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
 
     fn process_buffer(&mut self, to_parent: &mut VecDeque<ChainReplMsg>) {
         let mut prev = 0;
-        debug!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
+        trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         for n in self.read_buf.iter().enumerate()
                 .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
-            debug!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.socket.peer_addr(), prev, n, &self.read_buf[prev..n]);
+            trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.socket.peer_addr(), prev, n, &self.read_buf[prev..n]);
             let slice = &self.read_buf[prev..n];
-            let op = self.protocol.decode_operation(slice);
-            let cmd = ChainReplMsg::Operation(self.token, op);
-            debug!("Send! {:?}", cmd);
-            to_parent.push_back(cmd);
+            self.protocol.process_operation(self.token, slice, to_parent);
 
             prev = n+1;
 
         }
         let remainder = self.read_buf[prev..].to_vec();
-        debug!("{:?}: read Remainder: {}", self.socket.peer_addr(), remainder.len());
+        trace!("{:?}: read Remainder: {}", self.socket.peer_addr(), remainder.len());
         self.read_buf = remainder;
     }
 
@@ -256,15 +253,15 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
         let mut abuf = Vec::new();
         match self.socket.try_read_buf(&mut abuf) {
             Ok(Some(0)) => {
-                debug!("{:?}: EOF!", self.socket.peer_addr());
+                trace!("{:?}: EOF!", self.socket.peer_addr());
                 self.read_eof = true
             },
             Ok(Some(n)) => {
-                debug!("{:?}: Read {}bytes", self.socket.peer_addr(), n);
+                trace!("{:?}: Read {}bytes", self.socket.peer_addr(), n);
                 self.read_buf.extend(abuf);
             },
             Ok(None) => {
-                debug!("{:?}: Noop!", self.socket.peer_addr());
+                trace!("{:?}: Noop!", self.socket.peer_addr());
             },
             Err(e) => {
                 error!("got an error trying to read; err={:?}", e);
@@ -276,13 +273,13 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
     fn write(&mut self) {
         match self.socket.try_write(&mut self.write_buf) {
             Ok(Some(n)) => {
-                debug!("{:?}: Wrote {} of {} in buffer", self.socket.peer_addr(), n,
+                trace!("{:?}: Wrote {} of {} in buffer", self.socket.peer_addr(), n,
                     self.write_buf.len());
                 self.write_buf = self.write_buf[n..].to_vec();
-                debug!("{:?}: Now {:?}b", self.socket.peer_addr(), self.write_buf.len());
+                trace!("{:?}: Now {:?}b", self.socket.peer_addr(), self.write_buf.len());
             },
             Ok(None) => {
-                debug!("Write unready");
+                trace!("Write unready");
             },
             Err(e) => {
                 error!("got an error trying to write; err={:?}", e);
@@ -296,7 +293,7 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
         if !self.write_buf.is_empty() {
             flags.insert(mio::EventSet::writable());
         }
-        debug!("Registering {:?} with {:?}", self, flags);
+        trace!("Registering {:?} with {:?}", self, flags);
 
         event_loop.reregister(
                 &self.socket,
@@ -313,6 +310,7 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
 
     // Per item to output
     fn response(&mut self, s: OpResp) {
+        debug!("{:?}: Response: {:?}", self.token, s);
         self.write_buf.extend(self.protocol.encode_response(s));
         self.write_buf.push('\n' as u8)
     }
@@ -326,12 +324,16 @@ impl Proto for Client {
     }
 
     // Per line of input
-    fn decode_operation(&self, slice: &[u8]) -> Operation {
-        if slice.is_empty() {
+    fn process_operation(&self, token: mio::Token, slice: &[u8], to_parent: &mut VecDeque<ChainReplMsg> ) {
+        let op = if slice.is_empty() {
             Operation::Get
         } else {
             Operation::Set(String::from_utf8_lossy(slice).to_string())
-        }
+        };
+
+        let cmd = ChainReplMsg::Operation(token, None, op);
+        debug!("Send! {:?}", cmd);
+        to_parent.push_back(cmd);
     }
 
 }
@@ -343,8 +345,12 @@ impl Proto for Peer {
         json::encode(&s).expect("Encode json response").as_bytes().to_vec()
     }
 
-    fn decode_operation(&self, slice: &[u8]) -> Operation {
-            json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation")
+    fn process_operation(&self, token: mio::Token, slice: &[u8], to_parent: &mut VecDeque<ChainReplMsg> ) {
+        let (seqno, op) = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
+
+        let cmd = ChainReplMsg::Operation(token, Some(seqno), op);
+        debug!("Send! {:?}", cmd);
+        to_parent.push_back(cmd);
     }
 }
 
@@ -373,24 +379,24 @@ impl Listener {
     fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
         assert!(events.is_readable());
         self.sock_status.insert(events);
-        debug!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
+        trace!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
                 self.listener.local_addr(), events, self.sock_status);
     }
 
     fn process_rules(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
             to_parent: &mut VecDeque<ChainReplMsg>) {
         if self.sock_status.is_readable() {
-            debug!("the listener socket is ready to accept a connection");
+            trace!("the listener socket is ready to accept a connection");
             match self.listener.accept() {
                 Ok(Some(socket)) => {
                     let cmd = ChainReplMsg::NewClientConn(self.role.clone(), socket);
                     to_parent.push_back(cmd);
                 }
                 Ok(None) => {
-                    debug!("the listener socket wasn't actually ready");
+                    trace!("the listener socket wasn't actually ready");
                 }
                 Err(e) => {
-                    debug!("listener.accept() errored: {}", e);
+                    trace!("listener.accept() errored: {}", e);
                     event_loop.shutdown();
                 }
             }
@@ -411,7 +417,7 @@ struct Downstream {
     // ... LAYERS!
     socket: Option<TcpStream>,
     sock_status: mio::EventSet,
-    pending: VecDeque<Operation>,
+    pending: VecDeque<(u64, Operation)>,
     write_buf: Vec<u8>,
     read_buf: Vec<u8>,
     read_eof: bool,
@@ -436,10 +442,10 @@ impl Downstream {
         conn
     }
 
-    fn send_to_downstream(&mut self, s: Operation) {
+    fn send_to_downstream(&mut self, seqno: u64, op: Operation) {
         // self.write_buf.extend(s.as_bytes());
         // self.write_buf.push('\n' as u8);
-        self.pending.push_front(s);
+        self.pending.push_front((seqno, op));
         debug!("Sending to downstream: {:?}", self);
     }
 
@@ -459,7 +465,7 @@ impl Downstream {
 
     fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
         self.sock_status.insert(events);
-        debug!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
+        trace!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
                 self.socket.as_ref().map(|s| s.local_addr()), events, self.sock_status);
     }
 
@@ -469,7 +475,7 @@ impl Downstream {
 
     fn process_rules(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
             to_parent: &mut VecDeque<ChainReplMsg>) {
-        debug!("the downstream socket is {:?}", self.sock_status);
+        trace!("the downstream socket is {:?}", self.sock_status);
 
         if self.sock_status.is_readable() {
             self.read();
@@ -487,7 +493,7 @@ impl Downstream {
 
         if self.sock_status.is_hup() || self.sock_status.is_error() || self.read_eof {
             if let Some(sock) = self.socket.take() {
-                debug!("Deregistering socket! {:?}", sock);
+                trace!("Deregistering socket! {:?}", sock);
                 event_loop.deregister(&sock).expect("deregister downstream");
                 event_loop.timeout_ms(self.token, 1000);
                 self.read_eof = false;
@@ -512,7 +518,7 @@ impl Downstream {
     fn attempt_connect(&mut self) {
         assert!(self.socket.is_none());
         let conn = TcpStream::connect(&self.peer).expect("Connect downstream");
-        debug!("New downstream for {:?}! {:?}", self.token, self.peer);
+        trace!("New downstream for {:?}! {:?}", self.token, self.peer);
         self.socket = Some(conn);
         self.sock_status.remove(mio::EventSet::all());
     }
@@ -523,15 +529,15 @@ impl Downstream {
         if let &mut Downstream { socket: Some(ref mut sock), ref mut read_buf, token, .. } = self {
             match sock.try_read_buf(&mut abuf) {
                 Ok(Some(0)) => {
-                    debug!("{:?}: EOF!", token);
+                    trace!("{:?}: EOF!", token);
                     self.read_eof = true
                 },
                 Ok(Some(n)) => {
-                    debug!("{:?}: Read {}bytes", token, n);
+                    trace!("{:?}: Read {}bytes", token, n);
                     read_buf.extend(abuf);
                 },
                 Ok(None) => {
-                    debug!("{:?}: Noop!", token);
+                    trace!("{:?}: Noop!", token);
                 },
                 Err(e) => {
                     error!("got an error trying to read; err={:?}", e);
@@ -541,9 +547,9 @@ impl Downstream {
     }
 
     fn prep_write_buffer(&mut self) {
-        if let Some(it) = self.pending.pop_front() {
-            debug!("Preparing to send downstream: {:?}", it);
-            let out = json::encode(&it).expect("json encode");
+        if let Some((seqno, it)) = self.pending.pop_front() {
+            debug!("Preparing to send downstream: {:?}/{:?}", seqno, it);
+            let out = json::encode(&(seqno, it)).expect("json encode");
             self.write_buf.extend(out.as_bytes());
             self.write_buf.push('\n' as u8);
         }
@@ -553,13 +559,13 @@ impl Downstream {
         if let &mut Downstream { socket: Some(ref mut sock), ref mut write_buf, token, .. } = self {
             match sock.try_write(write_buf) {
                 Ok(Some(n)) => {
-                    debug!("Downstream: {:?}: Wrote {} of {} in buffer", token, n,
+                    trace!("Downstream: {:?}: Wrote {} of {} in buffer", token, n,
                             write_buf.len());
                     *write_buf = write_buf[n..].to_vec();
-                    debug!("Downstream: {:?}: Now {:?}b", sock, write_buf.len());
+                    trace!("Downstream: {:?}: Now {:?}b", sock, write_buf.len());
                 },
                 Ok(None) => {
-                    debug!("Write unready");
+                    trace!("Write unready");
                 },
                 Err(e) => {
                     error!("got an error trying to write; err={:?}", e);
@@ -571,20 +577,20 @@ impl Downstream {
 
     fn process_buffer(&mut self, to_parent: &mut VecDeque<ChainReplMsg>) {
         let mut prev = 0;
-        debug!("Downstream: {:?}: Read buffer: {:?}", self.token, self.read_buf);
+        trace!("Downstream: {:?}: Read buffer: {:?}", self.token, self.read_buf);
         for n in self.read_buf.iter().enumerate()
                 .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
             let line = String::from_utf8_lossy(&self.read_buf[prev..n]);
-            debug!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.token, prev, n, line);
+            trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.token, prev, n, line);
 
             let val : OpResp = json::decode(&line).expect("Decode json");
-            debug!("From downstream: {:?}", val);
+            trace!("From downstream: {:?}", val);
             to_parent.push_back(ChainReplMsg::DownstreamResponse(val));
 
             prev = n + 1
         }
         let remainder = self.read_buf[prev..].to_vec();
-        debug!("{:?}: read Remainder: {}", self.token, remainder.len());
+        trace!("{:?}: read Remainder: {}", self.token, remainder.len());
         self.read_buf = remainder;
     }
 
@@ -598,7 +604,7 @@ impl Downstream {
             if !(self.write_buf.is_empty() && self.pending.is_empty()) {
                 flags.insert(mio::EventSet::writable());
             }
-            debug!("Re-register {:?} with {:?}", self, flags);
+            trace!("Re-register {:?} with {:?}", self, flags);
 
             event_loop.reregister(
                     sock,
@@ -681,7 +687,7 @@ impl mio::Handler for ChainRepl {
     type Timeout = mio::Token;
     type Message = ();
     fn ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token, events: mio::EventSet) {
-        debug!("{:?}: {:?}", token, events);
+        trace!("{:?}: {:?}", token, events);
         self.connections[token].handle_event(event_loop, events);
         self.converge_state(event_loop, token);
     }
