@@ -143,7 +143,7 @@ impl ChainRepl {
         let mut parent_actions = VecDeque::new();
         loop {
             for conn in self.connections.iter_mut() {
-                conn.process_rules(event_loop, &mut parent_actions);
+                conn.process_rules(event_loop, &mut |item| parent_actions.push_back(item))
             }
 
             // Anything left to process?
@@ -163,7 +163,7 @@ impl ChainRepl {
 }
 
 trait Proto {
-    fn process_operation(&self, token: mio::Token, slice: &[u8], to_parent: &mut VecDeque<ChainReplMsg>);
+    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F);
     fn encode_response(&mut self, OpResp) -> Vec<u8>;
 }
 
@@ -212,8 +212,8 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
 
     // actions are processed here on down.
 
-    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-        to_parent: &mut VecDeque<ChainReplMsg>) {
+    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+        to_parent: &mut F) {
         if self.sock_status.is_readable() {
             self.read();
             self.sock_status.remove(mio::EventSet::readable());
@@ -231,7 +231,7 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
         }
     }
 
-    fn process_buffer(&mut self, to_parent: &mut VecDeque<ChainReplMsg>) {
+    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) {
         let mut prev = 0;
         trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         for n in self.read_buf.iter().enumerate()
@@ -324,7 +324,7 @@ impl Proto for Client {
     }
 
     // Per line of input
-    fn process_operation(&self, token: mio::Token, slice: &[u8], to_parent: &mut VecDeque<ChainReplMsg> ) {
+    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F) {
         let op = if slice.is_empty() {
             Operation::Get
         } else {
@@ -333,7 +333,7 @@ impl Proto for Client {
 
         let cmd = ChainReplMsg::Operation(token, None, op);
         debug!("Send! {:?}", cmd);
-        to_parent.push_back(cmd);
+        to_parent(cmd);
     }
 
 }
@@ -345,12 +345,12 @@ impl Proto for Peer {
         json::encode(&s).expect("Encode json response").as_bytes().to_vec()
     }
 
-    fn process_operation(&self, token: mio::Token, slice: &[u8], to_parent: &mut VecDeque<ChainReplMsg> ) {
+    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F) {
         let (seqno, op) = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
 
         let cmd = ChainReplMsg::Operation(token, Some(seqno), op);
         debug!("Send! {:?}", cmd);
-        to_parent.push_back(cmd);
+        to_parent(cmd);
     }
 }
 
@@ -383,14 +383,14 @@ impl Listener {
                 self.listener.local_addr(), events, self.sock_status);
     }
 
-    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-            to_parent: &mut VecDeque<ChainReplMsg>) {
+    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+            to_parent: &mut F) {
         if self.sock_status.is_readable() {
             trace!("the listener socket is ready to accept a connection");
             match self.listener.accept() {
                 Ok(Some(socket)) => {
                     let cmd = ChainReplMsg::NewClientConn(self.role.clone(), socket);
-                    to_parent.push_back(cmd);
+                    to_parent(cmd);
                 }
                 Ok(None) => {
                     trace!("the listener socket wasn't actually ready");
@@ -473,8 +473,8 @@ impl Downstream {
         self.timeout_triggered = true
     }
 
-    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-            to_parent: &mut VecDeque<ChainReplMsg>) {
+    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+            to_parent: &mut F) {
         trace!("the downstream socket is {:?}", self.sock_status);
 
         if self.sock_status.is_readable() {
@@ -575,7 +575,7 @@ impl Downstream {
         }
     }
 
-    fn process_buffer(&mut self, to_parent: &mut VecDeque<ChainReplMsg>) {
+    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) {
         let mut prev = 0;
         trace!("Downstream: {:?}: Read buffer: {:?}", self.token, self.read_buf);
         for n in self.read_buf.iter().enumerate()
@@ -585,7 +585,7 @@ impl Downstream {
 
             let val : OpResp = json::decode(&line).expect("Decode json");
             trace!("From downstream: {:?}", val);
-            to_parent.push_back(ChainReplMsg::DownstreamResponse(val));
+            to_parent(ChainReplMsg::DownstreamResponse(val));
 
             prev = n + 1
         }
@@ -644,8 +644,8 @@ impl EventHandler {
     }
 
 
-    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-        to_parent: &mut VecDeque<ChainReplMsg>) {
+    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+        to_parent: &mut F)  {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.process_rules(event_loop, to_parent),
             &mut EventHandler::Peer(ref mut conn) => conn.process_rules(event_loop, to_parent),
