@@ -8,7 +8,7 @@ use super::{ChainRepl, ChainReplMsg, OpResp, Operation};
 
 trait Codec {
     fn encode_response(&self, s: OpResp) -> Vec<u8>;
-    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F);
+    fn parse_operation(&self, token: mio::Token, slice: &[u8]) -> ChainReplMsg;
 }
 
 #[derive(Debug)]
@@ -84,7 +84,11 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
                 .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
             trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.socket.peer_addr(), prev, n, &self.read_buf[prev..n]);
             let slice = &self.read_buf[prev..n];
-            self.codec.process_operation(self.token, slice, to_parent);
+
+            let cmd = self.codec.parse_operation(self.token, slice);
+            debug!("Read message {:?}", cmd);
+            to_parent(cmd);
+
             changed = true;
             prev = n+1;
         }
@@ -172,12 +176,9 @@ impl Codec for JsonPeer {
         json::encode(&s).expect("Encode json response").as_bytes().to_vec()
     }
 
-    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F) {
+    fn parse_operation(&self, token: mio::Token, slice: &[u8]) -> ChainReplMsg {
         let (seqno, op) = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
-
-        let cmd = ChainReplMsg::Operation(token, Some(seqno), op);
-        debug!("Send! {:?}", cmd);
-        to_parent(cmd);
+        ChainReplMsg::Operation(token, Some(seqno), op)
     }
 }
 
@@ -196,16 +197,13 @@ impl Codec for PlainClient {
     }
 
     // Per line of input
-    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F) {
+    fn parse_operation(&self, token: mio::Token, slice: &[u8]) -> ChainReplMsg {
         let op = if slice.is_empty() {
             Operation::Get
         } else {
             Operation::Set(String::from_utf8_lossy(slice).to_string())
         };
-
-        let cmd = ChainReplMsg::Operation(token, None, op);
-        debug!("Send! {:?}", cmd);
-        to_parent(cmd);
+        ChainReplMsg::Operation(token, None, op)
     }
 }
 
