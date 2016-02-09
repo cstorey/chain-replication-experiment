@@ -31,7 +31,7 @@ enum OpResp {
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
 enum Role {
     Client,
-    Peer,
+    Upstream,
 }
 
 #[derive(Debug)]
@@ -120,13 +120,14 @@ impl ChainRepl {
                 }
             },
             ChainReplMsg::NewClientConn(role, socket) => {
-                debug!("Client connection of {:?} for {:?}", role, socket);
+                let peer = socket.peer_addr().expect("peer address");
                 let token = self.connections
                     .insert_with(|token| match role {
-                            Role::Client => EventHandler::Conn(LineConn::new(socket, token, Client)),
-                            Role::Peer => EventHandler::Peer(LineConn::new(socket, token, Peer)),
+                            Role::Client => EventHandler::Conn(ClientConn::new(socket, token)),
+                            Role::Upstream => EventHandler::Upstream(UpstreamConn::new(socket, token)),
                     })
                     .expect("token insert");
+                debug!("Client connection of {:?}/{:?} from {:?}", role, token, peer);
                 &self.connections[token].initialize(event_loop, token);
             }
         }
@@ -162,13 +163,8 @@ impl ChainRepl {
     }
 }
 
-trait Proto {
-    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F);
-    fn encode_response(&mut self, OpResp) -> Vec<u8>;
-}
-
 #[derive(Debug)]
-struct LineConn<T> {
+struct ClientConn {
     socket: TcpStream,
     sock_status: mio::EventSet,
     token: mio::Token,
@@ -176,13 +172,12 @@ struct LineConn<T> {
     read_eof: bool,
     failed: bool,
     write_buf: Vec<u8>,
-    protocol: T
 }
 
-impl<T: Proto + std::fmt::Debug> LineConn<T> {
-    fn new(socket: TcpStream, token: mio::Token, protocol: T) -> LineConn<T> {
+impl ClientConn {
+    fn new(socket: TcpStream, token: mio::Token) -> ClientConn {
         trace!("New client connection {:?} from {:?}", token, socket.local_addr());
-        LineConn {
+        ClientConn {
             socket: socket,
             sock_status: mio::EventSet::none(),
             token: token,
@@ -190,7 +185,6 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
             write_buf: Vec::new(),
             read_eof: false,
             failed: false,
-            protocol: protocol
         }
     }
 
@@ -238,7 +232,7 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
                 .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
             trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.socket.peer_addr(), prev, n, &self.read_buf[prev..n]);
             let slice = &self.read_buf[prev..n];
-            self.protocol.process_operation(self.token, slice, to_parent);
+            self.process_operation(self.token, slice, to_parent);
 
             prev = n+1;
 
@@ -311,15 +305,12 @@ impl<T: Proto + std::fmt::Debug> LineConn<T> {
     // Per item to output
     fn response(&mut self, s: OpResp) {
         debug!("{:?}: Response: {:?}", self.token, s);
-        self.write_buf.extend(self.protocol.encode_response(s));
+        let chunk = self.encode_response(s);
+        self.write_buf.extend(chunk);
         self.write_buf.push('\n' as u8)
     }
-}
 
-#[derive(Debug)]
-struct Client;
-impl Proto for Client {
-    fn encode_response(&mut self, s: OpResp) -> Vec<u8> {
+    fn encode_response(&self, s: OpResp) -> Vec<u8> {
         format!("{:?}", s).as_bytes().to_vec()
     }
 
@@ -335,13 +326,156 @@ impl Proto for Client {
         debug!("Send! {:?}", cmd);
         to_parent(cmd);
     }
-
 }
 
 #[derive(Debug)]
-struct Peer;
-impl Proto for Peer {
-    fn encode_response(&mut self, s: OpResp) -> Vec<u8> {
+struct UpstreamConn {
+    socket: TcpStream,
+    sock_status: mio::EventSet,
+    token: mio::Token,
+    read_buf: Vec<u8>,
+    read_eof: bool,
+    failed: bool,
+    write_buf: Vec<u8>,
+}
+
+impl UpstreamConn {
+    fn new(socket: TcpStream, token: mio::Token) -> UpstreamConn {
+        trace!("New client connection {:?} from {:?}", token, socket.local_addr());
+        UpstreamConn {
+            socket: socket,
+            sock_status: mio::EventSet::none(),
+            token: token,
+            read_buf: Vec::with_capacity(1024),
+            write_buf: Vec::new(),
+            read_eof: false,
+            failed: false,
+        }
+    }
+
+    fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
+        event_loop.register_opt(
+                &self.socket,
+                token,
+                mio::EventSet::readable(),
+                mio::PollOpt::edge() | mio::PollOpt::oneshot())
+            .expect("event loop initialize");
+    }
+
+    // Event updates arrive here
+    fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+        self.sock_status.insert(events);
+        trace!("LineConn::handle_event: {:?}; this time: {:?}; now: {:?}",
+                self.socket.peer_addr(), events, self.sock_status);
+    }
+
+    // actions are processed here on down.
+
+    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+        to_parent: &mut F) {
+        if self.sock_status.is_readable() {
+            self.read();
+            self.sock_status.remove(mio::EventSet::readable());
+        }
+
+        self.process_buffer(to_parent);
+
+        if self.sock_status.is_writable() {
+            self.write();
+            self.sock_status.remove(mio::EventSet::writable());
+        }
+
+        if !self.is_closed() {
+            self.reinitialize(event_loop)
+        }
+    }
+
+    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) {
+        let mut prev = 0;
+        trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
+        for n in self.read_buf.iter().enumerate()
+                .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
+            trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.socket.peer_addr(), prev, n, &self.read_buf[prev..n]);
+            let slice = &self.read_buf[prev..n];
+            self.process_operation(self.token, slice, to_parent);
+
+            prev = n+1;
+
+        }
+        let remainder = self.read_buf[prev..].to_vec();
+        trace!("{:?}: read Remainder: {}", self.socket.peer_addr(), remainder.len());
+        self.read_buf = remainder;
+    }
+
+
+    fn read(&mut self) {
+        let mut abuf = Vec::new();
+        match self.socket.try_read_buf(&mut abuf) {
+            Ok(Some(0)) => {
+                trace!("{:?}: EOF!", self.socket.peer_addr());
+                self.read_eof = true
+            },
+            Ok(Some(n)) => {
+                trace!("{:?}: Read {}bytes", self.socket.peer_addr(), n);
+                self.read_buf.extend(abuf);
+            },
+            Ok(None) => {
+                trace!("{:?}: Noop!", self.socket.peer_addr());
+            },
+            Err(e) => {
+                error!("got an error trying to read; err={:?}", e);
+                self.failed =true;
+            }
+        }
+    }
+
+    fn write(&mut self) {
+        match self.socket.try_write(&mut self.write_buf) {
+            Ok(Some(n)) => {
+                trace!("{:?}: Wrote {} of {} in buffer", self.socket.peer_addr(), n,
+                    self.write_buf.len());
+                self.write_buf = self.write_buf[n..].to_vec();
+                trace!("{:?}: Now {:?}b", self.socket.peer_addr(), self.write_buf.len());
+            },
+            Ok(None) => {
+                trace!("Write unready");
+            },
+            Err(e) => {
+                error!("got an error trying to write; err={:?}", e);
+                self.failed = true;
+            }
+        }
+    }
+
+    fn reinitialize(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>) {
+        let mut flags = mio::EventSet::readable();
+        if !self.write_buf.is_empty() {
+            flags.insert(mio::EventSet::writable());
+        }
+        trace!("Registering {:?} with {:?}", self, flags);
+
+        event_loop.reregister(
+                &self.socket,
+                self.token,
+                flags,
+                mio::PollOpt::oneshot()).expect("EventLoop#reinitialize")
+    }
+
+
+
+    fn is_closed(&self) -> bool {
+        self.failed || (self.read_eof && self.write_buf.is_empty())
+    }
+
+    // Per item to output
+    fn response(&mut self, s: OpResp) {
+        debug!("{:?}: Response: {:?}", self.token, s);
+        let chunk = self.encode_response(s);
+        self.write_buf.extend(chunk);
+        self.write_buf.push('\n' as u8)
+    }
+
+    fn encode_response(&self, s: OpResp) -> Vec<u8> {
         json::encode(&s).expect("Encode json response").as_bytes().to_vec()
     }
 
@@ -619,8 +753,8 @@ impl Downstream {
 #[derive(Debug)]
 enum EventHandler {
     Listener (Listener),
-    Conn (LineConn<Client>),
-    Peer (LineConn<Peer>),
+    Conn (ClientConn),
+    Upstream (UpstreamConn),
     Downstream (Downstream),
 }
 
@@ -628,7 +762,7 @@ impl EventHandler {
     fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.handle_event(_event_loop, events),
-            &mut EventHandler::Peer(ref mut conn) => conn.handle_event(_event_loop, events),
+            &mut EventHandler::Upstream(ref mut conn) => conn.handle_event(_event_loop, events),
             &mut EventHandler::Downstream(ref mut conn) => conn.handle_event(_event_loop, events),
             &mut EventHandler::Listener(ref mut listener) => listener.handle_event(_event_loop, events)
         }
@@ -637,7 +771,7 @@ impl EventHandler {
     fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
         match self {
             &EventHandler::Conn(ref conn) => conn.initialize(event_loop, token),
-            &EventHandler::Peer(ref conn) => conn.initialize(event_loop, token),
+            &EventHandler::Upstream(ref conn) => conn.initialize(event_loop, token),
             &EventHandler::Downstream(ref conn) => conn.initialize(event_loop, token),
             &EventHandler::Listener(ref listener) => listener.initialize(event_loop, token)
         }
@@ -648,7 +782,7 @@ impl EventHandler {
         to_parent: &mut F)  {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.process_rules(event_loop, to_parent),
-            &mut EventHandler::Peer(ref mut conn) => conn.process_rules(event_loop, to_parent),
+            &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, to_parent),
             &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, to_parent),
             &mut EventHandler::Listener(ref mut listener) => listener.process_rules(event_loop, to_parent)
         }
@@ -657,7 +791,7 @@ impl EventHandler {
     fn is_closed(&self) -> bool {
         match self {
             &EventHandler::Conn(ref conn) => conn.is_closed(),
-            &EventHandler::Peer(ref conn) => conn.is_closed(),
+            &EventHandler::Upstream(ref conn) => conn.is_closed(),
             &EventHandler::Downstream(ref conn) => conn.is_closed(),
             &EventHandler::Listener(ref listener) => listener.is_closed()
         }
@@ -666,7 +800,7 @@ impl EventHandler {
     fn response(&mut self, val: OpResp) {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.response(val),
-            &mut EventHandler::Peer(ref mut conn) => conn.response(val),
+            &mut EventHandler::Upstream(ref mut conn) => conn.response(val),
             other => panic!("Unexpected Response to {:?}", other),
         }
     }
@@ -723,7 +857,7 @@ fn main() {
 
     if let Some(listen_addr) = matches.value_of("peer") {
         let listen_addr = listen_addr.parse::<std::net::SocketAddr>().expect("peer listen address");
-        service.listen(&mut event_loop, listen_addr, Role::Peer);
+        service.listen(&mut event_loop, listen_addr, Role::Upstream);
     }
 
     if let Some(next_addr) = matches.value_of("next") {
