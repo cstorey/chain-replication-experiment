@@ -48,7 +48,6 @@ struct ChainRepl {
     downstream_seqno: Option<(u64, u64)>,
     pending_operations: BTreeMap<u64, mio::Token>,
     log: BTreeMap<u64, Operation>,
-    seqno: u64,
     state: String,
 }
 
@@ -57,7 +56,6 @@ impl ChainRepl {
         ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
-            seqno: 0,
             downstream_seqno: None,
             log: BTreeMap::new(),
             pending_operations: BTreeMap::new(),
@@ -83,10 +81,12 @@ impl ChainRepl {
         self.downstream_slot = Some(token)
     }
 
-    fn next_seqno(&mut self) -> u64 {
-        let seqno = self.seqno;
-        self.seqno += 1;
-        seqno
+    fn seqno(&self) -> u64 {
+        self.log.len() as u64
+    }
+
+    fn next_seqno(&self) -> u64 {
+        self.seqno()
     }
 
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
@@ -94,6 +94,7 @@ impl ChainRepl {
         match msg {
             ChainReplMsg::Operation(source, seqno, s) => {
                 let seqno = seqno.unwrap_or_else(|| self.next_seqno());
+                assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
                 let prev = self.log.insert(seqno, s.clone());
                 assert!(prev.is_none());
                 debug!("Log entry {:?}: {:?}", seqno, s);
@@ -120,22 +121,24 @@ impl ChainRepl {
                     OpResp::Ok(seqno, _) => {
                         if let Some(token) = self.pending_operations.remove(&seqno) {
                             info!("Found in-flight op {:?} for client token {:?}", seqno, token);
-                            self.connections[token].response(reply)
+                            if let Some(ref mut c)  = self.connections.get_mut(token) {
+                                c.response(reply)
+                            }
                         } else {
                             warn!("Unexpected response for seqno: {:?}", seqno);
                         }
                     },
-                    OpResp::HelloIHave(seqno) => {
-                        info!("Downstream has {:?}", seqno);
-                        info!("Kick off replication here");
-                        self.downstream_seqno = Some((seqno, seqno));
+                    OpResp::HelloIHave(downstream_seqno) => {
+                        info!("Downstream has {:?}", downstream_seqno);
+                        assert!(downstream_seqno <= self.seqno());
+                        self.downstream_seqno = Some((downstream_seqno, downstream_seqno));
                     },
                 };
 
             },
             ChainReplMsg::NewClientConn(role, socket) => {
                 let peer = socket.peer_addr().expect("peer address");
-                let seqno = self.seqno;
+                let seqno = self.seqno();
                 let token = self.connections
                     .insert_with(|token| match role {
                             Role::Client => EventHandler::Conn(ClientConn::new(socket, token)),
@@ -154,12 +157,14 @@ impl ChainRepl {
     }
 
     fn process_rules(&mut self) -> bool {
-        info!("Repl: Ours: {:?}; downstream: {:?}", self.seqno, self.downstream_seqno);
+        info!("Repl: Ours: {:?}; downstream: {:?}", self.seqno(), self.downstream_seqno);
         let mut changed = false;
         if let Some((send_next, last_acked)) = self.downstream_seqno {
-            if send_next < self.seqno {
-                info!("Need to push {:?}-{:?}", send_next, self.seqno);
-                for i in send_next..self.seqno {
+            debug!("Log: {:?}", self.log);
+            if send_next < self.seqno() {
+                info!("Need to push {:?}-{:?}", send_next, self.seqno());
+                for i in send_next..self.seqno() {
+                    debug!("Log item: {:?}: {:?}", i, self.log.get(&i));
                     let op = self.log[&i].clone();
                     self.downstream_seqno = Some((i+1, last_acked));
                     debug!("Pushed {:?}/{:?}; ds/seqno: {:?}", i, op, self.downstream_seqno);
