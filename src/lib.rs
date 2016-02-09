@@ -1,6 +1,5 @@
 extern crate mio;
 extern crate bytes;
-extern crate log4rs;
 #[macro_use]
 extern crate log;
 #[macro_use]
@@ -12,13 +11,11 @@ use mio::util::Slab;
 use std::collections::{VecDeque,BTreeMap};
 use std::net::SocketAddr;
 
-mod client_conn;
-mod upstream_conn;
+mod line_conn;
 mod downstream_conn;
 mod listener;
 mod event_handler;
-use client_conn::ClientConn;
-use upstream_conn::UpstreamConn;
+use line_conn::LineConn;
 use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
@@ -149,9 +146,9 @@ impl ChainRepl {
                 let seqno = self.seqno();
                 let token = self.connections
                     .insert_with(|token| match role {
-                            Role::Client => EventHandler::Conn(ClientConn::new(socket, token)),
+                            Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
                             Role::Upstream => {
-                                let mut conn = UpstreamConn::new(socket, token);
+                                let mut conn = LineConn::upstream(socket, token);
                                 info!("Inform upstream about our current version, {:?}!", seqno);
                                 conn.response(OpResp::HelloIHave(seqno));
                                 EventHandler::Upstream(conn)

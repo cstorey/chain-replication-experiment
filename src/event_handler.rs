@@ -2,16 +2,15 @@ use mio;
 
 use super::{ChainRepl, ChainReplMsg,OpResp};
 
-use client_conn::ClientConn;
-use upstream_conn::UpstreamConn;
+use line_conn::{JsonPeer, PlainClient, LineConn};
 use downstream_conn::Downstream;
 use listener::Listener;
 
 #[derive(Debug)]
 pub enum EventHandler {
     Listener (Listener),
-    Conn (ClientConn),
-    Upstream (UpstreamConn),
+    Conn (LineConn<PlainClient>),
+    Upstream (LineConn<JsonPeer>),
     Downstream (Downstream),
 }
 

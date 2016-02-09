@@ -2,11 +2,17 @@ use mio;
 use mio::tcp::*;
 use mio::{TryRead,TryWrite};
 use rustc_serialize::json;
+use std::fmt;
 
-use super::{ChainRepl, ChainReplMsg,OpResp};
+use super::{ChainRepl, ChainReplMsg, OpResp, Operation};
+
+trait Codec {
+    fn encode_response(&self, s: OpResp) -> Vec<u8>;
+    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F);
+}
 
 #[derive(Debug)]
-pub struct UpstreamConn {
+pub struct LineConn<T> {
     socket: TcpStream,
     sock_status: mio::EventSet,
     token: mio::Token,
@@ -14,12 +20,13 @@ pub struct UpstreamConn {
     read_eof: bool,
     failed: bool,
     write_buf: Vec<u8>,
+    codec: T,
 }
 
-impl UpstreamConn {
-    pub fn new(socket: TcpStream, token: mio::Token) -> UpstreamConn {
+impl<T: Codec + fmt::Debug> LineConn<T> {
+    fn new(socket: TcpStream, token: mio::Token, codec: T) -> LineConn<T> {
         trace!("New client connection {:?} from {:?}", token, socket.local_addr());
-        UpstreamConn {
+        LineConn {
             socket: socket,
             sock_status: mio::EventSet::none(),
             token: token,
@@ -27,6 +34,7 @@ impl UpstreamConn {
             write_buf: Vec::new(),
             read_eof: false,
             failed: false,
+            codec: codec,
         }
     }
 
@@ -76,7 +84,7 @@ impl UpstreamConn {
                 .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
             trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.socket.peer_addr(), prev, n, &self.read_buf[prev..n]);
             let slice = &self.read_buf[prev..n];
-            self.process_operation(self.token, slice, to_parent);
+            self.codec.process_operation(self.token, slice, to_parent);
             changed = true;
             prev = n+1;
         }
@@ -150,11 +158,16 @@ impl UpstreamConn {
     // Per item to output
     pub fn response(&mut self, s: OpResp) {
         debug!("{:?}: Response: {:?}", self.token, s);
-        let chunk = self.encode_response(s);
+        let chunk = self.codec.encode_response(s);
         self.write_buf.extend(chunk);
         self.write_buf.push('\n' as u8)
     }
+}
 
+#[derive(Debug)]
+pub struct JsonPeer;
+
+impl Codec for JsonPeer {
     fn encode_response(&self, s: OpResp) -> Vec<u8> {
         json::encode(&s).expect("Encode json response").as_bytes().to_vec()
     }
@@ -165,5 +178,40 @@ impl UpstreamConn {
         let cmd = ChainReplMsg::Operation(token, Some(seqno), op);
         debug!("Send! {:?}", cmd);
         to_parent(cmd);
+    }
+}
+
+impl LineConn<JsonPeer> {
+    pub fn upstream(socket: TcpStream, token: mio::Token) -> LineConn<JsonPeer> {
+        Self::new(socket, token, JsonPeer)
+    }
+}
+
+#[derive(Debug)]
+pub struct PlainClient;
+
+impl Codec for PlainClient {
+    fn encode_response(&self, s: OpResp) -> Vec<u8> {
+        format!("{:?}", s).as_bytes().to_vec()
+    }
+
+    // Per line of input
+    fn process_operation<F: FnMut(ChainReplMsg)>(&self, token: mio::Token, slice: &[u8], to_parent: &mut F) {
+        let op = if slice.is_empty() {
+            Operation::Get
+        } else {
+            Operation::Set(String::from_utf8_lossy(slice).to_string())
+        };
+
+        let cmd = ChainReplMsg::Operation(token, None, op);
+        debug!("Send! {:?}", cmd);
+        to_parent(cmd);
+    }
+}
+
+
+impl LineConn<PlainClient> {
+    pub fn client(socket: TcpStream, token: mio::Token) -> LineConn<PlainClient> {
+        Self::new(socket, token, PlainClient)
     }
 }
