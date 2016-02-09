@@ -26,6 +26,7 @@ enum Operation {
 enum OpResp {
     OkVal(u64, String),
     Ok(u64),
+    HelloIHave(u64),
 }
 
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
@@ -45,8 +46,8 @@ struct ChainRepl {
     connections: Slab<EventHandler>,
     downstream_slot: Option<mio::Token>,
     // "Model" fields
-    seq: u64,
     pending_operations: HashMap<u64, mio::Token>,
+    seqno: u64,
     state: String,
 }
 
@@ -55,7 +56,7 @@ impl ChainRepl {
         ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
-            seq: 0,
+            seqno: 0,
             pending_operations: HashMap::new(),
             state: String::new(),
         }
@@ -80,8 +81,8 @@ impl ChainRepl {
     }
 
     fn next_seqno(&mut self) -> u64 {
-        self.seq += 1;
-        self.seq
+        self.seqno += 1;
+        self.seqno
     }
 
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
@@ -109,9 +110,15 @@ impl ChainRepl {
             ChainReplMsg::DownstreamResponse(reply) => {
                 info!("Downstream response: {:?}", reply);
                 let seqno = match reply {
-                    OpResp::Ok(seq) => seq,
-                    OpResp::OkVal(seq, _) => seq,
+                    OpResp::Ok(seqno) => seqno,
+                    OpResp::OkVal(seqno, _) => seqno,
+                    OpResp::HelloIHave(seqno) => {
+                        info!("Downstream has {:?}", seqno);
+                        info!("Kick off replication here");
+                        seqno
+                    },
                 };
+
                 if let Some(token) = self.pending_operations.remove(&seqno) {
                     info!("Found in-flight op {:?} for client token {:?}", seqno, token);
                     self.connections[token].response(reply)
@@ -121,10 +128,16 @@ impl ChainRepl {
             },
             ChainReplMsg::NewClientConn(role, socket) => {
                 let peer = socket.peer_addr().expect("peer address");
+                let seqno = self.seqno;
                 let token = self.connections
                     .insert_with(|token| match role {
                             Role::Client => EventHandler::Conn(ClientConn::new(socket, token)),
-                            Role::Upstream => EventHandler::Upstream(UpstreamConn::new(socket, token)),
+                            Role::Upstream => {
+                                let mut conn = UpstreamConn::new(socket, token);
+                                info!("Inform upstream about our current version, {:?}!", seqno);
+                                conn.response(OpResp::HelloIHave(seqno));
+                                EventHandler::Upstream(conn)
+                            },
                     })
                     .expect("token insert");
                 debug!("Client connection of {:?}/{:?} from {:?}", role, token, peer);
