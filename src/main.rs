@@ -11,12 +11,12 @@ use mio::tcp::*;
 use mio::EventLoop;
 use mio::{TryRead,TryWrite};
 use mio::util::Slab;
-use std::collections::{VecDeque,HashMap};
+use std::collections::{VecDeque,BTreeMap};
 use std::net::SocketAddr;
 use clap::{Arg, App};
 use rustc_serialize::json;
 
-#[derive(Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
 enum Operation {
     Set(String),
     Get
@@ -45,7 +45,9 @@ struct ChainRepl {
     connections: Slab<EventHandler>,
     downstream_slot: Option<mio::Token>,
     // "Model" fields
-    pending_operations: HashMap<u64, mio::Token>,
+    downstream_seqno: Option<(u64, u64)>,
+    pending_operations: BTreeMap<u64, mio::Token>,
+    log: BTreeMap<u64, Operation>,
     seqno: u64,
     state: String,
 }
@@ -56,7 +58,9 @@ impl ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
             seqno: 0,
-            pending_operations: HashMap::new(),
+            downstream_seqno: None,
+            log: BTreeMap::new(),
+            pending_operations: BTreeMap::new(),
             state: String::new(),
         }
     }
@@ -80,8 +84,9 @@ impl ChainRepl {
     }
 
     fn next_seqno(&mut self) -> u64 {
+        let seqno = self.seqno;
         self.seqno += 1;
-        self.seqno
+        seqno
     }
 
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
@@ -89,10 +94,13 @@ impl ChainRepl {
         match msg {
             ChainReplMsg::Operation(source, seqno, s) => {
                 let seqno = seqno.unwrap_or_else(|| self.next_seqno());
+                let prev = self.log.insert(seqno, s.clone());
+                assert!(prev.is_none());
+                debug!("Log entry {:?}: {:?}", seqno, s);
+
                 if let Some(_) = self.downstream_slot {
                     self.pending_operations.insert(seqno, source);
-                    self.downstream().expect("Downstream").send_to_downstream(seqno, s);
-                    // Wait for acks.
+                    // Replication mechanism should handle the push to downstream.
                 } else {
                     info!("Terminus! {:?}/{:?}", seqno, s);
                     let resp = match s {
@@ -120,6 +128,7 @@ impl ChainRepl {
                     OpResp::HelloIHave(seqno) => {
                         info!("Downstream has {:?}", seqno);
                         info!("Kick off replication here");
+                        self.downstream_seqno = Some((seqno, seqno));
                     },
                 };
 
@@ -144,6 +153,24 @@ impl ChainRepl {
         }
     }
 
+    fn process_rules(&mut self) -> bool {
+        info!("Repl: Ours: {:?}; downstream: {:?}", self.seqno, self.downstream_seqno);
+        let mut changed = false;
+        if let Some((send_next, last_acked)) = self.downstream_seqno {
+            if send_next < self.seqno {
+                info!("Need to push {:?}-{:?}", send_next, self.seqno);
+                for i in send_next..self.seqno {
+                    let op = self.log[&i].clone();
+                    self.downstream_seqno = Some((i+1, last_acked));
+                    debug!("Pushed {:?}/{:?}; ds/seqno: {:?}", i, op, self.downstream_seqno);
+                    self.downstream().expect("Downstream").send_to_downstream(i, op);
+                }
+                changed = true
+            }
+        }
+        changed
+    }
+
     fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream> {
         self.downstream_slot.map(move |slot| match &mut self.connections[slot] {
             &mut EventHandler::Downstream(ref mut d) => d,
@@ -153,18 +180,18 @@ impl ChainRepl {
 
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
         let mut parent_actions = VecDeque::new();
-        loop {
+        let mut changed = true;
+        while changed {
+            changed = false;
             for conn in self.connections.iter_mut() {
-                conn.process_rules(event_loop, &mut |item| parent_actions.push_back(item))
+                changed |= conn.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
             }
 
-            // Anything left to process?
-            if parent_actions.is_empty() { break; }
+            changed |= self.process_rules();
 
             for action in parent_actions.drain(..) {
                 self.process_action(action, event_loop);
             }
-
         }
 
         if self.connections[token].is_closed() {
@@ -218,13 +245,13 @@ impl ClientConn {
     // actions are processed here on down.
 
     fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-        to_parent: &mut F) {
+        to_parent: &mut F) -> bool {
         if self.sock_status.is_readable() {
             self.read();
             self.sock_status.remove(mio::EventSet::readable());
         }
 
-        self.process_buffer(to_parent);
+        let changed = self.process_buffer(to_parent);
 
         if self.sock_status.is_writable() {
             self.write();
@@ -234,23 +261,27 @@ impl ClientConn {
         if !self.is_closed() {
             self.reinitialize(event_loop)
         }
+        changed
     }
 
-    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) {
+    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
         let mut prev = 0;
+        let mut changed = false;
         trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         for n in self.read_buf.iter().enumerate()
                 .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
             trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.socket.peer_addr(), prev, n, &self.read_buf[prev..n]);
             let slice = &self.read_buf[prev..n];
             self.process_operation(self.token, slice, to_parent);
+            changed = true;
 
             prev = n+1;
-
         }
+
         let remainder = self.read_buf[prev..].to_vec();
         trace!("{:?}: read Remainder: {}", self.socket.peer_addr(), remainder.len());
         self.read_buf = remainder;
+        changed
     }
 
 
@@ -383,13 +414,13 @@ impl UpstreamConn {
     // actions are processed here on down.
 
     fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-        to_parent: &mut F) {
+        to_parent: &mut F) -> bool {
         if self.sock_status.is_readable() {
             self.read();
             self.sock_status.remove(mio::EventSet::readable());
         }
 
-        self.process_buffer(to_parent);
+        let changed = self.process_buffer(to_parent);
 
         if self.sock_status.is_writable() {
             self.write();
@@ -399,23 +430,26 @@ impl UpstreamConn {
         if !self.is_closed() {
             self.reinitialize(event_loop)
         }
+        changed
     }
 
-    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) {
+    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
         let mut prev = 0;
+        let mut changed = false;
         trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         for n in self.read_buf.iter().enumerate()
                 .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
             trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.socket.peer_addr(), prev, n, &self.read_buf[prev..n]);
             let slice = &self.read_buf[prev..n];
             self.process_operation(self.token, slice, to_parent);
-
+            changed = true;
             prev = n+1;
-
         }
+
         let remainder = self.read_buf[prev..].to_vec();
         trace!("{:?}: read Remainder: {}", self.socket.peer_addr(), remainder.len());
         self.read_buf = remainder;
+        changed
     }
 
 
@@ -529,13 +563,15 @@ impl Listener {
     }
 
     fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-            to_parent: &mut F) {
+            to_parent: &mut F) -> bool {
+        let mut changed = false;
         if self.sock_status.is_readable() {
             trace!("the listener socket is ready to accept a connection");
             match self.listener.accept() {
                 Ok(Some(socket)) => {
                     let cmd = ChainReplMsg::NewClientConn(self.role.clone(), socket);
                     to_parent(cmd);
+                    changed = true;
                 }
                 Ok(None) => {
                     trace!("the listener socket wasn't actually ready");
@@ -547,6 +583,7 @@ impl Listener {
             }
             self.sock_status.remove(mio::EventSet::readable());
         }
+        changed
     }
 
     fn is_closed(&self) -> bool {
@@ -590,7 +627,7 @@ impl Downstream {
     fn send_to_downstream(&mut self, seqno: u64, op: Operation) {
         // self.write_buf.extend(s.as_bytes());
         // self.write_buf.push('\n' as u8);
-        self.pending.push_front((seqno, op));
+        self.pending.push_back((seqno, op));
         debug!("Sending to downstream: {:?}", self);
     }
 
@@ -619,7 +656,7 @@ impl Downstream {
     }
 
     fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-            to_parent: &mut F) {
+            to_parent: &mut F) -> bool {
         trace!("the downstream socket is {:?}", self.sock_status);
 
         if self.sock_status.is_readable() {
@@ -628,7 +665,7 @@ impl Downstream {
             self.sock_status.remove(mio::EventSet::readable());
         }
 
-        self.process_buffer(to_parent);
+        let changed = self.process_buffer(to_parent);
 
         if self.sock_status.is_writable() {
             self.prep_write_buffer();
@@ -640,7 +677,7 @@ impl Downstream {
             if let Some(sock) = self.socket.take() {
                 trace!("Deregistering socket! {:?}", sock);
                 event_loop.deregister(&sock).expect("deregister downstream");
-                event_loop.timeout_ms(self.token, 1000);
+                event_loop.timeout_ms(self.token, 1000).expect("reconnect timeout");
                 self.read_eof = false;
                 self.read_buf.clear();
                 self.write_buf.clear();
@@ -658,6 +695,7 @@ impl Downstream {
         if !self.is_closed() {
             self.reinitialize(event_loop)
         }
+        changed
     }
 
     fn attempt_connect(&mut self) {
@@ -720,8 +758,9 @@ impl Downstream {
         }
     }
 
-    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) {
+    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
         let mut prev = 0;
+        let mut changed = false;
         trace!("Downstream: {:?}: Read buffer: {:?}", self.token, self.read_buf);
         for n in self.read_buf.iter().enumerate()
                 .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
@@ -731,12 +770,14 @@ impl Downstream {
             let val : OpResp = json::decode(&line).expect("Decode json");
             trace!("From downstream: {:?}", val);
             to_parent(ChainReplMsg::DownstreamResponse(val));
-
+            changed = true;
             prev = n + 1
         }
+
         let remainder = self.read_buf[prev..].to_vec();
         trace!("{:?}: read Remainder: {}", self.token, remainder.len());
         self.read_buf = remainder;
+        changed
     }
 
     fn is_closed(&self) -> bool {
@@ -790,7 +831,7 @@ impl EventHandler {
 
 
     fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-        to_parent: &mut F)  {
+        to_parent: &mut F) -> bool {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.process_rules(event_loop, to_parent),
             &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, to_parent),
