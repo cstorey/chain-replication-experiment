@@ -45,7 +45,7 @@ struct ChainRepl {
     connections: Slab<EventHandler>,
     downstream_slot: Option<mio::Token>,
     // "Model" fields
-    downstream_seqno: Option<(u64, u64)>,
+    downstream_seqno: Option<u64>,
     pending_operations: BTreeMap<u64, mio::Token>,
     log: BTreeMap<u64, Operation>,
     state: String,
@@ -131,7 +131,7 @@ impl ChainRepl {
                     OpResp::HelloIHave(downstream_seqno) => {
                         info!("Downstream has {:?}", downstream_seqno);
                         assert!(downstream_seqno <= self.seqno());
-                        self.downstream_seqno = Some((downstream_seqno, downstream_seqno));
+                        self.downstream_seqno = Some(downstream_seqno);
                     },
                 };
 
@@ -159,14 +159,14 @@ impl ChainRepl {
     fn process_rules(&mut self) -> bool {
         info!("Repl: Ours: {:?}; downstream: {:?}", self.seqno(), self.downstream_seqno);
         let mut changed = false;
-        if let Some((send_next, last_acked)) = self.downstream_seqno {
+        if let Some(send_next) = self.downstream_seqno {
             debug!("Log: {:?}", self.log);
             if send_next < self.seqno() {
                 info!("Need to push {:?}-{:?}", send_next, self.seqno());
                 for i in send_next..self.seqno() {
                     debug!("Log item: {:?}: {:?}", i, self.log.get(&i));
                     let op = self.log[&i].clone();
-                    self.downstream_seqno = Some((i+1, last_acked));
+                    self.downstream_seqno = Some(i+1);
                     debug!("Pushed {:?}/{:?}; ds/seqno: {:?}", i, op, self.downstream_seqno);
                     self.downstream().expect("Downstream").send_to_downstream(i, op);
                 }
