@@ -24,8 +24,7 @@ enum Operation {
 
 #[derive(Debug, RustcEncodable, RustcDecodable)]
 enum OpResp {
-    OkVal(u64, String),
-    Ok(u64),
+    Ok(u64, Option<String>),
     HelloIHave(u64),
 }
 
@@ -99,9 +98,9 @@ impl ChainRepl {
                     let resp = match s {
                         Operation::Set(s) => {
                             self.state = s;
-                            OpResp::Ok(seqno)
+                            OpResp::Ok(seqno, None)
                         },
-                        Operation::Get => OpResp::OkVal(seqno, self.state.clone())
+                        Operation::Get => OpResp::Ok(seqno, Some(self.state.clone()))
                     };
                     self.connections[source].response(resp)
                 }
@@ -109,22 +108,21 @@ impl ChainRepl {
 
             ChainReplMsg::DownstreamResponse(reply) => {
                 info!("Downstream response: {:?}", reply);
-                let seqno = match reply {
-                    OpResp::Ok(seqno) => seqno,
-                    OpResp::OkVal(seqno, _) => seqno,
+                match reply {
+                    OpResp::Ok(seqno, _) => {
+                        if let Some(token) = self.pending_operations.remove(&seqno) {
+                            info!("Found in-flight op {:?} for client token {:?}", seqno, token);
+                            self.connections[token].response(reply)
+                        } else {
+                            warn!("Unexpected response for seqno: {:?}", seqno);
+                        }
+                    },
                     OpResp::HelloIHave(seqno) => {
                         info!("Downstream has {:?}", seqno);
                         info!("Kick off replication here");
-                        seqno
                     },
                 };
 
-                if let Some(token) = self.pending_operations.remove(&seqno) {
-                    info!("Found in-flight op {:?} for client token {:?}", seqno, token);
-                    self.connections[token].response(reply)
-                } else {
-                    warn!("Unexpected response for seqno: {:?}", seqno);
-                }
             },
             ChainReplMsg::NewClientConn(role, socket) => {
                 let peer = socket.peer_addr().expect("peer address");
