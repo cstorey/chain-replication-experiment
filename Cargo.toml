@@ -10,3 +10,6 @@ log = "*"
 log4rs = "*"
 mio = "0.4.1"
 rustc-serialize = "0.3.16"
+
+[profile.release]
+debug = true
