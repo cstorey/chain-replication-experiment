@@ -45,7 +45,7 @@ impl Downstream {
         // self.write_buf.extend(s.as_bytes());
         // self.write_buf.push('\n' as u8);
         self.pending.push_back((seqno, op));
-        debug!("Sending to downstream: {:?}", self);
+        debug!("Sending to downstream: {:?}", self.peer);
     }
 
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
@@ -78,7 +78,6 @@ impl Downstream {
 
         if self.sock_status.is_readable() {
             self.read();
-            warn!("Read from downstream!");
             self.sock_status.remove(mio::EventSet::readable());
         }
 
@@ -185,7 +184,7 @@ impl Downstream {
             trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.token, prev, n, line);
 
             let val : OpResp = json::decode(&line).expect("Decode json");
-            trace!("From downstream: {:?}", val);
+            debug!("From downstream: {:?}", val);
             to_parent(ChainReplMsg::DownstreamResponse(val));
             changed = true;
             prev = n + 1

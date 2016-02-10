@@ -156,6 +156,7 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
 
 
     pub fn is_closed(&self) -> bool {
+        trace!("Closed? failed: {:?}; read_eof:{:?}; write_empty: {:?}", self.failed, self.read_eof, self.write_buf.is_empty());
         self.failed || (self.read_eof && self.write_buf.is_empty())
     }
 

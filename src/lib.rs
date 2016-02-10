@@ -165,7 +165,7 @@ impl ChainRepl {
         info!("Repl: Ours: {:?}; downstream: {:?}", self.seqno(), self.downstream_seqno);
         let mut changed = false;
         if let Some(send_next) = self.downstream_seqno {
-            debug!("Log: {:?}", self.log);
+            trace!("Log: {:?}", self.log);
             if send_next < self.seqno() {
                 info!("Need to push {:?}-{:?}", send_next, self.seqno());
                 for i in send_next..self.seqno() {
@@ -191,20 +191,32 @@ impl ChainRepl {
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
         let mut parent_actions = VecDeque::new();
         let mut changed = true;
+        let mut iterations = 0;
+        trace!("Converge begin");
         while changed {
+            trace!("Iter: {:?}", iterations);
             changed = false;
             for conn in self.connections.iter_mut() {
-                changed |= conn.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
+                let changedp = conn.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
+                if changedp { trace!("Changed: {:?}", conn); };
+                changed |= changedp;
             }
 
-            changed |= self.process_rules();
+            let changedp = self.process_rules();
+            if changedp { trace!("Changed: {:?}", "Model"); }
+            changed |= changedp;
 
             for action in parent_actions.drain(..) {
+                trace!("Action: {:?}", action);
                 self.process_action(action, event_loop);
             }
+            iterations += 1;
         }
+        trace!("Converged after {:?} iterations", iterations);
 
-        if self.connections[token].is_closed() {
+        if self.connections[token].is_closed() && self.pending_operations.values().all(|tok| tok != &token) {
+            debug!("Close candidate: {:?}: pending: {:?}",
+                token, self.pending_operations.values().filter(|tok| **tok == token).count());
             let it = self.connections.remove(token);
             debug!("Removing; {:?}; {:?}", token, it);
         }
