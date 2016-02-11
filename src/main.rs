@@ -7,9 +7,10 @@ extern crate clap;
 extern crate chain_repl_test;
 
 use std::net::SocketAddr;
+use std::time::Duration;
 use clap::{Arg, App};
 
-use chain_repl_test::{ChainRepl,Role};
+use chain_repl_test::{ChainRepl,Role, ConfigClient};
 
 
 const LOG_FILE: &'static str = "log.toml";
@@ -22,6 +23,7 @@ fn main() {
         .arg(Arg::with_name("bind").short("l").takes_value(true))
         .arg(Arg::with_name("peer").short("p").takes_value(true))
         .arg(Arg::with_name("next").short("n").takes_value(true))
+        .arg(Arg::with_name("etcd").short("e").takes_value(true))
         .get_matches();
 
     let mut event_loop = mio::EventLoop::new().expect("Create event loop");
@@ -42,6 +44,15 @@ fn main() {
         info!("Forwarding to address {:?}", next_addr);
         service.set_downstream(&mut event_loop, next_addr);
     }
+
+    let conf = if let Some(etcd) = matches.value_of("etcd") {
+        info!("Etcd at: {:?}", etcd);
+        let config = ConfigClient::new(etcd, &format!("data: {:p}", &service), Duration::new(5, 0)).expect("Etcd");
+        Some(config)
+    } else {
+        info!("No etcd");
+        None
+    };
 
     info!("running chain-repl-test listener");
     event_loop.run(&mut service).expect("Run loop");

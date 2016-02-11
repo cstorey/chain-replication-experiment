@@ -5,6 +5,8 @@ extern crate log;
 #[macro_use]
 extern crate rustc_serialize;
 
+extern crate etcd;
+
 use mio::tcp::*;
 use mio::EventLoop;
 use mio::util::Slab;
@@ -14,12 +16,14 @@ use std::net::SocketAddr;
 mod line_conn;
 mod downstream_conn;
 mod listener;
+mod config;
 mod event_handler;
 use line_conn::LineConn;
 use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
 
+pub use config::*;
 
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
 enum Operation {
