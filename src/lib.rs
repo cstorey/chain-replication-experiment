@@ -50,6 +50,7 @@ enum ChainReplMsg {
     NewClientConn(Role, TcpStream),
 }
 
+#[derive(Debug)]
 pub struct ChainRepl {
     connections: Slab<EventHandler>,
     downstream_slot: Option<mio::Token>,
@@ -58,6 +59,7 @@ pub struct ChainRepl {
     pending_operations: BTreeMap<u64, mio::Token>,
     log: BTreeMap<u64, Operation>,
     state: String,
+    new_view: Option<ConfigurationView>,
 }
 
 impl ChainRepl {
@@ -69,6 +71,7 @@ impl ChainRepl {
             log: BTreeMap::new(),
             pending_operations: BTreeMap::new(),
             state: String::new(),
+            new_view: None
         }
     }
 
@@ -182,6 +185,33 @@ impl ChainRepl {
                 changed = true
             }
         }
+
+        // Cases:
+        // Head(nextNode)
+        // Middle(nextNode)
+        // Tail
+        if let Some(ref view) = self.new_view {
+            info!("Reconfigure according to: {:?}", view);
+            if view.should_listen_for_clients() {
+                info!("Listen for clients");
+            } else {
+                info!("Shutdown for clients");
+            }
+            if view.should_listen_for_upstream() {
+                info!("Listen for upstreams");
+            } else {
+                info!("Shutdown for upstreams");
+            }
+            if let Some(ds) = view.should_connect_downstream() {
+                info!("Push to downstream on {:?}", ds);
+            } else {
+                info!("Tail node!");
+            }
+
+            changed = true;
+        }
+        self.new_view = None;
+
         changed
     }
 
@@ -192,7 +222,7 @@ impl ChainRepl {
         })
     }
 
-    fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
+    fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>) {
         let mut parent_actions = VecDeque::new();
         let mut changed = true;
         let mut iterations = 0;
@@ -217,12 +247,43 @@ impl ChainRepl {
             iterations += 1;
         }
         trace!("Converged after {:?} iterations", iterations);
+    }
 
+    fn io_ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
+        self.converge_state(event_loop);
         if self.connections[token].is_closed() && self.pending_operations.values().all(|tok| tok != &token) {
             debug!("Close candidate: {:?}: pending: {:?}",
                 token, self.pending_operations.values().filter(|tok| **tok == token).count());
             let it = self.connections.remove(token);
             debug!("Removing; {:?}; {:?}", token, it);
+        }
+    }
+
+    fn handle_view_changed(&mut self, view: ConfigurationView) {
+        self.new_view = Some(view)
+    }
+    
+    pub fn get_notifier(&self, event_loop: &mut mio::EventLoop<Self>) -> Notifier {
+        Notifier(event_loop.channel())
+    }
+}
+
+pub struct Notifier(mio::Sender<ConfigurationView>);
+
+impl Notifier {
+    pub fn notify(&self, view: ConfigurationView) {
+        use mio::NotifyError::*;
+        let mut item = view;
+        let mut backoff_ms = 1;
+        loop {
+            item = match self.0.send(item) {
+                Ok(_) => return,
+                Err(Full(it)) => it,
+                Err(e) => panic!("{:?}", e),
+            };
+            info!("Backoff: {}ms", backoff_ms);
+            std::thread::sleep_ms(backoff_ms);
+            backoff_ms *= 2;
         }
     }
 }
@@ -231,18 +292,22 @@ impl mio::Handler for ChainRepl {
     // This is a bit wierd; we can pass a parent action back to enqueue some action.
 
     type Timeout = mio::Token;
-    type Message = ();
+    type Message = ConfigurationView;
     fn ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token, events: mio::EventSet) {
         trace!("{:?}: {:?}", token, events);
         self.connections[token].handle_event(event_loop, events);
-        self.converge_state(event_loop, token);
+        self.io_ready(event_loop, token);
     }
-
 
     fn timeout(&mut self, event_loop: &mut EventLoop<Self>, token: mio::Token) {
         debug!("Timeout: {:?}", token);
         self.connections[token].handle_timeout();
-        self.converge_state(event_loop, token);
+        self.io_ready(event_loop, token);
     }
 
+    fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: ConfigurationView) {
+        debug!("Notified: {:?}", msg);
+        self.handle_view_changed(msg);
+        self.converge_state(event_loop);
+    }
 }

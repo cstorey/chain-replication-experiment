@@ -47,7 +47,9 @@ fn main() {
 
     let conf = if let Some(etcd) = matches.value_of("etcd") {
         info!("Etcd at: {:?}", etcd);
-        let config = ConfigClient::new(etcd, &format!("data: {:p}", &service), Duration::new(5, 0)).expect("Etcd");
+        let notifier = service.get_notifier(&mut event_loop);
+        let config = ConfigClient::new(etcd, &format!("data: {:p}", &service), Duration::new(5, 0),
+            move |view| notifier.notify(view)).expect("Etcd");
         Some(config)
     } else {
         info!("No etcd");
