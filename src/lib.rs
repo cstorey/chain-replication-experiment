@@ -37,7 +37,7 @@ enum OpResp {
     HelloIHave(u64),
 }
 
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Eq,PartialEq, Clone, Debug, RustcEncodable, RustcDecodable)]
 pub enum Role {
     Client,
     Upstream,
@@ -50,6 +50,11 @@ enum ChainReplMsg {
     NewClientConn(Role, TcpStream),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, RustcEncodable, RustcDecodable)]
+pub struct NodeViewConfig {
+    peer_addr: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct ChainRepl {
     connections: Slab<EventHandler>,
@@ -59,7 +64,8 @@ pub struct ChainRepl {
     pending_operations: BTreeMap<u64, mio::Token>,
     log: BTreeMap<u64, Operation>,
     state: String,
-    new_view: Option<ConfigurationView>,
+    new_view: Option<ConfigurationView<NodeViewConfig>>,
+    node_config: NodeViewConfig,
 }
 
 impl ChainRepl {
@@ -71,14 +77,18 @@ impl ChainRepl {
             log: BTreeMap::new(),
             pending_operations: BTreeMap::new(),
             state: String::new(),
-            new_view: None
+            new_view: None,
+            node_config: Default::default(),
         }
     }
 
     pub fn listen(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, addr: SocketAddr, role: Role) {
         info!("Listen on {:?} for {:?}", addr, role);
-        let l = EventHandler::Listener(Listener::new(addr, role));
-        let token = self.connections.insert(l).expect("insert listener");
+        let l = Listener::new(addr, role.clone());
+        if role == Role::Upstream {
+            self.node_config.peer_addr = Some(format!("{}", l.listen_addr()));
+        }
+        let token = self.connections.insert(EventHandler::Listener(l)).expect("insert listener");
         &self.connections[token].initialize(event_loop, token);
     }
 
@@ -146,8 +156,8 @@ impl ChainRepl {
                         self.downstream_seqno = Some(downstream_seqno);
                     },
                 };
-
             },
+
             ChainReplMsg::NewClientConn(role, socket) => {
                 let peer = socket.peer_addr().expect("peer address");
                 let seqno = self.seqno();
@@ -259,19 +269,23 @@ impl ChainRepl {
         }
     }
 
-    fn handle_view_changed(&mut self, view: ConfigurationView) {
+    fn handle_view_changed(&mut self, view: ConfigurationView<NodeViewConfig>) {
         self.new_view = Some(view)
     }
     
     pub fn get_notifier(&self, event_loop: &mut mio::EventLoop<Self>) -> Notifier {
         Notifier(event_loop.channel())
     }
+
+    pub fn node_config(&self) -> NodeViewConfig {
+        self.node_config.clone()
+    }
 }
 
-pub struct Notifier(mio::Sender<ConfigurationView>);
+pub struct Notifier(mio::Sender<ConfigurationView<NodeViewConfig>>);
 
 impl Notifier {
-    pub fn notify(&self, view: ConfigurationView) {
+    pub fn notify(&self, view: ConfigurationView<NodeViewConfig>) {
         use mio::NotifyError::*;
         let mut item = view;
         let mut backoff_ms = 1;
@@ -290,9 +304,8 @@ impl Notifier {
 
 impl mio::Handler for ChainRepl {
     // This is a bit wierd; we can pass a parent action back to enqueue some action.
-
     type Timeout = mio::Token;
-    type Message = ConfigurationView;
+    type Message = ConfigurationView<NodeViewConfig>;
     fn ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token, events: mio::EventSet) {
         trace!("{:?}: {:?}", token, events);
         self.connections[token].handle_event(event_loop, events);
@@ -305,7 +318,7 @@ impl mio::Handler for ChainRepl {
         self.io_ready(event_loop, token);
     }
 
-    fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: ConfigurationView) {
+    fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: ConfigurationView<NodeViewConfig>) {
         debug!("Notified: {:?}", msg);
         self.handle_view_changed(msg);
         self.converge_state(event_loop);

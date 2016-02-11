@@ -59,4 +59,8 @@ impl Listener {
     pub fn is_closed(&self) -> bool {
         false
     }
+
+    pub fn listen_addr(&self) -> SocketAddr {
+        self.listener.local_addr().expect("local_addr")
+    }
 }
