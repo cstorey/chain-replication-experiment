@@ -66,7 +66,7 @@ const COMPARE_FAILED : u64 = 101;
 #[derive(Debug,PartialEq,Eq,Default,Clone, RustcEncodable, RustcDecodable)]
 struct ConfigSequencer {
     keys: Vec<String>,
-    seqno: u64,
+    epoch: u64,
 }
 
 impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
@@ -149,7 +149,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
                 (self.callback)(ConfigurationView {
                     this_node: lease_key.clone(),
                     members: curr_members.clone(),
-                    sequencer: seq.seqno,
+                    sequencer: seq.epoch,
                 })
             }
         }
@@ -176,7 +176,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
                 debug!("Stale! {:?}", seq);
 
                 seq.keys = current_keys;
-                seq.seqno += 1;
+                seq.epoch += 1;
                 match self.etcd.compare_and_swap(SEQUENCER, &json::encode(&seq).expect("encode sequencer"), None, None, Some(seq_index)) {
                         Ok(res) => {
                             debug!("verify_sequencer: Updated seq: {}: {:?}: ", SEQUENCER, seq);
