@@ -24,23 +24,26 @@ struct InnerClient<T> {
     data: T,
     lease_time: Duration,
     callback: Box<Fn(ConfigurationView<T>) + Send + Sync + 'static>,
+    lease_key: Option<String>,
 }
 
 impl<T: 'static + Decodable + Encodable + fmt::Debug + Eq + Clone + Send + Sync> ConfigClient<T> {
-    pub fn new<F: Fn(ConfigurationView<T>) + Send + Sync + 'static>(addr: &str, data: T, lease_time: Duration, callback: F) 
+    pub fn new<F: Fn(ConfigurationView<T>) + Send + Sync + 'static>(addr: &str, data: T, lease_time: Duration, callback: F)
         -> Result<ConfigClient<T>, ()> {
         let etcd = etcd::Client::new(addr).expect("etcd client");
-        let client = Arc::new(InnerClient {
+        let mut client = InnerClient {
             etcd: etcd,
             data: data,
             lease_time: lease_time,
             callback: Box::new(callback),
-        });
-        client.setup();
+            lease_key: None,
+        };
+        let lease = client.setup_lease();
 
-        let lease_mgr = { let client = client.clone(); 
+        let client = Arc::new(client);
+        let lease_mgr = { let client = client.clone();
             thread::Builder::new().name("etcd config".to_string()).spawn(move || {
-                client.run_lease()
+                client.run_lease(lease)
             }).expect("etcd thread")
         };
         let watcher = {
@@ -58,44 +61,39 @@ const KEY_EXISTS : u64 = 105;
 
 impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
 
-    fn setup(&self) {
-        match self.etcd.create_dir(DIR, None) { 
+    fn setup_lease(&mut self) -> u64 {
+        match self.etcd.create_dir(DIR, None) {
             Ok(res) => info!("Created dir: {}: {:?}: ", DIR, res),
             Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_EXISTS => info!("Dir exists: {:?}: ", DIR),
             Err(e) => panic!("Unexpected error creating {}: {:?}", DIR, e),
         }
+
+        let me = self.etcd.create_in_order(DIR, &self.data_json(), Some(self.lease_time.as_secs())).expect("Create unique node");
+        info!("My node! {:?}", me);
+        self.lease_key = Some(me.node.key.expect("Key name"));
+        me.node.modified_index.expect("Lease node version")
     }
 
-    fn run_lease(&self) {
-        let node_id = (&self) as *const _ as usize;
-        let myttl = Some(self.lease_time.as_secs());
-        let pausetime = self.lease_time / 2;
-        let myvalue = json::encode(&self.data).expect("json encode");
-        let me = self.etcd.create_in_order(DIR, &myvalue, myttl).expect("Create unique node");
-        info!("My node! {:?}", me);
-        let mykey = me.node.key.expect("Key name");
-        let mut index = me.node.modified_index;
-        let mut next_index = me.node.modified_index.map(|x| x+1);
-        
-        let mut curr_members = BTreeMap::new(); 
-        loop {
-            let members = self.list_members();
+    fn data_json(&self) -> String {
+        json::encode(&self.data).expect("json encode")
+    }
 
-            trace!("Members: {:?}", members);
-            if curr_members != members {
-                curr_members = members;
-                info!("Membership change! {:?}", curr_members);
-                (self.callback)(ConfigurationView { this_node: mykey.clone(), members: curr_members.clone() })
-            }
+    fn run_lease(&self, mut lease_index: u64) {
+        let pausetime = self.lease_time / 2;
+        let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
+
+        loop {
 
             thread::sleep(pausetime);
-            trace!("touch node: {:?}={:?}", mykey, myvalue);
-            let res = self.etcd.compare_and_swap(&mykey, &myvalue, myttl, Some(&myvalue), index).expect("Update lease");
+            trace!("touch node: {:?}={:?}", lease_key, self.data);
+            let res = self.etcd.compare_and_swap(&lease_key, &self.data_json(),
+                    Some(self.lease_time.as_secs()), None, Some(lease_index))
+                .expect("Update lease");
             trace!("Update: {:?}", res);
-            index = res.node.modified_index;
-
+            lease_index = res.node.modified_index.expect("lease version");
         }
     }
+
     fn list_members(&self) -> BTreeMap<String, T> {
         let current_listing = self.etcd.get(DIR, true, true, true).expect("List members");
         trace!("Listing: {:?}", current_listing);
@@ -105,21 +103,34 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
                         Some((k, json::decode(&v).expect("decode json"))) } else { None })
                 .collect::<BTreeMap<String, T>>()
     }
+
     fn run_watch(&self) {
         info!("Starting etcd watcher");
+        let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
         let current_listing = self.etcd.get(DIR, true, true, true).expect("List members");
         debug!("Listing: {:?}", current_listing);
         let mut last_observed_index = current_listing.node.nodes.unwrap_or_else(|| Vec::new()).into_iter()
             .filter_map(|x| x.modified_index).max();
 
+        let mut curr_members = BTreeMap::new();
         loop {
             debug!("Awaiting for {} from {:?}", DIR, last_observed_index);
             let res = self.etcd.watch(DIR, last_observed_index, true).expect("watch");
-            info!("Watch: {:?}", res);
+            trace!("Watch: {:?}", res);
             last_observed_index = res.node.modified_index.map(|x| x+1);
+
+            let members = self.list_members();
+            assert!(members.contains_key(lease_key), "I am ostensibly alive");
+
+            trace!("Members: {:?}", members);
+            if curr_members != members {
+                curr_members = members;
+                info!("Membership change! {:?}", curr_members);
+                (self.callback)(ConfigurationView { this_node: lease_key.clone(), members: curr_members.clone() })
+            }
         }
-        
+
     }
 }
 
