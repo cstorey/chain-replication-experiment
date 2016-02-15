@@ -58,6 +58,7 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
 
     pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
         to_parent: &mut F) -> bool {
+
         if self.sock_status.is_readable() {
             self.read();
             self.sock_status.remove(mio::EventSet::readable());
@@ -167,6 +168,7 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
         self.write_buf.extend(chunk);
         self.write_buf.push('\n' as u8)
     }
+
 }
 
 #[derive(Debug)]

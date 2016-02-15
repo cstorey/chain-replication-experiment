@@ -127,8 +127,14 @@ impl ChainRepl {
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
                 let seqno = seqno.unwrap_or_else(|| self.next_seqno());
-                assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
+                // assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
+
                 let epoch = epoch.unwrap_or_else(|| self.current_epoch);
+
+                if !(seqno == 0 || self.log.get(&(seqno-1)).is_some()) {
+                    panic!("Hole in history: saw {}/{}; have: {:?}", epoch, seqno, self.log.keys().collect::<Vec<_>>());
+                }
+
                 if epoch != self.current_epoch {
                     warn!("Operation epoch ({}) differers from our last observed configuration: ({})",
                         epoch, self.current_epoch);
@@ -225,15 +231,15 @@ impl ChainRepl {
         // Tail
         if let Some(view) = self.new_view.take() {
             info!("Reconfigure according to: {:?}", view);
-            if view.should_listen_for_clients() {
-                info!("Listen for clients");
-            } else {
-                info!("Shutdown for clients");
+            let listen_for_clients = view.should_listen_for_clients();
+            info!("Listen for clients: {:?}", listen_for_clients);
+            for p in self.listeners(Role::Client) {
+                p.set_active(listen_for_clients);
             }
-            if view.should_listen_for_upstream() {
-                info!("Listen for upstreams");
-            } else {
-                info!("Shutdown for upstreams");
+            let listen_for_upstreamp = view.should_listen_for_upstream();
+            info!("Listen for upstreams: {:?}", listen_for_upstreamp);
+            for p in self.listeners(Role::Upstream) {
+                p.set_active(listen_for_upstreamp);
             }
             if let Some(ds) = view.should_connect_downstream() {
                 info!("Push to downstream on {:?}", ds);
@@ -260,6 +266,13 @@ impl ChainRepl {
             &mut EventHandler::Downstream(ref mut d) => d,
             other => panic!("Downstream slot not populated with a downstream instance: {:?}", other),
         })
+    }
+
+    fn listeners<'a>(&'a mut self, role: Role) -> Vec<&'a mut Listener> {
+        self.connections.iter_mut().filter_map(|it| match it {
+            &mut EventHandler::Listener(ref mut l) if l.role == role => Some(l),
+            _ => None
+        }).collect()
     }
 
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>) {

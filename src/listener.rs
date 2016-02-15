@@ -8,7 +8,8 @@ use super::{Role,ChainRepl, ChainReplMsg};
 pub struct Listener {
     listener: TcpListener,
     sock_status: mio::EventSet,
-    role: Role,
+    pub role: Role,
+    active: bool,
 }
 
 impl Listener {
@@ -17,7 +18,8 @@ impl Listener {
         Listener {
             listener: listener,
             sock_status: mio::EventSet::none(),
-            role: role
+            role: role,
+            active: false,
         }
     }
 
@@ -34,6 +36,13 @@ impl Listener {
 
     pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
             to_parent: &mut F) -> bool {
+        if !self.active {
+            if (self.sock_status != mio::EventSet::none()) {
+                debug!("Ignoring events on inactive listener: {:?}; {:?}", self.listener.local_addr(), self.sock_status);
+            }
+            return false;
+        }
+
         let mut changed = false;
         if self.sock_status.is_readable() {
             trace!("the listener socket is ready to accept a connection");
@@ -62,5 +71,10 @@ impl Listener {
 
     pub fn listen_addr(&self) -> SocketAddr {
         self.listener.local_addr().expect("local_addr")
+    }
+
+    pub fn set_active(&mut self, state: bool) {
+        self.active = state;
+        debug!("Now: {:?}", self);
     }
 }
