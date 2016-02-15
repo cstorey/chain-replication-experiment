@@ -35,7 +35,11 @@ enum Operation {
 enum OpResp {
     Ok(u64, Option<String>),
     HelloIHave(u64),
+    Err(u64, String),
 }
+
+
+type PeerMsg = (u64, u64, Operation);
 
 #[derive(Eq,PartialEq, Clone, Debug, RustcEncodable, RustcDecodable)]
 pub enum Role {
@@ -45,7 +49,7 @@ pub enum Role {
 
 #[derive(Debug)]
 enum ChainReplMsg {
-    Operation { source: mio::Token, seqno: Option<u64>, op: Operation },
+    Operation { source: mio::Token, epoch: Option<u64>, seqno: Option<u64>, op: Operation },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
 }
@@ -67,6 +71,7 @@ pub struct ChainRepl {
     state: String,
     new_view: Option<ConfigurationView<NodeViewConfig>>,
     node_config: NodeViewConfig,
+    current_epoch: u64,
 }
 
 impl ChainRepl {
@@ -80,6 +85,7 @@ impl ChainRepl {
             state: String::new(),
             new_view: None,
             node_config: Default::default(),
+            current_epoch: Default::default(),
         }
     }
 
@@ -94,14 +100,17 @@ impl ChainRepl {
         &self.connections[token].initialize(event_loop, token);
     }
 
-    pub fn set_downstream(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, target: SocketAddr) {
-        if let Some(d) = self.downstream_slot {
-            self.downstream().expect("downstream").reconnect_to(target);
-        } else {
-            let token = self.connections.insert_with(|token| EventHandler::Downstream(Downstream::new(target, token)))
-                .expect("insert downstream");
-            &self.connections[token].initialize(event_loop, token);
-            self.downstream_slot = Some(token)
+    pub fn set_downstream(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, target: Option<SocketAddr>) {
+        match (self.downstream_slot, target) {
+            (Some(_), Some(target)) => self.downstream().expect("downstream").reconnect_to(target),
+            (None, Some(target)) => {
+                let token = self.connections.insert_with(|token| EventHandler::Downstream(Downstream::new(target, token)))
+                    .expect("insert downstream");
+                &self.connections[token].initialize(event_loop, token);
+                self.downstream_slot = Some(token)
+            },
+            (Some(_), None) => self.downstream().expect("downstream").disconnect(),
+            (None, None) => (),
         }
     }
 
@@ -116,12 +125,23 @@ impl ChainRepl {
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
-            ChainReplMsg::Operation { source, seqno, op } => {
+            ChainReplMsg::Operation { source, seqno, epoch, op } => {
                 let seqno = seqno.unwrap_or_else(|| self.next_seqno());
                 assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
+                let epoch = epoch.unwrap_or_else(|| self.current_epoch);
+                if epoch != self.current_epoch {
+                    warn!("Operation epoch ({}) differers from our last observed configuration: ({})",
+                        epoch, self.current_epoch);
+                    let resp = OpResp::Err(seqno, format!("BadEpoch: {}; last seen config: {}", epoch, self.current_epoch));
+                    self.connections[source].response(resp);
+                    return;
+                }
+
                 let prev = self.log.insert(seqno, op.clone());
-                assert!(prev.is_none());
                 debug!("Log entry {:?}: {:?}", seqno, op);
+                if let Some(prev) = prev {
+                    panic!("Unexpectedly existing log entry for item {}: {:?}", seqno, prev);
+                }
 
                 if let Some(_) = self.downstream_slot {
                     self.pending_operations.insert(seqno, source);
@@ -142,7 +162,7 @@ impl ChainRepl {
             ChainReplMsg::DownstreamResponse(reply) => {
                 info!("Downstream response: {:?}", reply);
                 match reply {
-                    OpResp::Ok(seqno, _) => {
+                    OpResp::Ok(seqno, _) | OpResp::Err(seqno, _) => {
                         if let Some(token) = self.pending_operations.remove(&seqno) {
                             info!("Found in-flight op {:?} for client token {:?}", seqno, token);
                             if let Some(ref mut c)  = self.connections.get_mut(token) {
@@ -181,18 +201,19 @@ impl ChainRepl {
     }
 
     fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>) -> bool {
-        info!("Repl: Ours: {:?}; downstream: {:?}", self.seqno(), self.downstream_seqno);
+        trace!("Repl: Ours: {:?}; downstream: {:?}", self.seqno(), self.downstream_seqno);
         let mut changed = false;
         if let Some(send_next) = self.downstream_seqno {
             trace!("Log: {:?}", self.log);
             if send_next < self.seqno() {
-                info!("Need to push {:?}-{:?}", send_next, self.seqno());
+                debug!("Need to push {:?}-{:?}", send_next, self.seqno());
+                let epoch = self.current_epoch;
                 for i in send_next..self.seqno() {
                     debug!("Log item: {:?}: {:?}", i, self.log.get(&i));
                     let op = self.log[&i].clone();
                     self.downstream_seqno = Some(i+1);
-                    debug!("Pushed {:?}/{:?}; ds/seqno: {:?}", i, op, self.downstream_seqno);
-                    self.downstream().expect("Downstream").send_to_downstream(i, op);
+                    debug!("Pushed epoch:{:?}; seq:{:?}/{:?}; ds/seqno: {:?}", epoch, i, op, self.downstream_seqno);
+                    self.downstream().expect("Downstream").send_to_downstream(epoch, i, op);
                 }
                 changed = true
             }
@@ -217,13 +238,16 @@ impl ChainRepl {
             if let Some(ds) = view.should_connect_downstream() {
                 info!("Push to downstream on {:?}", ds);
                 if let Some(peer_addr) = ds.peer_addr {
-                    self.set_downstream(event_loop, peer_addr.parse().expect("peer address"));
+                    self.set_downstream(event_loop, Some(peer_addr.parse().expect("peer address")));
                 } else {
                     panic!("Cannot reconnect to downstream with no peer listener: {:?}", ds);
                 }
             } else {
                 info!("Tail node!");
+                self.set_downstream(event_loop, None);
             }
+
+            self.current_epoch = view.epoch;
 
             changed = true;
         }
@@ -272,6 +296,10 @@ impl ChainRepl {
                 token, self.pending_operations.values().filter(|tok| **tok == token).count());
             let it = self.connections.remove(token);
             debug!("Removing; {:?}; {:?}", token, it);
+            if Some(token) == self.downstream_slot {
+                self.downstream_slot = None;
+                self.downstream_seqno = None
+            }
         }
     }
 

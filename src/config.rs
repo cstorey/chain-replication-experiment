@@ -17,7 +17,7 @@ pub struct ConfigClient<T> {
 pub struct ConfigurationView<T> {
     this_node: String,
     members: BTreeMap<String, T>,
-    sequencer: u64,
+    pub epoch: u64,
 }
 
 struct InnerClient<T> {
@@ -79,7 +79,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
         }
 
         let seq : ConfigSequencer = Default::default();
-        match self.etcd.create(SEQUENCER, &json::encode(&seq).expect("encode sequencer"), None) {
+        match self.etcd.create(SEQUENCER, &json::encode(&seq).expect("encode epoch"), None) {
             Ok(res) => info!("Created seq: {}: {:?}: ", SEQUENCER, res),
             Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_EXISTS => info!("Sequencer exists: {:?}: ", SEQUENCER),
             Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
@@ -140,7 +140,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
             let members = self.list_members();
             assert!(members.contains_key(lease_key), "I am ostensibly alive");
 
-            let seq = self.verify_sequencer(&members);
+            let seq = self.verify_epoch(&members);
 
             trace!("Members: {:?}; seq: {:?}", members, seq);
             if curr_members != members {
@@ -149,14 +149,14 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
                 (self.callback)(ConfigurationView {
                     this_node: lease_key.clone(),
                     members: curr_members.clone(),
-                    sequencer: seq.epoch,
+                    epoch: seq.epoch,
                 })
             }
         }
 
     }
 
-    fn verify_sequencer(&self, members: &BTreeMap<String, T>) -> ConfigSequencer {
+    fn verify_epoch(&self, members: &BTreeMap<String, T>) -> ConfigSequencer {
         loop {
             let (seq_index, mut seq) : (u64, ConfigSequencer) = match self.etcd.get(SEQUENCER, false, false, false) {
                 Ok(etcd::KeySpaceInfo {
@@ -166,7 +166,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
                         ..
                     } ,
                     ..
-                }) => (modified_index, json::decode(&value).expect("decode sequencer")),
+                }) => (modified_index, json::decode(&value).expect("decode epoch")),
                 Ok(e) => panic!("Unexpected response reading {}: {:?}", SEQUENCER, e),
                 Err(e) => panic!("Unexpected error reading {}: {:?}", SEQUENCER, e),
             };
@@ -177,16 +177,16 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
 
                 seq.keys = current_keys;
                 seq.epoch += 1;
-                match self.etcd.compare_and_swap(SEQUENCER, &json::encode(&seq).expect("encode sequencer"), None, None, Some(seq_index)) {
+                match self.etcd.compare_and_swap(SEQUENCER, &json::encode(&seq).expect("encode epoch"), None, None, Some(seq_index)) {
                         Ok(res) => {
-                            debug!("verify_sequencer: Updated seq: {}: {:?}: ", SEQUENCER, seq);
+                            debug!("verify_epoch: Updated seq: {}: {:?}: ", SEQUENCER, seq);
                             return seq;
                         },
-                        Err(etcd::Error::Etcd (ref e)) if e.error_code == COMPARE_FAILED => debug!("verify_sequencer: Raced out; retry"),
+                        Err(etcd::Error::Etcd (ref e)) if e.error_code == COMPARE_FAILED => debug!("verify_epoch: Raced out; retry"),
                         Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
                 }
             } else {
-                debug!("verify_sequencer: Fresh! {:?}", seq);
+                debug!("verify_epoch: Fresh! {:?}", seq);
                 return seq;
             }
         }

@@ -4,7 +4,7 @@ use mio::{TryRead,TryWrite};
 use rustc_serialize::json;
 use std::fmt;
 
-use super::{ChainRepl, ChainReplMsg, OpResp, Operation};
+use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg};
 
 trait Codec {
     fn encode_response(&self, s: OpResp) -> Vec<u8>;
@@ -178,8 +178,8 @@ impl Codec for JsonPeer {
     }
 
     fn parse_operation(&self, token: mio::Token, slice: &[u8]) -> ChainReplMsg {
-        let (seqno, op) = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
-        ChainReplMsg::Operation { source: token, seqno: Some(seqno), op: op }
+        let (epoch, seqno, op) : PeerMsg = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
+        ChainReplMsg::Operation { source: token, epoch: Some(epoch), seqno: Some(seqno), op: op }
     }
 }
 
@@ -204,7 +204,7 @@ impl Codec for PlainClient {
         } else {
             Operation::Set(String::from_utf8_lossy(slice).to_string())
         };
-        ChainReplMsg::Operation { source: token, seqno: None, op: op }
+        ChainReplMsg::Operation { source: token, epoch: None, seqno: None, op: op }
     }
 }
 

@@ -5,18 +5,18 @@ use rustc_serialize::json;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 
-use super::{ChainRepl, ChainReplMsg,OpResp, Operation};
+use super::{ChainRepl, ChainReplMsg,OpResp, Operation, PeerMsg};
 
 
 #[derive(Debug)]
 pub struct Downstream {
     token: mio::Token,
-    peer: SocketAddr,
+    peer: Option<SocketAddr>,
     // Rather feels like we need to factor this into per-iteration state.
     // ... LAYERS!
     socket: Option<TcpStream>,
     sock_status: mio::EventSet,
-    pending: VecDeque<(u64, Operation)>,
+    pending: VecDeque<PeerMsg>,
     write_buf: Vec<u8>,
     read_buf: Vec<u8>,
     should_disconnect: bool,
@@ -28,7 +28,7 @@ impl Downstream {
         debug!("Connecting to {:?}", target);
         let mut conn = Downstream {
             token: token,
-            peer: target,
+            peer: Some(target),
             socket: None,
             sock_status: mio::EventSet::none(),
             pending: VecDeque::new(),
@@ -43,15 +43,20 @@ impl Downstream {
 
     pub fn reconnect_to(&mut self, target: SocketAddr) {
         info!("New downstream: {:?}", target);
-        self.peer = target;
+        self.peer = Some(target);
         self.should_disconnect = true;
     }
 
-    pub fn send_to_downstream(&mut self, seqno: u64, op: Operation) {
-        // self.write_buf.extend(s.as_bytes());
-        // self.write_buf.push('\n' as u8);
-        self.pending.push_back((seqno, op));
-        debug!("Sending to downstream: {:?}", self.peer);
+    pub fn disconnect(&mut self) {
+        info!("Disconnect");
+        self.peer = None;
+        self.should_disconnect = true;
+    }
+
+    pub fn send_to_downstream(&mut self, epoch: u64, seqno: u64, op: Operation) {
+        let msg = (epoch, seqno, op);
+        debug!("Sending to downstream: {:?}: {:?}", self.peer, msg);
+        self.pending.push_back(msg);
     }
 
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
@@ -122,10 +127,14 @@ impl Downstream {
 
     fn attempt_connect(&mut self) {
         assert!(self.socket.is_none());
-        let conn = TcpStream::connect(&self.peer).expect("Connect downstream");
-        trace!("New downstream for {:?}! {:?}", self.token, self.peer);
-        self.socket = Some(conn);
-        self.sock_status.remove(mio::EventSet::all());
+        if let &mut Downstream { peer: Some(ref peer), ref token, ref mut socket, ref mut sock_status, .. } = self {
+            let conn = TcpStream::connect(peer).expect("Connect downstream");
+            trace!("New downstream for {:?}! {:?}", self.token, self.peer);
+            *socket = Some(conn);
+            sock_status.remove(mio::EventSet::all());
+        } else {
+            warn!("Attempting to connect Downstream with no target set");
+        }
     }
 
 
@@ -152,9 +161,10 @@ impl Downstream {
     }
 
     fn prep_write_buffer(&mut self) {
-        if let Some((seqno, it)) = self.pending.pop_front() {
+        if let Some((epoch, seqno, it)) = self.pending.pop_front() {
             debug!("Preparing to send downstream: {:?}/{:?}", seqno, it);
-            let out = json::encode(&(seqno, it)).expect("json encode");
+            let msg : PeerMsg = (epoch, seqno, it);
+            let out = json::encode(&msg).expect("json encode");
             self.write_buf.extend(out.as_bytes());
             self.write_buf.push('\n' as u8);
         }
@@ -203,7 +213,7 @@ impl Downstream {
     }
 
     pub fn is_closed(&self) -> bool {
-        false
+        self.peer.is_none()
     }
 
     fn reinitialize(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>) {

@@ -42,7 +42,9 @@ fn main() {
     if let Some(next_addr) = matches.value_of("next") {
         let next_addr = next_addr.parse::<std::net::SocketAddr>().expect("parse next address");
         info!("Forwarding to address {:?}", next_addr);
-        service.set_downstream(&mut event_loop, next_addr);
+        service.set_downstream(&mut event_loop, Some(next_addr));
+    } else {
+        service.set_downstream(&mut event_loop, None);
     }
 
     let conf = if let Some(etcd) = matches.value_of("etcd") {
