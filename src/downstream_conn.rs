@@ -19,7 +19,7 @@ pub struct Downstream {
     pending: VecDeque<(u64, Operation)>,
     write_buf: Vec<u8>,
     read_buf: Vec<u8>,
-    read_eof: bool,
+    should_disconnect: bool,
     timeout_triggered: bool,
 }
 
@@ -34,11 +34,17 @@ impl Downstream {
             pending: VecDeque::new(),
             write_buf: Vec::new(),
             read_buf: Vec::new(),
-            read_eof: false,
+            should_disconnect: false,
             timeout_triggered: false,
         };
         conn.attempt_connect();
         conn
+    }
+
+    pub fn reconnect_to(&mut self, target: SocketAddr) {
+        info!("New downstream: {:?}", target);
+        self.peer = target;
+        self.should_disconnect = true;
     }
 
     pub fn send_to_downstream(&mut self, seqno: u64, op: Operation) {
@@ -89,12 +95,12 @@ impl Downstream {
             self.sock_status.remove(mio::EventSet::writable());
         }
 
-        if self.sock_status.is_hup() || self.sock_status.is_error() || self.read_eof {
+        if self.sock_status.is_hup() || self.sock_status.is_error() || self.should_disconnect {
             if let Some(sock) = self.socket.take() {
                 trace!("Deregistering socket! {:?}", sock);
                 event_loop.deregister(&sock).expect("deregister downstream");
                 event_loop.timeout_ms(self.token, 1000).expect("reconnect timeout");
-                self.read_eof = false;
+                self.should_disconnect = false;
                 self.read_buf.clear();
                 self.write_buf.clear();
                 self.sock_status.remove(mio::EventSet::all());
@@ -129,7 +135,7 @@ impl Downstream {
             match sock.try_read_buf(&mut abuf) {
                 Ok(Some(0)) => {
                     trace!("{:?}: EOF!", token);
-                    self.read_eof = true
+                    self.should_disconnect = true
                 },
                 Ok(Some(n)) => {
                     trace!("{:?}: Read {}bytes", token, n);

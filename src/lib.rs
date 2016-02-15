@@ -53,6 +53,7 @@ enum ChainReplMsg {
 #[derive(Debug, Clone, PartialEq, Eq, Default, RustcEncodable, RustcDecodable)]
 pub struct NodeViewConfig {
     peer_addr: Option<String>,
+    client_addr: Option<String>,
 }
 
 #[derive(Debug)]
@@ -85,8 +86,9 @@ impl ChainRepl {
     pub fn listen(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, addr: SocketAddr, role: Role) {
         info!("Listen on {:?} for {:?}", addr, role);
         let l = Listener::new(addr, role.clone());
-        if role == Role::Upstream {
-            self.node_config.peer_addr = Some(format!("{}", l.listen_addr()));
+        match role {
+            Role::Upstream => self.node_config.peer_addr = Some(format!("{}", l.listen_addr())),
+            Role::Client => self.node_config.client_addr = Some(format!("{}", l.listen_addr())),
         }
         let token = self.connections.insert(EventHandler::Listener(l)).expect("insert listener");
         &self.connections[token].initialize(event_loop, token);
@@ -94,13 +96,13 @@ impl ChainRepl {
 
     pub fn set_downstream(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, target: SocketAddr) {
         if let Some(d) = self.downstream_slot {
-            panic!("Already have downstream: {:?}/{:?}", d, self.connections[d]);
+            self.downstream().expect("downstream").reconnect_to(target);
+        } else {
+            let token = self.connections.insert_with(|token| EventHandler::Downstream(Downstream::new(target, token)))
+                .expect("insert downstream");
+            &self.connections[token].initialize(event_loop, token);
+            self.downstream_slot = Some(token)
         }
-
-        let token = self.connections.insert_with(|token| EventHandler::Downstream(Downstream::new(target, token)))
-            .expect("insert downstream");
-        &self.connections[token].initialize(event_loop, token);
-        self.downstream_slot = Some(token)
     }
 
     fn seqno(&self) -> u64 {
@@ -178,7 +180,7 @@ impl ChainRepl {
         }
     }
 
-    fn process_rules(&mut self) -> bool {
+    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>) -> bool {
         info!("Repl: Ours: {:?}; downstream: {:?}", self.seqno(), self.downstream_seqno);
         let mut changed = false;
         if let Some(send_next) = self.downstream_seqno {
@@ -200,7 +202,7 @@ impl ChainRepl {
         // Head(nextNode)
         // Middle(nextNode)
         // Tail
-        if let Some(ref view) = self.new_view {
+        if let Some(view) = self.new_view.take() {
             info!("Reconfigure according to: {:?}", view);
             if view.should_listen_for_clients() {
                 info!("Listen for clients");
@@ -214,13 +216,17 @@ impl ChainRepl {
             }
             if let Some(ds) = view.should_connect_downstream() {
                 info!("Push to downstream on {:?}", ds);
+                if let Some(peer_addr) = ds.peer_addr {
+                    self.set_downstream(event_loop, peer_addr.parse().expect("peer address"));
+                } else {
+                    panic!("Cannot reconnect to downstream with no peer listener: {:?}", ds);
+                }
             } else {
                 info!("Tail node!");
             }
 
             changed = true;
         }
-        self.new_view = None;
 
         changed
     }
@@ -246,7 +252,7 @@ impl ChainRepl {
                 changed |= changedp;
             }
 
-            let changedp = self.process_rules();
+            let changedp = self.process_rules(event_loop);
             if changedp { trace!("Changed: {:?}", "Model"); }
             changed |= changedp;
 

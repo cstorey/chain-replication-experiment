@@ -15,3 +15,6 @@ appenders = ["stdout"]
 [[logger]]
 name = "chain_repl_test"
 level = "debug"
+[[logger]]
+name = "chain_repl_test::config"
+level = "info"

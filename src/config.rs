@@ -132,7 +132,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
 
         let mut curr_members = BTreeMap::new();
         loop {
-            debug!("Awaiting for {} from {:?}", MEMBERS, last_observed_index);
+            trace!("Awaiting for {} from {:?}", MEMBERS, last_observed_index);
             let res = self.etcd.watch(MEMBERS, last_observed_index, true).expect("watch");
             trace!("Watch: {:?}", res);
             last_observed_index = res.node.modified_index.map(|x| x+1);
