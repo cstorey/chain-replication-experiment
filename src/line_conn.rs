@@ -179,7 +179,7 @@ impl Codec for JsonPeer {
 
     fn parse_operation(&self, token: mio::Token, slice: &[u8]) -> ChainReplMsg {
         let (seqno, op) = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
-        ChainReplMsg::Operation(token, Some(seqno), op)
+        ChainReplMsg::Operation { source: token, seqno: Some(seqno), op: op }
     }
 }
 
@@ -204,7 +204,7 @@ impl Codec for PlainClient {
         } else {
             Operation::Set(String::from_utf8_lossy(slice).to_string())
         };
-        ChainReplMsg::Operation(token, None, op)
+        ChainReplMsg::Operation { source: token, seqno: None, op: op }
     }
 }
 

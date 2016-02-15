@@ -45,7 +45,7 @@ pub enum Role {
 
 #[derive(Debug)]
 enum ChainReplMsg {
-    Operation(mio::Token, Option<u64>, Operation),
+    Operation { source: mio::Token, seqno: Option<u64>, op: Operation },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
 }
@@ -116,19 +116,19 @@ impl ChainRepl {
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
-            ChainReplMsg::Operation(source, seqno, s) => {
+            ChainReplMsg::Operation { source, seqno, op } => {
                 let seqno = seqno.unwrap_or_else(|| self.next_seqno());
                 assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
-                let prev = self.log.insert(seqno, s.clone());
+                let prev = self.log.insert(seqno, op.clone());
                 assert!(prev.is_none());
-                debug!("Log entry {:?}: {:?}", seqno, s);
+                debug!("Log entry {:?}: {:?}", seqno, op);
 
                 if let Some(_) = self.downstream_slot {
                     self.pending_operations.insert(seqno, source);
                     // Replication mechanism should handle the push to downstream.
                 } else {
-                    info!("Terminus! {:?}/{:?}", seqno, s);
-                    let resp = match s {
+                    info!("Terminus! {:?}/{:?}", seqno, op);
+                    let resp = match op {
                         Operation::Set(s) => {
                             self.state = s;
                             OpResp::Ok(seqno, None)
