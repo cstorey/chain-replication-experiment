@@ -1,4 +1,4 @@
-a: $TRACE target/debug/chain-repl-test -l 127.0.0.1:7777 -n 127.0.0.1:7778
-b: $TRACE target/debug/chain-repl-test -p 127.0.0.1:7778 -n  127.0.0.1:7779
-c: $TRACE target/debug/chain-repl-test -p 127.0.0.1:7779
+a: $TRACE target/debug/chain-repl-test -e http://127.0.0.1:2379/ 2>&1  -p 127.0.0.1:0 -l 127.0.0.1:0
+b: $TRACE target/debug/chain-repl-test -e http://127.0.0.1:2379/ 2>&1  -p 127.0.0.1:0 -l 127.0.0.1:0
+c: $TRACE target/debug/chain-repl-test -e http://127.0.0.1:2379/ 2>&1  -p 127.0.0.1:0 -l 127.0.0.1:0
 # tail: target/debug/chain-repl-test

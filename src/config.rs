@@ -17,6 +17,7 @@ pub struct ConfigClient<T> {
 pub struct ConfigurationView<T> {
     this_node: String,
     members: BTreeMap<String, T>,
+    sequencer: u64,
 }
 
 struct InnerClient<T> {
@@ -56,19 +57,35 @@ impl<T: 'static + Decodable + Encodable + fmt::Debug + Eq + Clone + Send + Sync>
     }
 }
 
-const DIR : &'static str = "/chain";
+const MEMBERS : &'static str = "/chain/members";
+const SEQUENCER : &'static str = "/chain/config_seq";
 const KEY_EXISTS : u64 = 105;
+const KEY_NOT_EXISTS : u64 = 100;
+const COMPARE_FAILED : u64 = 101;
+
+#[derive(Debug,PartialEq,Eq,Default,Clone, RustcEncodable, RustcDecodable)]
+struct ConfigSequencer {
+    keys: Vec<String>,
+    seqno: u64,
+}
 
 impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
 
     fn setup_lease(&mut self) -> u64 {
-        match self.etcd.create_dir(DIR, None) {
-            Ok(res) => info!("Created dir: {}: {:?}: ", DIR, res),
-            Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_EXISTS => info!("Dir exists: {:?}: ", DIR),
-            Err(e) => panic!("Unexpected error creating {}: {:?}", DIR, e),
+        match self.etcd.create_dir(MEMBERS, None) {
+            Ok(res) => info!("Created dir: {}: {:?}: ", MEMBERS, res),
+            Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_EXISTS => info!("Dir exists: {:?}: ", MEMBERS),
+            Err(e) => panic!("Unexpected error creating {}: {:?}", MEMBERS, e),
         }
 
-        let me = self.etcd.create_in_order(DIR, &self.data_json(), Some(self.lease_time.as_secs())).expect("Create unique node");
+        let seq : ConfigSequencer = Default::default();
+        match self.etcd.create(SEQUENCER, &json::encode(&seq).expect("encode sequencer"), None) {
+            Ok(res) => info!("Created seq: {}: {:?}: ", SEQUENCER, res),
+            Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_EXISTS => info!("Sequencer exists: {:?}: ", SEQUENCER),
+            Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
+        }
+
+        let me = self.etcd.create_in_order(MEMBERS, &self.data_json(), Some(self.lease_time.as_secs())).expect("Create unique node");
         info!("My node! {:?}", me);
         self.lease_key = Some(me.node.key.expect("Key name"));
         me.node.modified_index.expect("Lease node version")
@@ -95,7 +112,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn list_members(&self) -> BTreeMap<String, T> {
-        let current_listing = self.etcd.get(DIR, true, true, true).expect("List members");
+        let current_listing = self.etcd.get(MEMBERS, true, true, true).expect("List members");
         trace!("Listing: {:?}", current_listing);
         current_listing.node.nodes.expect("Node listing").into_iter()
                 .filter_map(|n|
@@ -108,29 +125,71 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
         info!("Starting etcd watcher");
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
-        let current_listing = self.etcd.get(DIR, true, true, true).expect("List members");
+        let current_listing = self.etcd.get(MEMBERS, true, true, true).expect("List members");
         debug!("Listing: {:?}", current_listing);
         let mut last_observed_index = current_listing.node.nodes.unwrap_or_else(|| Vec::new()).into_iter()
             .filter_map(|x| x.modified_index).max();
 
         let mut curr_members = BTreeMap::new();
         loop {
-            debug!("Awaiting for {} from {:?}", DIR, last_observed_index);
-            let res = self.etcd.watch(DIR, last_observed_index, true).expect("watch");
+            debug!("Awaiting for {} from {:?}", MEMBERS, last_observed_index);
+            let res = self.etcd.watch(MEMBERS, last_observed_index, true).expect("watch");
             trace!("Watch: {:?}", res);
             last_observed_index = res.node.modified_index.map(|x| x+1);
 
             let members = self.list_members();
             assert!(members.contains_key(lease_key), "I am ostensibly alive");
 
-            trace!("Members: {:?}", members);
+            let seq = self.verify_sequencer(&members);
+
+            trace!("Members: {:?}; seq: {:?}", members, seq);
             if curr_members != members {
                 curr_members = members;
                 info!("Membership change! {:?}", curr_members);
-                (self.callback)(ConfigurationView { this_node: lease_key.clone(), members: curr_members.clone() })
+                (self.callback)(ConfigurationView {
+                    this_node: lease_key.clone(),
+                    members: curr_members.clone(),
+                    sequencer: seq.seqno,
+                })
             }
         }
 
+    }
+
+    fn verify_sequencer(&self, members: &BTreeMap<String, T>) -> ConfigSequencer {
+        loop {
+            let (seq_index, mut seq) : (u64, ConfigSequencer) = match self.etcd.get(SEQUENCER, false, false, false) {
+                Ok(etcd::KeySpaceInfo {
+                    node: etcd::keys::Node {
+                        modified_index: Some(modified_index),
+                        value: Some(value),
+                        ..
+                    } ,
+                    ..
+                }) => (modified_index, json::decode(&value).expect("decode sequencer")),
+                Ok(e) => panic!("Unexpected response reading {}: {:?}", SEQUENCER, e),
+                Err(e) => panic!("Unexpected error reading {}: {:?}", SEQUENCER, e),
+            };
+            trace!("Sequencer: {}/{:?}", seq_index, seq);
+            let current_keys = members.keys().cloned().collect::<Vec<_>>();
+            if current_keys != seq.keys {
+                debug!("Stale! {:?}", seq);
+
+                seq.keys = current_keys;
+                seq.seqno += 1;
+                match self.etcd.compare_and_swap(SEQUENCER, &json::encode(&seq).expect("encode sequencer"), None, None, Some(seq_index)) {
+                        Ok(res) => {
+                            debug!("verify_sequencer: Updated seq: {}: {:?}: ", SEQUENCER, seq);
+                            return seq;
+                        },
+                        Err(etcd::Error::Etcd (ref e)) if e.error_code == COMPARE_FAILED => debug!("verify_sequencer: Raced out; retry"),
+                        Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
+                }
+            } else {
+                debug!("verify_sequencer: Fresh! {:?}", seq);
+                return seq;
+            }
+        }
     }
 }
 
