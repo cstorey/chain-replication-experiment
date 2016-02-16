@@ -1,5 +1,6 @@
 use etcd;
 use std::thread;
+use std::sync::atomic::{Ordering,AtomicUsize};
 use std::fmt;
 use std::time::Duration;
 use std::sync::Arc;
@@ -26,6 +27,33 @@ struct InnerClient<T> {
     lease_time: Duration,
     callback: Box<Fn(ConfigurationView<T>) + Send + Sync + 'static>,
     lease_key: Option<String>,
+    watch_count: AtomicUsize,
+}
+
+struct DeathWatch<'a>(&'a AtomicUsize);
+
+impl<'a> DeathWatch<'a> {
+    fn new(ctr: &'a AtomicUsize) -> DeathWatch<'a> {
+        let cnt = ctr.fetch_add(1, Ordering::Relaxed);
+        let w = DeathWatch(ctr);
+        warn!("Deathwatch::new: New death watcher {:?}", w);
+        w
+    }
+    fn count(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+impl<'a> Drop for DeathWatch<'a> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+        warn!("Exiting: {:?} left", self);
+    }
+}
+
+impl<'a> fmt::Debug for DeathWatch<'a> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("DeathWatch").field("count", &self.count()).finish()
+    }
 }
 
 impl<T: 'static + Decodable + Encodable + fmt::Debug + Eq + Clone + Send + Sync> ConfigClient<T> {
@@ -38,6 +66,7 @@ impl<T: 'static + Decodable + Encodable + fmt::Debug + Eq + Clone + Send + Sync>
             lease_time: lease_time,
             callback: Box::new(callback),
             lease_key: None,
+            watch_count: AtomicUsize::new(0),
         };
         let lease = client.setup_lease();
 
@@ -55,6 +84,10 @@ impl<T: 'static + Decodable + Encodable + fmt::Debug + Eq + Clone + Send + Sync>
         };
         Ok(ConfigClient { client: client, lease_mgr: lease_mgr, watcher: watcher })
     }
+
+    pub fn is_running(&self) -> bool {
+        self.client.is_running()
+    }
 }
 
 const MEMBERS : &'static str = "/chain/members";
@@ -70,7 +103,6 @@ struct ConfigSequencer {
 }
 
 impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
-
     fn setup_lease(&mut self) -> u64 {
         match self.etcd.create_dir(MEMBERS, None) {
             Ok(res) => info!("Created dir: {}: {:?}: ", MEMBERS, res),
@@ -96,6 +128,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn run_lease(&self, mut lease_index: u64) {
+        let watch = self.start_watch();
         let pausetime = self.lease_time / 2;
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
@@ -122,6 +155,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn run_watch(&self) {
+        let watch = self.start_watch();
         info!("Starting etcd watcher");
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
@@ -190,6 +224,15 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
                 return seq;
             }
         }
+    }
+
+    fn start_watch<'a>(&'a self) -> DeathWatch<'a> {
+        warn!("start_watch: New death watcher {:p}: prev: {:?}", &self.watch_count, self.watch_count.load(Ordering::Relaxed));
+        DeathWatch::new(&self.watch_count)
+    }
+
+    fn is_running(&self) -> bool {
+        self.watch_count.load(Ordering::Relaxed) > 0
     }
 }
 
