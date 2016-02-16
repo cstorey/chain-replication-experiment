@@ -26,6 +26,8 @@ use event_handler::EventHandler;
 
 pub use config::*;
 
+const REPLICATION_CREDIT : u64 = 10;
+
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
 enum Operation {
     Set(String),
@@ -218,15 +220,13 @@ impl ChainRepl {
     }
 
     fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>) -> bool {
-        let window_size = 10;
         debug!("pre  Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
             self.seqno(), self.last_sent_downstream, self.last_acked_downstream);
         let mut changed = false;
         if let Some(send_next) = self.last_sent_downstream {
             if send_next < self.seqno() {
-                let max_to_push_now = cmp::min(self.last_acked_downstream.unwrap_or(0) + window_size, self.seqno());
-                debug!("Window push {:?} - {:?}", send_next, max_to_push_now);
-                debug!("Need to push {:?}", (send_next..max_to_push_now).collect::<Vec<_>>()); // send_next, self.seqno());
+                let max_to_push_now = cmp::min(self.last_acked_downstream.unwrap_or(0) + REPLICATION_CREDIT, self.seqno());
+                debug!("Window push {:?} - {:?}; waiting: {:?}", send_next, max_to_push_now, self.seqno() - max_to_push_now);
                 let epoch = self.current_epoch;
                 for i in send_next..max_to_push_now {
                     debug!("Log item: {:?}: {:?}", i, self.log.get(&i));

@@ -163,6 +163,7 @@ impl Downstream {
                 },
                 Err(e) => {
                     error!("got an error trying to read; err={:?}", e);
+                    self.should_disconnect = true
                 }
             }
         }
@@ -192,7 +193,7 @@ impl Downstream {
                 },
                 Err(e) => {
                     error!("got an error trying to write; err={:?}", e);
-                    // self.failed = true;
+                    self.should_disconnect = true
                 }
             }
         }
