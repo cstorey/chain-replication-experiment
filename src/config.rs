@@ -136,9 +136,17 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
 
             thread::sleep(pausetime);
             trace!("touch node: {:?}={:?}", lease_key, self.data);
-            let res = self.etcd.compare_and_swap(&lease_key, &self.data_json(),
-                    Some(self.lease_time.as_secs()), None, Some(lease_index))
-                .expect("Update lease");
+            let res = match self.etcd.compare_and_swap(&lease_key, &self.data_json(),
+                Some(self.lease_time.as_secs()), None, Some(lease_index)) {
+                    Ok(res) => {
+                        trace!("refreshed lease:: {}: {:?}: ", lease_key, res.node.modified_index);
+                        res
+                    },
+                    Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_NOT_EXISTS => {
+                        panic!("Could not update lease: expired");
+                    },
+                    Err(e) => panic!("Unexpected error updating lease {}: {:?}", lease_key, e),
+            };
             trace!("Update: {:?}", res);
             lease_index = res.node.modified_index.expect("lease version");
         }
@@ -147,7 +155,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
     fn list_members(&self) -> BTreeMap<String, T> {
         let current_listing = self.etcd.get(MEMBERS, true, true, true).expect("List members");
         trace!("Listing: {:?}", current_listing);
-        current_listing.node.nodes.expect("Node listing").into_iter()
+        current_listing.node.nodes.unwrap_or_else(|| Vec::new()).into_iter()
                 .filter_map(|n|
                     if let (Some(k), Some(v)) = (n.key, n.value) {
                         Some((k, json::decode(&v).expect("decode json"))) } else { None })
@@ -172,9 +180,9 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
             last_observed_index = res.node.modified_index.map(|x| x+1);
 
             let members = self.list_members();
-            assert!(members.contains_key(lease_key), "I am ostensibly alive");
-
             let seq = self.verify_epoch(&members);
+
+            let in_current_configuration = members.contains_key(lease_key);
 
             trace!("Members: {:?}; seq: {:?}", members, seq);
             if curr_members != members {
@@ -185,6 +193,10 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
                     members: curr_members.clone(),
                     epoch: seq.epoch,
                 })
+            }
+
+            if !in_current_configuration {
+                warn!("I seem to have died: {:?}", lease_key);
             }
         }
 
@@ -250,5 +262,9 @@ impl<T: Clone> ConfigurationView<T> {
     pub fn should_connect_downstream(&self) -> Option<T> {
         let next = self.members.iter().filter_map(|(k, v)| if *k > self.this_node { Some((k, v)) } else { None }).next();
         next.map(|(_, val)| val.clone())
+    }
+
+    pub fn in_configuration(&self) -> bool {
+        self.members.keys().any(|k| k == &self.this_node)
     }
 }

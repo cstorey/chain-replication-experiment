@@ -247,6 +247,11 @@ impl ChainRepl {
         // Tail
         if let Some(view) = self.new_view.take() {
             info!("Reconfigure according to: {:?}", view);
+            if !view.in_configuration() {
+                warn!("I am not in this configuration; shutting down: {:?}", view);
+                event_loop.shutdown();
+            }
+
             let listen_for_clients = view.should_listen_for_clients();
             info!("Listen for clients: {:?}", listen_for_clients);
             for p in self.listeners(Role::Client) {
