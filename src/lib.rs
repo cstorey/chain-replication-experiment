@@ -12,6 +12,7 @@ use mio::EventLoop;
 use mio::util::Slab;
 use std::collections::{VecDeque,BTreeMap};
 use std::net::SocketAddr;
+use std::cmp;
 
 mod line_conn;
 mod downstream_conn;
@@ -33,9 +34,9 @@ enum Operation {
 
 #[derive(Debug, RustcEncodable, RustcDecodable)]
 enum OpResp {
-    Ok(u64, Option<String>),
-    HelloIHave(u64),
-    Err(u64, String),
+    Ok(u64, u64, Option<String>),
+    HelloIWant(u64),
+    Err(u64, u64, String),
 }
 
 
@@ -65,7 +66,8 @@ pub struct ChainRepl {
     connections: Slab<EventHandler>,
     downstream_slot: Option<mio::Token>,
     // "Model" fields
-    downstream_seqno: Option<u64>,
+    last_sent_downstream: Option<u64>,
+    last_acked_downstream: Option<u64>,
     pending_operations: BTreeMap<u64, mio::Token>,
     log: BTreeMap<u64, Operation>,
     state: String,
@@ -79,7 +81,8 @@ impl ChainRepl {
         ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
-            downstream_seqno: None,
+            last_sent_downstream: None,
+            last_acked_downstream: None,
             log: BTreeMap::new(),
             pending_operations: BTreeMap::new(),
             state: String::new(),
@@ -104,7 +107,7 @@ impl ChainRepl {
         match (self.downstream_slot, target) {
             (Some(_), Some(target)) => self.downstream().expect("downstream").reconnect_to(target),
             (None, Some(target)) => {
-                let token = self.connections.insert_with(|token| EventHandler::Downstream(Downstream::new(target, token)))
+                let token = self.connections.insert_with(|token| EventHandler::Downstream(Downstream::new(Some(target), token)))
                     .expect("insert downstream");
                 &self.connections[token].initialize(event_loop, token);
                 self.downstream_slot = Some(token)
@@ -131,17 +134,22 @@ impl ChainRepl {
 
                 let epoch = epoch.unwrap_or_else(|| self.current_epoch);
 
-                if !(seqno == 0 || self.log.get(&(seqno-1)).is_some()) {
-                    panic!("Hole in history: saw {}/{}; have: {:?}", epoch, seqno, self.log.keys().collect::<Vec<_>>());
-                }
-
-                if epoch != self.current_epoch {
+               if epoch != self.current_epoch {
                     warn!("Operation epoch ({}) differers from our last observed configuration: ({})",
                         epoch, self.current_epoch);
-                    let resp = OpResp::Err(seqno, format!("BadEpoch: {}; last seen config: {}", epoch, self.current_epoch));
+                    let resp = OpResp::Err(epoch, seqno, format!("BadEpoch: {}; last seen config: {}", epoch, self.current_epoch));
                     self.connections[source].response(resp);
                     return;
                 }
+
+                if !(seqno == 0 || self.log.get(&(seqno-1)).is_some()) {
+                    warn!("Hole in history: saw {}/{}; have: {:?}", epoch, seqno, self.log.keys().collect::<Vec<_>>());
+                    let resp = OpResp::Err(epoch, seqno, format!("Bad sequence number; previous: {:?}, saw: {:?}",
+                        self.log.keys().rev().next(), seqno));
+                    self.connections[source].response(resp);
+                    return;
+                }
+
 
                 let prev = self.log.insert(seqno, op.clone());
                 debug!("Log entry {:?}: {:?}", seqno, op);
@@ -157,31 +165,32 @@ impl ChainRepl {
                     let resp = match op {
                         Operation::Set(s) => {
                             self.state = s;
-                            OpResp::Ok(seqno, None)
+                            OpResp::Ok(epoch, seqno, None)
                         },
-                        Operation::Get => OpResp::Ok(seqno, Some(self.state.clone()))
+                        Operation::Get => OpResp::Ok(epoch, seqno, Some(self.state.clone()))
                     };
                     self.connections[source].response(resp)
                 }
             },
 
             ChainReplMsg::DownstreamResponse(reply) => {
-                info!("Downstream response: {:?}", reply);
+                debug!("Downstream response: {:?}", reply);
                 match reply {
-                    OpResp::Ok(seqno, _) | OpResp::Err(seqno, _) => {
+                    OpResp::Ok(epoch, seqno, _) | OpResp::Err(epoch, seqno, _) => {
                         if let Some(token) = self.pending_operations.remove(&seqno) {
                             info!("Found in-flight op {:?} for client token {:?}", seqno, token);
                             if let Some(ref mut c)  = self.connections.get_mut(token) {
                                 c.response(reply)
                             }
+                            self.last_acked_downstream = Some(seqno)
                         } else {
                             warn!("Unexpected response for seqno: {:?}", seqno);
                         }
                     },
-                    OpResp::HelloIHave(downstream_seqno) => {
-                        info!("Downstream has {:?}", downstream_seqno);
-                        assert!(downstream_seqno <= self.seqno());
-                        self.downstream_seqno = Some(downstream_seqno);
+                    OpResp::HelloIWant(last_sent_downstream) => {
+                        info!("Downstream has {:?}", last_sent_downstream);
+                        assert!(last_sent_downstream <= self.seqno());
+                        self.last_sent_downstream = Some(last_sent_downstream);
                     },
                 };
             },
@@ -189,13 +198,15 @@ impl ChainRepl {
             ChainReplMsg::NewClientConn(role, socket) => {
                 let peer = socket.peer_addr().expect("peer address");
                 let seqno = self.seqno();
+                assert!(self.log.get(&seqno).is_none());
                 let token = self.connections
                     .insert_with(|token| match role {
                             Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
                             Role::Upstream => {
                                 let mut conn = LineConn::upstream(socket, token);
-                                info!("Inform upstream about our current version, {:?}!", seqno);
-                                conn.response(OpResp::HelloIHave(seqno));
+                                let msg = OpResp::HelloIWant(seqno);
+                                info!("Inform upstream about our current version, {:?}!", msg);
+                                conn.response(msg);
                                 EventHandler::Upstream(conn)
                             },
                     })
@@ -207,22 +218,27 @@ impl ChainRepl {
     }
 
     fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>) -> bool {
-        trace!("Repl: Ours: {:?}; downstream: {:?}", self.seqno(), self.downstream_seqno);
+        let window_size = 10;
+        debug!("pre  Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
+            self.seqno(), self.last_sent_downstream, self.last_acked_downstream);
         let mut changed = false;
-        if let Some(send_next) = self.downstream_seqno {
-            trace!("Log: {:?}", self.log);
+        if let Some(send_next) = self.last_sent_downstream {
             if send_next < self.seqno() {
-                debug!("Need to push {:?}-{:?}", send_next, self.seqno());
+                let max_to_push_now = cmp::min(self.last_acked_downstream.unwrap_or(0) + window_size, self.seqno());
+                debug!("Window push {:?} - {:?}", send_next, max_to_push_now);
+                debug!("Need to push {:?}", (send_next..max_to_push_now).collect::<Vec<_>>()); // send_next, self.seqno());
                 let epoch = self.current_epoch;
-                for i in send_next..self.seqno() {
+                for i in send_next..max_to_push_now {
                     debug!("Log item: {:?}: {:?}", i, self.log.get(&i));
                     let op = self.log[&i].clone();
-                    self.downstream_seqno = Some(i+1);
-                    debug!("Pushed epoch:{:?}; seq:{:?}/{:?}; ds/seqno: {:?}", epoch, i, op, self.downstream_seqno);
+                    debug!("Queueing epoch:{:?}; seq:{:?}/{:?}; ds/seqno: {:?}", epoch, i, op, self.last_sent_downstream);
                     self.downstream().expect("Downstream").send_to_downstream(epoch, i, op);
+                    self.last_sent_downstream = Some(i+1);
+                    changed = true
                 }
-                changed = true
             }
+            debug!("post Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
+                self.seqno(), self.last_sent_downstream, self.last_acked_downstream);
         }
 
         // Cases:
@@ -279,27 +295,27 @@ impl ChainRepl {
         let mut parent_actions = VecDeque::new();
         let mut changed = true;
         let mut iterations = 0;
-        trace!("Converge begin");
+        debug!("Converge begin");
         while changed {
             trace!("Iter: {:?}", iterations);
             changed = false;
             for conn in self.connections.iter_mut() {
                 let changedp = conn.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
-                if changedp { trace!("Changed: {:?}", conn); };
+                if changedp { debug!("Changed: {:?}", conn); };
                 changed |= changedp;
             }
 
             let changedp = self.process_rules(event_loop);
-            if changedp { trace!("Changed: {:?}", "Model"); }
+            if changedp { debug!("Changed: {:?}", "Model"); }
             changed |= changedp;
 
             for action in parent_actions.drain(..) {
-                trace!("Action: {:?}", action);
+                debug!("Action: {:?}", action);
                 self.process_action(action, event_loop);
             }
             iterations += 1;
         }
-        trace!("Converged after {:?} iterations", iterations);
+        debug!("Converged after {:?} iterations", iterations);
     }
 
     fn io_ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
@@ -311,7 +327,7 @@ impl ChainRepl {
             debug!("Removing; {:?}; {:?}", token, it);
             if Some(token) == self.downstream_slot {
                 self.downstream_slot = None;
-                self.downstream_seqno = None
+                self.last_sent_downstream = None
             }
         }
     }
@@ -319,7 +335,7 @@ impl ChainRepl {
     fn handle_view_changed(&mut self, view: ConfigurationView<NodeViewConfig>) {
         self.new_view = Some(view)
     }
-    
+
     pub fn get_notifier(&self, event_loop: &mut mio::EventLoop<Self>) -> Notifier {
         Notifier(event_loop.channel())
     }

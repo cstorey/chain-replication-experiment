@@ -105,7 +105,7 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
         let mut abuf = Vec::new();
         match self.socket.try_read_buf(&mut abuf) {
             Ok(Some(0)) => {
-                trace!("{:?}: EOF!", self.socket.peer_addr());
+                debug!("{:?}: EOF!", self.socket.peer_addr());
                 self.read_eof = true
             },
             Ok(Some(n)) => {

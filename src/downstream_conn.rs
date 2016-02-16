@@ -24,11 +24,11 @@ pub struct Downstream {
 }
 
 impl Downstream {
-    pub fn new(target: SocketAddr, token: mio::Token) -> Self {
+    pub fn new(target: Option<SocketAddr>, token: mio::Token) -> Self {
         debug!("Connecting to {:?}", target);
         let mut conn = Downstream {
             token: token,
-            peer: Some(target),
+            peer: target,
             socket: None,
             sock_status: mio::EventSet::none(),
             pending: VecDeque::new(),
@@ -42,9 +42,13 @@ impl Downstream {
     }
 
     pub fn reconnect_to(&mut self, target: SocketAddr) {
-        info!("New downstream: {:?}", target);
-        self.peer = Some(target);
-        self.should_disconnect = true;
+        if self.peer != Some(target) {
+            info!("New downstream: {:?}", target);
+            self.peer = Some(target);
+            self.should_disconnect = true;
+        } else {
+            debug!("No change of downstream: {:?}", target);
+        }
     }
 
     pub fn disconnect(&mut self) {
@@ -55,12 +59,12 @@ impl Downstream {
 
     pub fn send_to_downstream(&mut self, epoch: u64, seqno: u64, op: Operation) {
         let msg = (epoch, seqno, op);
-        debug!("Sending to downstream: {:?}: {:?}", self.peer, msg);
+        debug!("Queuing for downstream (qlen: {}): {:?}: {:?}", self.pending.len()+1, self.peer, msg);
         self.pending.push_back(msg);
     }
 
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
-        debug!("Register Downstream conn to {:?} as {:?}", self.peer, token);
+        debug!("Initialize Downstream conn to {:?} as {:?}", self.peer, token);
         if let Some(ref sock) = self.socket {
             event_loop.register_opt(
                     sock,
@@ -102,13 +106,10 @@ impl Downstream {
 
         if self.sock_status.is_hup() || self.sock_status.is_error() || self.should_disconnect {
             if let Some(sock) = self.socket.take() {
-                trace!("Deregistering socket! {:?}", sock);
+                debug!("Disconnecting socket! {:?}", sock);
                 event_loop.deregister(&sock).expect("deregister downstream");
                 event_loop.timeout_ms(self.token, 1000).expect("reconnect timeout");
-                self.should_disconnect = false;
-                self.read_buf.clear();
-                self.write_buf.clear();
-                self.sock_status.remove(mio::EventSet::all());
+                self.reset();
             }
         }
 
@@ -125,11 +126,18 @@ impl Downstream {
         changed
     }
 
+    fn reset(&mut self) {
+        let peer = self.peer.clone();
+        let token = self.token.clone();
+        let _ = ::std::mem::replace(self, Self::new(peer, token));
+    }
+
     fn attempt_connect(&mut self) {
         assert!(self.socket.is_none());
+        debug!("Connecting: {:?}", self);
         if let &mut Downstream { peer: Some(ref peer), ref token, ref mut socket, ref mut sock_status, .. } = self {
             let conn = TcpStream::connect(peer).expect("Connect downstream");
-            trace!("New downstream for {:?}! {:?}", self.token, self.peer);
+            debug!("New downstream for {:?}! {:?}", self.token, self.peer);
             *socket = Some(conn);
             sock_status.remove(mio::EventSet::all());
         } else {
@@ -162,7 +170,7 @@ impl Downstream {
 
     fn prep_write_buffer(&mut self) {
         if let Some((epoch, seqno, it)) = self.pending.pop_front() {
-            debug!("Preparing to send downstream: {:?}/{:?}", seqno, it);
+            debug!("Preparing to send downstream (qlen {}): {:?}/{:?}", self.pending.len(), seqno, it);
             let msg : PeerMsg = (epoch, seqno, it);
             let out = json::encode(&msg).expect("json encode");
             self.write_buf.extend(out.as_bytes());
