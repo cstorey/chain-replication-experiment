@@ -4,7 +4,7 @@ use mio::{TryRead,TryWrite};
 use rustc_serialize::json;
 use std::fmt;
 
-use super::{ChainRepl, ChainReplMsg, OpResp, Operation};
+use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg};
 
 trait Codec {
     fn encode_response(&self, s: OpResp) -> Vec<u8>;
@@ -58,6 +58,7 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
 
     pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
         to_parent: &mut F) -> bool {
+
         if self.sock_status.is_readable() {
             self.read();
             self.sock_status.remove(mio::EventSet::readable());
@@ -104,7 +105,7 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
         let mut abuf = Vec::new();
         match self.socket.try_read_buf(&mut abuf) {
             Ok(Some(0)) => {
-                trace!("{:?}: EOF!", self.socket.peer_addr());
+                debug!("{:?}: EOF!", self.socket.peer_addr());
                 self.read_eof = true
             },
             Ok(Some(n)) => {
@@ -167,6 +168,7 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
         self.write_buf.extend(chunk);
         self.write_buf.push('\n' as u8)
     }
+
 }
 
 #[derive(Debug)]
@@ -178,8 +180,8 @@ impl Codec for JsonPeer {
     }
 
     fn parse_operation(&self, token: mio::Token, slice: &[u8]) -> ChainReplMsg {
-        let (seqno, op) = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
-        ChainReplMsg::Operation(token, Some(seqno), op)
+        let (epoch, seqno, op) : PeerMsg = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
+        ChainReplMsg::Operation { source: token, epoch: Some(epoch), seqno: Some(seqno), op: op }
     }
 }
 
@@ -204,7 +206,7 @@ impl Codec for PlainClient {
         } else {
             Operation::Set(String::from_utf8_lossy(slice).to_string())
         };
-        ChainReplMsg::Operation(token, None, op)
+        ChainReplMsg::Operation { source: token, epoch: None, seqno: None, op: op }
     }
 }
 

@@ -7,9 +7,10 @@ extern crate clap;
 extern crate chain_repl_test;
 
 use std::net::SocketAddr;
+use std::time::Duration;
 use clap::{Arg, App};
 
-use chain_repl_test::{ChainRepl,Role};
+use chain_repl_test::{ChainRepl,Role, ConfigClient};
 
 
 const LOG_FILE: &'static str = "log.toml";
@@ -22,6 +23,7 @@ fn main() {
         .arg(Arg::with_name("bind").short("l").takes_value(true))
         .arg(Arg::with_name("peer").short("p").takes_value(true))
         .arg(Arg::with_name("next").short("n").takes_value(true))
+        .arg(Arg::with_name("etcd").short("e").takes_value(true))
         .get_matches();
 
     let mut event_loop = mio::EventLoop::new().expect("Create event loop");
@@ -40,8 +42,21 @@ fn main() {
     if let Some(next_addr) = matches.value_of("next") {
         let next_addr = next_addr.parse::<std::net::SocketAddr>().expect("parse next address");
         info!("Forwarding to address {:?}", next_addr);
-        service.set_downstream(&mut event_loop, next_addr);
+        service.set_downstream(&mut event_loop, Some(next_addr));
+    } else {
+        service.set_downstream(&mut event_loop, None);
     }
+
+    let conf = if let Some(etcd) = matches.value_of("etcd") {
+        info!("Etcd at: {:?}", etcd);
+        let notifier = service.get_notifier(&mut event_loop);
+        let config = ConfigClient::new(etcd, service.node_config(), Duration::new(5, 0),
+            move |view| notifier.notify(view)).expect("Etcd");
+        Some(config)
+    } else {
+        info!("No etcd");
+        None
+    };
 
     info!("running chain-repl-test listener");
     event_loop.run(&mut service).expect("Run loop");
