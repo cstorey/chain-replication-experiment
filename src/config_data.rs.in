@@ -1,0 +1,5 @@
+#[derive(Debug,PartialEq,Eq,Default,Clone, Serialize, Deserialize)]
+struct ConfigSequencer {
+    keys: Vec<String>,
+    epoch: u64,
+}

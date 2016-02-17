@@ -1,0 +1,26 @@
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Operation {
+    Set(String),
+    Get
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum OpResp {
+    Ok(u64, u64, Option<String>),
+    HelloIWant(u64),
+    Err(u64, u64, String),
+}
+
+#[derive(Eq,PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub enum Role {
+    Client,
+    Upstream,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct NodeViewConfig {
+    pub peer_addr: Option<String>,
+    pub client_addr: Option<String>,
+}
+
+

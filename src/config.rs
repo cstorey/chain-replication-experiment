@@ -5,8 +5,11 @@ use std::fmt;
 use std::time::Duration;
 use std::sync::Arc;
 use std::collections::BTreeMap;
-use rustc_serialize::json;
-use rustc_serialize::{Decodable,Encodable};
+use serde_json as json;
+use serde::ser::Serialize;
+use serde::de::Deserialize;
+
+include!(concat!(env!("OUT_DIR"), "/config_data.rs"));
 
 pub struct ConfigClient<T> {
     client: Arc<InnerClient<T>>,
@@ -29,6 +32,7 @@ struct InnerClient<T> {
     lease_key: Option<String>,
     watch_count: AtomicUsize,
 }
+
 
 struct DeathWatch<'a>(&'a AtomicUsize);
 
@@ -56,7 +60,7 @@ impl<'a> fmt::Debug for DeathWatch<'a> {
     }
 }
 
-impl<T: 'static + Decodable + Encodable + fmt::Debug + Eq + Clone + Send + Sync> ConfigClient<T> {
+impl<T: 'static + Deserialize + Serialize + fmt::Debug + Eq + Clone + Send + Sync> ConfigClient<T> {
     pub fn new<F: Fn(ConfigurationView<T>) + Send + Sync + 'static>(addr: &str, data: T, lease_time: Duration, callback: F)
         -> Result<ConfigClient<T>, ()> {
         let etcd = etcd::Client::new(addr).expect("etcd client");
@@ -96,13 +100,7 @@ const KEY_EXISTS : u64 = 105;
 const KEY_NOT_EXISTS : u64 = 100;
 const COMPARE_FAILED : u64 = 101;
 
-#[derive(Debug,PartialEq,Eq,Default,Clone, RustcEncodable, RustcDecodable)]
-struct ConfigSequencer {
-    keys: Vec<String>,
-    epoch: u64,
-}
-
-impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
+impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
     fn setup_lease(&mut self) -> u64 {
         match self.etcd.create_dir(MEMBERS, None) {
             Ok(res) => info!("Created dir: {}: {:?}: ", MEMBERS, res),
@@ -111,7 +109,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
         }
 
         let seq : ConfigSequencer = Default::default();
-        match self.etcd.create(SEQUENCER, &json::encode(&seq).expect("encode epoch"), None) {
+        match self.etcd.create(SEQUENCER, &json::to_string(&seq).expect("encode epoch"), None) {
             Ok(res) => info!("Created seq: {}: {:?}: ", SEQUENCER, res),
             Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_EXISTS => info!("Sequencer exists: {:?}: ", SEQUENCER),
             Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
@@ -124,7 +122,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn data_json(&self) -> String {
-        json::encode(&self.data).expect("json encode")
+        json::to_string(&self.data).expect("json encode")
     }
 
     fn run_lease(&self, mut lease_index: u64) {
@@ -158,7 +156,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
         current_listing.node.nodes.unwrap_or_else(|| Vec::new()).into_iter()
                 .filter_map(|n|
                     if let (Some(k), Some(v)) = (n.key, n.value) {
-                        Some((k, json::decode(&v).expect("decode json"))) } else { None })
+                        Some((k, json::from_str(&v).expect("decode json"))) } else { None })
                 .collect::<BTreeMap<String, T>>()
     }
 
@@ -212,7 +210,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
                         ..
                     } ,
                     ..
-                }) => (modified_index, json::decode(&value).expect("decode epoch")),
+                }) => (modified_index, json::from_str(&value).expect("decode epoch")),
                 Ok(e) => panic!("Unexpected response reading {}: {:?}", SEQUENCER, e),
                 Err(e) => panic!("Unexpected error reading {}: {:?}", SEQUENCER, e),
             };
@@ -223,7 +221,7 @@ impl<T: Decodable + Encodable + fmt::Debug + Eq + Clone> InnerClient<T> {
 
                 seq.keys = current_keys;
                 seq.epoch += 1;
-                match self.etcd.compare_and_swap(SEQUENCER, &json::encode(&seq).expect("encode epoch"), None, None, Some(seq_index)) {
+                match self.etcd.compare_and_swap(SEQUENCER, &json::to_string(&seq).expect("encode epoch"), None, None, Some(seq_index)) {
                         Ok(res) => {
                             debug!("verify_epoch: Updated seq: {}: {:?}: ", SEQUENCER, seq);
                             return seq;

@@ -2,8 +2,8 @@ extern crate mio;
 extern crate bytes;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate rustc_serialize;
+extern crate serde;
+extern crate serde_json;
 
 extern crate etcd;
 
@@ -19,48 +19,27 @@ mod downstream_conn;
 mod listener;
 mod config;
 mod event_handler;
+mod data;
+
 use line_conn::LineConn;
 use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
 
+pub use data::*;
 pub use config::*;
 
 const REPLICATION_CREDIT : u64 = 10;
 
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
-enum Operation {
-    Set(String),
-    Get
-}
-
-#[derive(Debug, RustcEncodable, RustcDecodable)]
-enum OpResp {
-    Ok(u64, u64, Option<String>),
-    HelloIWant(u64),
-    Err(u64, u64, String),
-}
-
 
 type PeerMsg = (u64, u64, Operation);
 
-#[derive(Eq,PartialEq, Clone, Debug, RustcEncodable, RustcDecodable)]
-pub enum Role {
-    Client,
-    Upstream,
-}
 
 #[derive(Debug)]
 enum ChainReplMsg {
     Operation { source: mio::Token, epoch: Option<u64>, seqno: Option<u64>, op: Operation },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, RustcEncodable, RustcDecodable)]
-pub struct NodeViewConfig {
-    peer_addr: Option<String>,
-    client_addr: Option<String>,
 }
 
 #[derive(Debug)]

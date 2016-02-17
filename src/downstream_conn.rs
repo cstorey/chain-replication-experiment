@@ -1,7 +1,8 @@
 use mio;
 use mio::tcp::*;
 use mio::{TryRead,TryWrite};
-use rustc_serialize::json;
+use serde_json as json;
+
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 
@@ -173,7 +174,7 @@ impl Downstream {
         if let Some((epoch, seqno, it)) = self.pending.pop_front() {
             debug!("Preparing to send downstream (qlen {}): {:?}/{:?}", self.pending.len(), seqno, it);
             let msg : PeerMsg = (epoch, seqno, it);
-            let out = json::encode(&msg).expect("json encode");
+            let out = json::to_string(&msg).expect("json encode");
             self.write_buf.extend(out.as_bytes());
             self.write_buf.push('\n' as u8);
         }
@@ -208,7 +209,7 @@ impl Downstream {
             let line = String::from_utf8_lossy(&self.read_buf[prev..n]);
             trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.token, prev, n, line);
 
-            let val : OpResp = json::decode(&line).expect("Decode json");
+            let val : OpResp = json::from_str(&line).expect("Decode json");
             debug!("From downstream: {:?}", val);
             to_parent(ChainReplMsg::DownstreamResponse(val));
             changed = true;

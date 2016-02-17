@@ -1,7 +1,7 @@
 use mio;
 use mio::tcp::*;
 use mio::{TryRead,TryWrite};
-use rustc_serialize::json;
+use serde_json as json;
 use std::fmt;
 
 use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg};
@@ -176,11 +176,11 @@ pub struct JsonPeer;
 
 impl Codec for JsonPeer {
     fn encode_response(&self, s: OpResp) -> Vec<u8> {
-        json::encode(&s).expect("Encode json response").as_bytes().to_vec()
+        json::to_string(&s).expect("Encode json response").as_bytes().to_vec()
     }
 
     fn parse_operation(&self, token: mio::Token, slice: &[u8]) -> ChainReplMsg {
-        let (epoch, seqno, op) : PeerMsg = json::decode(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
+        let (epoch, seqno, op) : PeerMsg = json::from_str(&String::from_utf8_lossy(slice)).expect("Decode peer operation");
         ChainReplMsg::Operation { source: token, epoch: Some(epoch), seqno: Some(seqno), op: op }
     }
 }
