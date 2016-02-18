@@ -5,19 +5,19 @@ version = "0.1.0"
 build = "build.rs"
 
 [build-dependencies]
-serde_codegen = "=0.6.11"
-syntex = "0.26.0"
+serde_codegen = "0.6.13"
+syntex = "0.28.0"
 
 [dependencies]
 bytes = "0.2.10"
 clap = "*"
-etcd = "0.3.0"
+etcd = { git = "https://github.com/cstorey/rust-etcd.git", branch = "update-serde-deps" }
 log = "*"
 log4rs = "*"
 mio = "0.4.1"
 serde = "0.6.11"
 serde_json = "0.6.0"
-# serde_macros = "0.6.11"
+# serde_macros = "0.6.13"
 
 [profile]
 
