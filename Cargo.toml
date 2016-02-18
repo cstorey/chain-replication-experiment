@@ -1,8 +1,8 @@
 [package]
 authors = ["Ceri Storey <ceri@lshift.net>"]
+build = "build.rs"
 name = "chain-repl-test"
 version = "0.1.0"
-build = "build.rs"
 
 [build-dependencies]
 serde_codegen = "0.6.13"
@@ -15,9 +15,13 @@ etcd = { git = "https://github.com/cstorey/rust-etcd.git", branch = "update-serd
 log = "*"
 log4rs = "*"
 mio = "0.4.1"
-serde = "0.6.11"
+serde = "0.6.13"
 serde_json = "0.6.0"
-# serde_macros = "0.6.13"
+
+[dependencies.spki-sexp]
+git = "https://github.com/cstorey/spki-sexp.rs.git"
+# path = "/home/ceri/personal/spki-sexp.rs"
+optional = false
 
 [profile]
 

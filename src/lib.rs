@@ -4,6 +4,7 @@ extern crate bytes;
 extern crate log;
 extern crate serde;
 extern crate serde_json;
+extern crate spki_sexp;
 
 extern crate etcd;
 
@@ -21,7 +22,7 @@ mod config;
 mod event_handler;
 mod data;
 
-use line_conn::{JsonPeer,LineConn};
+use line_conn::{SexpPeer,LineConn};
 use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
@@ -260,7 +261,7 @@ impl ChainRepl {
         changed
     }
 
-    fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<JsonPeer>> {
+    fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {
         self.downstream_slot.map(move |slot| match &mut self.connections[slot] {
             &mut EventHandler::Downstream(ref mut d) => d,
             other => panic!("Downstream slot not populated with a downstream instance: {:?}", other),

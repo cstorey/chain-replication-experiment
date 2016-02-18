@@ -1,9 +1,9 @@
 use mio;
 use mio::tcp::*;
 use mio::{TryRead,TryWrite};
-use serde_json as json;
 use serde::ser::Serialize;
 use serde::de::Deserialize;
+use spki_sexp as sexp;
 use std::fmt;
 use std::collections::VecDeque;
 
@@ -164,45 +164,40 @@ impl<T: Reader<ChainReplMsg> + Encoder<OpResp> + fmt::Debug> LineConn<T> {
         debug!("{:?}: Response: {:?}", self.token, s);
         let chunk = self.codec.encode(s);
         self.write_buf.extend(chunk);
-        self.write_buf.push('\n' as u8)
     }
 
 }
 
 #[derive(Debug)]
-pub struct JsonPeer {
+pub struct SexpPeer {
     token: mio::Token,
-    buf: VecDeque<u8>,
+    packets: sexp::Packetiser,
 }
 
-impl JsonPeer {
-    pub fn fresh(token: mio::Token) -> JsonPeer {
-        JsonPeer { token: token, buf: VecDeque::new() }
+impl SexpPeer {
+    pub fn fresh(token: mio::Token) -> SexpPeer {
+        SexpPeer { token: token, packets: sexp::Packetiser::new() }
     }
 }
 
-impl<T: Serialize> Encoder<T> for JsonPeer {
+impl<T: Serialize> Encoder<T> for SexpPeer {
     fn encode(&self, s: T) -> Vec<u8> {
-        json::to_string(&s).expect("Encode json response").as_bytes().to_vec()
+        sexp::as_bytes(&s).expect("Encode json response")
     }
 }
 
-impl Reader<ChainReplMsg> for JsonPeer {
-    fn new(token: mio::Token) -> JsonPeer {
+impl Reader<ChainReplMsg> for SexpPeer {
+    fn new(token: mio::Token) -> SexpPeer {
         Self::fresh(token)
     }
 
     fn feed(&mut self, slice: &[u8]) {
-        self.buf.extend(slice);
+        self.packets.feed(slice)
     }
     fn take(&mut self) -> Option<ChainReplMsg> {
-        if let Some(idx) = self.buf.iter().enumerate()
-                .filter_map(|(i, &c)| if c == NL { Some(i+1) } else { None })
-                .next() {
-            let slice = self.buf.drain(..idx).collect::<Vec<_>>();
-            let s = String::from_utf8_lossy(&slice);
-            debug!("Decoding PeerMsg: {:?}", s);
-            let (epoch, seqno, op) : PeerMsg = json::from_str(&s).expect("Decode PeerMsg");
+        if let Some(msg) = self.packets.take().expect("Pull packet") {
+            debug!("Decoding PeerMsg: {:?}", msg);
+            let (epoch, seqno, op) : PeerMsg = msg;
             let ret = ChainReplMsg::Operation { source: self.token, epoch: Some(epoch), seqno: Some(seqno), op: op };
             Some(ret)
         } else {
@@ -211,32 +206,26 @@ impl Reader<ChainReplMsg> for JsonPeer {
     }
 }
 
-impl Reader<OpResp> for JsonPeer {
-    fn new(token: mio::Token) -> JsonPeer {
+impl Reader<OpResp> for SexpPeer {
+    fn new(token: mio::Token) -> SexpPeer {
         Self::fresh(token)
     }
     fn feed(&mut self, slice: &[u8]) {
-        self.buf.extend(slice);
+        self.packets.feed(slice)
     }
     fn take(&mut self) -> Option<OpResp> {
-        if let Some(idx) = self.buf.iter().enumerate()
-                .filter_map(|(i, &c)| if c == NL { Some(i+1) } else { None })
-                .next() {
-            debug!("Buffer state: {:?}", self.buf);
-            let slice = self.buf.drain(..idx).collect::<Vec<_>>();
-            let s = String::from_utf8_lossy(&slice);
-            debug!("Decoding OpResp: {:?}", s);
-            let ret = json::from_str(&s).expect("Decode OpResp");
-            Some(ret)
+        if let Some(msg) = self.packets.take().expect("Pull packet") {
+            debug!("Decoded OpResp: {:?}", msg);
+            Some(msg)
         } else {
             None
         }
     }
 }
 
-impl LineConn<JsonPeer> {
-    pub fn upstream(socket: TcpStream, token: mio::Token) -> LineConn<JsonPeer> {
-        Self::new(socket, token, JsonPeer::fresh(token))
+impl LineConn<SexpPeer> {
+    pub fn upstream(socket: TcpStream, token: mio::Token) -> LineConn<SexpPeer> {
+        Self::new(socket, token, SexpPeer::fresh(token))
     }
 }
 
@@ -248,7 +237,7 @@ pub struct PlainClient {
 
 impl<T: fmt::Debug> Encoder<T> for PlainClient {
     fn encode(&self, s: T) -> Vec<u8> {
-        format!("{:?}", s).as_bytes().to_vec()
+        format!("{:?}\n", s).as_bytes().to_vec()
     }
 }
 

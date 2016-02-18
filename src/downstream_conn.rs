@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::fmt;
 
 use super::{ChainRepl, ChainReplMsg,OpResp, Operation, PeerMsg};
-use line_conn::{Encoder, Reader, JsonPeer};
+use line_conn::{Encoder, Reader, SexpPeer};
 
 #[derive(Debug)]
 pub struct Downstream<T: fmt::Debug> {
@@ -25,9 +25,9 @@ pub struct Downstream<T: fmt::Debug> {
     codec: T,
 }
 
-impl Downstream<JsonPeer> {
+impl Downstream<SexpPeer> {
     pub fn new(target: Option<SocketAddr>, token: mio::Token) -> Self {
-       Self::with_codec(target, token, JsonPeer::fresh(token))
+       Self::with_codec(target, token, SexpPeer::fresh(token))
     }
 }
 
@@ -183,7 +183,6 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
             let msg : PeerMsg = (epoch, seqno, it);
             let out = self.codec.encode(msg);
             self.write_buf.extend(&out);
-            self.write_buf.push('\n' as u8);
         }
     }
 

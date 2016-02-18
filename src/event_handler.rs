@@ -2,7 +2,7 @@ use mio;
 
 use super::{ChainRepl, ChainReplMsg,OpResp};
 
-use line_conn::{JsonPeer, PlainClient, LineConn};
+use line_conn::{SexpPeer, PlainClient, LineConn};
 use downstream_conn::Downstream;
 use listener::Listener;
 
@@ -10,8 +10,8 @@ use listener::Listener;
 pub enum EventHandler {
     Listener (Listener),
     Conn (LineConn<PlainClient>),
-    Upstream (LineConn<JsonPeer>),
-    Downstream (Downstream<JsonPeer>),
+    Upstream (LineConn<SexpPeer>),
+    Downstream (Downstream<SexpPeer>),
 }
 
 impl EventHandler {
