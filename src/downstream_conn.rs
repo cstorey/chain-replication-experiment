@@ -136,7 +136,7 @@ impl Downstream {
     fn attempt_connect(&mut self) {
         assert!(self.socket.is_none());
         debug!("Connecting: {:?}", self);
-        if let &mut Downstream { peer: Some(ref peer), ref token, ref mut socket, ref mut sock_status, .. } = self {
+        if let &mut Downstream { peer: Some(ref peer), ref mut socket, ref mut sock_status, .. } = self {
             let conn = TcpStream::connect(peer).expect("Connect downstream");
             debug!("New downstream for {:?}! {:?}", self.token, self.peer);
             *socket = Some(conn);
