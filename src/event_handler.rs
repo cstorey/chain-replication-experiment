@@ -11,7 +11,7 @@ pub enum EventHandler {
     Listener (Listener),
     Conn (LineConn<PlainClient>),
     Upstream (LineConn<JsonPeer>),
-    Downstream (Downstream),
+    Downstream (Downstream<JsonPeer>),
 }
 
 impl EventHandler {

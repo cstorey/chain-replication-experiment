@@ -5,12 +5,13 @@ use serde_json as json;
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::fmt;
 
 use super::{ChainRepl, ChainReplMsg,OpResp, Operation, PeerMsg};
-
+use line_conn::{Encoder, Reader, JsonPeer};
 
 #[derive(Debug)]
-pub struct Downstream {
+pub struct Downstream<T: fmt::Debug> {
     token: mio::Token,
     peer: Option<SocketAddr>,
     // Rather feels like we need to factor this into per-iteration state.
@@ -19,13 +20,19 @@ pub struct Downstream {
     sock_status: mio::EventSet,
     pending: VecDeque<PeerMsg>,
     write_buf: Vec<u8>,
-    read_buf: Vec<u8>,
     should_disconnect: bool,
     timeout_triggered: bool,
+    codec: T,
 }
 
-impl Downstream {
+impl Downstream<JsonPeer> {
     pub fn new(target: Option<SocketAddr>, token: mio::Token) -> Self {
+       Self::with_codec(target, token, JsonPeer::fresh(token))
+    }
+}
+
+impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
+    pub fn with_codec(target: Option<SocketAddr>, token: mio::Token, codec: T) -> Self {
         debug!("Connecting to {:?}", target);
         let mut conn = Downstream {
             token: token,
@@ -34,9 +41,9 @@ impl Downstream {
             sock_status: mio::EventSet::none(),
             pending: VecDeque::new(),
             write_buf: Vec::new(),
-            read_buf: Vec::new(),
             should_disconnect: false,
             timeout_triggered: false,
+            codec: codec,
         };
         conn.attempt_connect();
         conn
@@ -130,7 +137,7 @@ impl Downstream {
     fn reset(&mut self) {
         let peer = self.peer.clone();
         let token = self.token.clone();
-        let _ = ::std::mem::replace(self, Self::new(peer, token));
+        let _ = ::std::mem::replace(self, Self::with_codec(peer, token, T::new(token)));
     }
 
     fn attempt_connect(&mut self) {
@@ -149,7 +156,7 @@ impl Downstream {
 
     fn read(&mut self) {
         let mut abuf = Vec::new();
-        if let &mut Downstream { socket: Some(ref mut sock), ref mut read_buf, token, .. } = self {
+        if let &mut Downstream { socket: Some(ref mut sock), ref mut codec, token, .. } = self {
             match sock.try_read_buf(&mut abuf) {
                 Ok(Some(0)) => {
                     trace!("{:?}: EOF!", token);
@@ -157,7 +164,7 @@ impl Downstream {
                 },
                 Ok(Some(n)) => {
                     trace!("{:?}: Read {}bytes", token, n);
-                    read_buf.extend(abuf);
+                    codec.feed(&abuf);
                 },
                 Ok(None) => {
                     trace!("{:?}: Noop!", token);
@@ -174,8 +181,8 @@ impl Downstream {
         if let Some((epoch, seqno, it)) = self.pending.pop_front() {
             debug!("Preparing to send downstream (qlen {}): {:?}/{:?}", self.pending.len(), seqno, it);
             let msg : PeerMsg = (epoch, seqno, it);
-            let out = json::to_string(&msg).expect("json encode");
-            self.write_buf.extend(out.as_bytes());
+            let out = self.codec.encode(msg);
+            self.write_buf.extend(&out);
             self.write_buf.push('\n' as u8);
         }
     }
@@ -201,24 +208,15 @@ impl Downstream {
     }
 
     fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
-        let mut prev = 0;
         let mut changed = false;
-        trace!("Downstream: {:?}: Read buffer: {:?}", self.token, self.read_buf);
-        for n in self.read_buf.iter().enumerate()
-                .filter_map(|(i, e)| if *e == '\n' as u8 { Some(i) } else { None } ) {
-            let line = String::from_utf8_lossy(&self.read_buf[prev..n]);
-            trace!("{:?}: Pos: {:?}-{:?}; chunk: {:?}", self.token, prev, n, line);
+       // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
+        while let Some(cmd) = self.codec.take() {
+            debug!("Read message {:?}", cmd);
+            to_parent(ChainReplMsg::DownstreamResponse(cmd));
 
-            let val : OpResp = json::from_str(&line).expect("Decode json");
-            debug!("From downstream: {:?}", val);
-            to_parent(ChainReplMsg::DownstreamResponse(val));
             changed = true;
-            prev = n + 1
         }
 
-        let remainder = self.read_buf[prev..].to_vec();
-        trace!("{:?}: read Remainder: {}", self.token, remainder.len());
-        self.read_buf = remainder;
         changed
     }
 

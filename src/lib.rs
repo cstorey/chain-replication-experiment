@@ -21,7 +21,7 @@ mod config;
 mod event_handler;
 mod data;
 
-use line_conn::LineConn;
+use line_conn::{JsonPeer,LineConn};
 use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
@@ -31,8 +31,7 @@ pub use config::*;
 
 const REPLICATION_CREDIT : u64 = 10;
 
-
-type PeerMsg = (u64, u64, Operation);
+pub type PeerMsg = (u64, u64, Operation);
 
 
 #[derive(Debug)]
@@ -261,7 +260,7 @@ impl ChainRepl {
         changed
     }
 
-    fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream> {
+    fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<JsonPeer>> {
         self.downstream_slot.map(move |slot| match &mut self.connections[slot] {
             &mut EventHandler::Downstream(ref mut d) => d,
             other => panic!("Downstream slot not populated with a downstream instance: {:?}", other),

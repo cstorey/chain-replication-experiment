@@ -2,6 +2,8 @@ use mio;
 use mio::tcp::*;
 use mio::{TryRead,TryWrite};
 use serde_json as json;
+use serde::ser::Serialize;
+use serde::de::Deserialize;
 use std::fmt;
 use std::collections::VecDeque;
 
@@ -9,10 +11,14 @@ use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg};
 
 const NL : u8 = '\n' as u8;
 
-trait Codec {
-    fn encode_response(&self, s: OpResp) -> Vec<u8>;
+pub trait Encoder<T> {
+    fn encode(&self, s: T) -> Vec<u8>;
+}
+
+pub trait Reader<T> {
     fn feed(&mut self, slice: &[u8]);
-    fn take(&mut self) -> Option<ChainReplMsg>;
+    fn take(&mut self) -> Option<T>;
+    fn new(mio::Token) -> Self;
 }
 
 #[derive(Debug)]
@@ -26,7 +32,7 @@ pub struct LineConn<T> {
     codec: T,
 }
 
-impl<T: Codec + fmt::Debug> LineConn<T> {
+impl<T: Reader<ChainReplMsg> + Encoder<OpResp> + fmt::Debug> LineConn<T> {
     fn new(socket: TcpStream, token: mio::Token, codec: T) -> LineConn<T> {
         trace!("New client connection {:?} from {:?}", token, socket.local_addr());
         LineConn {
@@ -156,7 +162,7 @@ impl<T: Codec + fmt::Debug> LineConn<T> {
     // Per item to output
     pub fn response(&mut self, s: OpResp) {
         debug!("{:?}: Response: {:?}", self.token, s);
-        let chunk = self.codec.encode_response(s);
+        let chunk = self.codec.encode(s);
         self.write_buf.extend(chunk);
         self.write_buf.push('\n' as u8)
     }
@@ -169,9 +175,21 @@ pub struct JsonPeer {
     buf: VecDeque<u8>,
 }
 
-impl Codec for JsonPeer {
-    fn encode_response(&self, s: OpResp) -> Vec<u8> {
+impl JsonPeer {
+    pub fn fresh(token: mio::Token) -> JsonPeer {
+        JsonPeer { token: token, buf: VecDeque::new() }
+    }
+}
+
+impl<T: Serialize> Encoder<T> for JsonPeer {
+    fn encode(&self, s: T) -> Vec<u8> {
         json::to_string(&s).expect("Encode json response").as_bytes().to_vec()
+    }
+}
+
+impl Reader<ChainReplMsg> for JsonPeer {
+    fn new(token: mio::Token) -> JsonPeer {
+        Self::fresh(token)
     }
 
     fn feed(&mut self, slice: &[u8]) {
@@ -179,11 +197,36 @@ impl Codec for JsonPeer {
     }
     fn take(&mut self) -> Option<ChainReplMsg> {
         if let Some(idx) = self.buf.iter().enumerate()
-                .filter_map(|(i, &c)| if c == NL { Some(i) } else { None })
+                .filter_map(|(i, &c)| if c == NL { Some(i+1) } else { None })
                 .next() {
             let slice = self.buf.drain(..idx).collect::<Vec<_>>();
-            let (epoch, seqno, op) : PeerMsg = json::from_str(&String::from_utf8_lossy(&slice)).expect("Decode peer operation");
+            let s = String::from_utf8_lossy(&slice);
+            debug!("Decoding PeerMsg: {:?}", s);
+            let (epoch, seqno, op) : PeerMsg = json::from_str(&s).expect("Decode PeerMsg");
             let ret = ChainReplMsg::Operation { source: self.token, epoch: Some(epoch), seqno: Some(seqno), op: op };
+            Some(ret)
+        } else {
+            None
+        }
+    }
+}
+
+impl Reader<OpResp> for JsonPeer {
+    fn new(token: mio::Token) -> JsonPeer {
+        Self::fresh(token)
+    }
+    fn feed(&mut self, slice: &[u8]) {
+        self.buf.extend(slice);
+    }
+    fn take(&mut self) -> Option<OpResp> {
+        if let Some(idx) = self.buf.iter().enumerate()
+                .filter_map(|(i, &c)| if c == NL { Some(i+1) } else { None })
+                .next() {
+            debug!("Buffer state: {:?}", self.buf);
+            let slice = self.buf.drain(..idx).collect::<Vec<_>>();
+            let s = String::from_utf8_lossy(&slice);
+            debug!("Decoding OpResp: {:?}", s);
+            let ret = json::from_str(&s).expect("Decode OpResp");
             Some(ret)
         } else {
             None
@@ -193,7 +236,7 @@ impl Codec for JsonPeer {
 
 impl LineConn<JsonPeer> {
     pub fn upstream(socket: TcpStream, token: mio::Token) -> LineConn<JsonPeer> {
-        Self::new(socket, token, JsonPeer { token: token, buf: VecDeque::new() })
+        Self::new(socket, token, JsonPeer::fresh(token))
     }
 }
 
@@ -203,21 +246,27 @@ pub struct PlainClient {
     buf: VecDeque<u8>
 }
 
-impl Codec for PlainClient {
-    fn encode_response(&self, s: OpResp) -> Vec<u8> {
+impl<T: fmt::Debug> Encoder<T> for PlainClient {
+    fn encode(&self, s: T) -> Vec<u8> {
         format!("{:?}", s).as_bytes().to_vec()
     }
+}
 
+impl Reader<ChainReplMsg> for PlainClient {
+    fn new(token: mio::Token) -> PlainClient {
+        PlainClient { token: token, buf: VecDeque::new() }
+    }
     fn feed(&mut self, slice: &[u8]) {
         self.buf.extend(slice);
     }
     fn take(&mut self) -> Option<ChainReplMsg> {
-        if let Some(idx) = self.buf.iter().enumerate().filter_map(|(i, &c)| if c == NL { Some(i) } else { None }).next() {
+        if let Some(idx) = self.buf.iter().enumerate().filter_map(|(i, &c)| if c == NL { Some(i+1) } else { None }).next() {
             let slice = self.buf.drain(..idx).collect::<Vec<_>>();
-            let op = if slice.is_empty() {
+            let s = String::from_utf8_lossy(&slice);
+            let op = if s.trim().is_empty() {
                 Operation::Get
             } else {
-                Operation::Set(String::from_utf8_lossy(&slice).to_string())
+                Operation::Set(s.trim().to_string())
             };
             let ret = ChainReplMsg::Operation { source: self.token, epoch: None, seqno: None, op: op };
             Some(ret)
@@ -230,6 +279,6 @@ impl Codec for PlainClient {
 
 impl LineConn<PlainClient> {
     pub fn client(socket: TcpStream, token: mio::Token) -> LineConn<PlainClient> {
-        Self::new(socket, token, PlainClient { token: token, buf: VecDeque::new() } )
+        Self::new(socket, token, PlainClient::new(token))
     }
 }
