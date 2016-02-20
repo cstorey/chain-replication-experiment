@@ -110,92 +110,104 @@ impl ChainRepl {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
-                let seqno = seqno.unwrap_or_else(|| self.next_seqno());
-                // assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
-
-                let epoch = epoch.unwrap_or_else(|| self.current_epoch);
-
-               if epoch != self.current_epoch {
-                    warn!("Operation epoch ({}) differers from our last observed configuration: ({})",
-                        epoch, self.current_epoch);
-                    let resp = OpResp::Err(epoch, seqno, format!("BadEpoch: {}; last seen config: {}", epoch, self.current_epoch));
-                    self.connections[source].response(resp);
-                    return;
-                }
-
-                if !(seqno == 0 || self.log.get(&(seqno-1)).is_some()) {
-                    warn!("Hole in history: saw {}/{}; have: {:?}", epoch, seqno, self.log.keys().collect::<Vec<_>>());
-                    let resp = OpResp::Err(epoch, seqno, format!("Bad sequence number; previous: {:?}, saw: {:?}",
-                        self.log.keys().rev().next(), seqno));
-                    self.connections[source].response(resp);
-                    return;
-                }
-
-
-                let prev = self.log.insert(seqno, op.clone());
-                debug!("Log entry {:?}: {:?}", seqno, op);
-                if let Some(prev) = prev {
-                    panic!("Unexpectedly existing log entry for item {}: {:?}", seqno, prev);
-                }
-
-                if let Some(_) = self.downstream_slot {
-                    self.pending_operations.insert(seqno, source);
-                    // Replication mechanism should handle the push to downstream.
-                } else {
-                    info!("Terminus! {:?}/{:?}", seqno, op);
-                    let resp = match op {
-                        Operation::Set(s) => {
-                            self.state = s;
-                            OpResp::Ok(epoch, seqno, None)
-                        },
-                        Operation::Get => OpResp::Ok(epoch, seqno, Some(self.state.clone()))
-                    };
-                    self.connections[source].response(resp)
-                }
+                self.process_operation(source, seqno, epoch, op)
             },
 
             ChainReplMsg::DownstreamResponse(reply) => {
-                debug!("Downstream response: {:?}", reply);
-                match reply {
-                    OpResp::Ok(epoch, seqno, _) | OpResp::Err(epoch, seqno, _) => {
-                        if let Some(token) = self.pending_operations.remove(&seqno) {
-                            info!("Found in-flight op {:?} for client token {:?}", seqno, token);
-                            if let Some(ref mut c)  = self.connections.get_mut(token) {
-                                c.response(reply)
-                            }
-                            self.last_acked_downstream = Some(seqno)
-                        } else {
-                            warn!("Unexpected response for seqno: {:?}", seqno);
-                        }
-                    },
-                    OpResp::HelloIWant(last_sent_downstream) => {
-                        info!("Downstream has {:?}", last_sent_downstream);
-                        assert!(last_sent_downstream <= self.seqno());
-                        self.last_sent_downstream = Some(last_sent_downstream);
-                    },
-                };
+                self.process_downstream_response(reply)
             },
 
             ChainReplMsg::NewClientConn(role, socket) => {
-                let peer = socket.peer_addr().expect("peer address");
-                let seqno = self.seqno();
-                assert!(self.log.get(&seqno).is_none());
-                let token = self.connections
-                    .insert_with(|token| match role {
-                            Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
-                            Role::Upstream => {
-                                let mut conn = LineConn::upstream(socket, token);
-                                let msg = OpResp::HelloIWant(seqno);
-                                info!("Inform upstream about our current version, {:?}!", msg);
-                                conn.response(msg);
-                                EventHandler::Upstream(conn)
-                            },
-                    })
-                    .expect("token insert");
-                debug!("Client connection of {:?}/{:?} from {:?}", role, token, peer);
-                &self.connections[token].initialize(event_loop, token);
+                self.process_new_client_conn(event_loop, role, socket)
             }
         }
+    }
+
+    fn process_operation(&mut self, source: mio::Token, seqno: Option<u64>, epoch: Option<u64>, op: Operation){
+        let seqno = seqno.unwrap_or_else(|| self.next_seqno());
+        // assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
+
+        let epoch = epoch.unwrap_or_else(|| self.current_epoch);
+
+       if epoch != self.current_epoch {
+            warn!("Operation epoch ({}) differers from our last observed configuration: ({})",
+                epoch, self.current_epoch);
+            let resp = OpResp::Err(epoch, seqno, format!("BadEpoch: {}; last seen config: {}", epoch, self.current_epoch));
+            self.connections[source].response(resp);
+            return;
+        }
+
+        if !(seqno == 0 || self.log.get(&(seqno-1)).is_some()) {
+            warn!("Hole in history: saw {}/{}; have: {:?}", epoch, seqno, self.log.keys().collect::<Vec<_>>());
+            let resp = OpResp::Err(epoch, seqno, format!("Bad sequence number; previous: {:?}, saw: {:?}",
+                self.log.keys().rev().next(), seqno));
+            self.connections[source].response(resp);
+            return;
+        }
+
+
+        let prev = self.log.insert(seqno, op.clone());
+        debug!("Log entry {:?}: {:?}", seqno, op);
+        if let Some(prev) = prev {
+            panic!("Unexpectedly existing log entry for item {}: {:?}", seqno, prev);
+        }
+
+        if let Some(_) = self.downstream_slot {
+            self.pending_operations.insert(seqno, source);
+            // Replication mechanism should handle the push to downstream.
+        } else {
+            info!("Terminus! {:?}/{:?}", seqno, op);
+            let resp = match op {
+                Operation::Set(s) => {
+                    self.state = s;
+                    OpResp::Ok(epoch, seqno, None)
+                },
+                Operation::Get => OpResp::Ok(epoch, seqno, Some(self.state.clone()))
+            };
+            self.connections[source].response(resp)
+        }
+
+    }
+
+    fn process_downstream_response(&mut self, reply: OpResp) {
+        debug!("Downstream response: {:?}", reply);
+        match reply {
+            OpResp::Ok(epoch, seqno, _) | OpResp::Err(epoch, seqno, _) => {
+                if let Some(token) = self.pending_operations.remove(&seqno) {
+                    info!("Found in-flight op {:?} for client token {:?}", seqno, token);
+                    if let Some(ref mut c)  = self.connections.get_mut(token) {
+                        c.response(reply)
+                    }
+                    self.last_acked_downstream = Some(seqno)
+                } else {
+                    warn!("Unexpected response for seqno: {:?}", seqno);
+                }
+            },
+            OpResp::HelloIWant(last_sent_downstream) => {
+                info!("Downstream has {:?}", last_sent_downstream);
+                assert!(last_sent_downstream <= self.seqno());
+                self.last_sent_downstream = Some(last_sent_downstream);
+            },
+        };
+    }
+    fn process_new_client_conn(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, role: Role, socket: TcpStream) {
+        let peer = socket.peer_addr().expect("peer address");
+        let seqno = self.seqno();
+        assert!(self.log.get(&seqno).is_none());
+        let token = self.connections
+            .insert_with(|token| match role {
+                    Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
+                    Role::Upstream => {
+                        let mut conn = LineConn::upstream(socket, token);
+                        let msg = OpResp::HelloIWant(seqno);
+                        info!("Inform upstream about our current version, {:?}!", msg);
+                        conn.response(msg);
+                        EventHandler::Upstream(conn)
+                    },
+            })
+            .expect("token insert");
+        debug!("Client connection of {:?}/{:?} from {:?}", role, token, peer);
+        &self.connections[token].initialize(event_loop, token);
     }
 
     fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>) -> bool {
