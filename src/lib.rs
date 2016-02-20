@@ -30,7 +30,7 @@ use event_handler::EventHandler;
 pub use data::*;
 pub use config::*;
 
-const REPLICATION_CREDIT : u64 = 10;
+const REPLICATION_CREDIT : u64 = 1024;
 
 pub type PeerMsg = (u64, u64, Operation);
 
