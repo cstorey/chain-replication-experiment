@@ -8,6 +8,8 @@ extern crate chain_repl_test;
 
 use std::net::SocketAddr;
 use std::time::Duration;
+use std::net::ToSocketAddrs;
+use std::collections::HashSet;
 use clap::{Arg, App};
 
 use chain_repl_test::{ChainRepl,Role, ConfigClient};
@@ -30,17 +32,23 @@ fn main() {
     let mut service = ChainRepl::new();
 
     if let Some(listen_addr) = matches.value_of("bind") {
-        let listen_addr = listen_addr.parse::<std::net::SocketAddr>().expect("parse bind address");
-        service.listen(&mut event_loop, listen_addr, Role::Client);
+        let listen_addrs = listen_addr.to_socket_addrs().expect("parse bind address").collect::<HashSet<_>>();
+        info!("Client addresses: {:?}", listen_addrs);
+        for listen_addr in listen_addrs {
+            service.listen(&mut event_loop, listen_addr, Role::Client);
+        }
     }
 
     if let Some(listen_addr) = matches.value_of("peer") {
-        let listen_addr = listen_addr.parse::<std::net::SocketAddr>().expect("peer listen address");
-        service.listen(&mut event_loop, listen_addr, Role::Upstream);
+        let listen_addrs = listen_addr.to_socket_addrs().expect("peer listen address").collect::<HashSet<_>>();
+        info!("Peer addresses: {:?}", listen_addrs);
+        for listen_addr in listen_addrs {
+            service.listen(&mut event_loop, listen_addr, Role::Upstream);
+        }
     }
 
     if let Some(next_addr) = matches.value_of("next") {
-        let next_addr = next_addr.parse::<std::net::SocketAddr>().expect("parse next address");
+        let next_addr = next_addr.to_socket_addrs().expect("address lookup").next().expect("parse next address");
         info!("Forwarding to address {:?}", next_addr);
         service.set_downstream(&mut event_loop, Some(next_addr));
     } else {
