@@ -6,6 +6,7 @@ use serde_json as json;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::fmt;
+use std::io::ErrorKind;
 
 use super::{ChainRepl, ChainReplMsg,OpResp, Operation, PeerMsg};
 use line_conn::{Encoder, Reader, SexpPeer};
@@ -45,7 +46,6 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
             timeout_triggered: false,
             codec: codec,
         };
-        conn.attempt_connect();
         conn
     }
 
@@ -72,14 +72,19 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
     }
 
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
-        debug!("Initialize Downstream conn to {:?} as {:?}", self.peer, token);
         if let Some(ref sock) = self.socket {
-            event_loop.register_opt(
+            debug!("Initialize!{:?}", self);
+            match event_loop.register_opt(
                     sock,
                     token,
                     mio::EventSet::readable(),
-                    mio::PollOpt::edge() | mio::PollOpt::oneshot())
-                .expect("register downstream");
+                    mio::PollOpt::edge() | mio::PollOpt::oneshot()) {
+                Ok(()) => (),
+                Err(e) => {
+                    warn!("Registration failed:{}; kind:{:?}", e, e.kind());
+                    // self.should_disconnect = true;
+                }
+            }
         } else {
             warn!("Registering disconnected downstream?!? {:?}", self);
         }
@@ -114,8 +119,13 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
 
         if self.sock_status.is_hup() || self.sock_status.is_error() || self.should_disconnect {
             if let Some(sock) = self.socket.take() {
-                debug!("Disconnecting socket! {:?}", sock);
-                event_loop.deregister(&sock).expect("deregister downstream");
+                debug!("Disconnecting socket! {:?}: {:?}", sock, self.sock_status);
+                match event_loop.deregister(&sock) {
+                    Ok(()) => (),
+                    Err(e) => {
+                        warn!("Deregister socket failed: {}", e);
+                    }
+                }
                 event_loop.timeout_ms(self.token, 1000).expect("reconnect timeout");
                 self.reset();
             }
@@ -145,7 +155,7 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
         debug!("Connecting: {:?}", self);
         if let &mut Downstream { peer: Some(ref peer), ref mut socket, ref mut sock_status, .. } = self {
             let conn = TcpStream::connect(peer).expect("Connect downstream");
-            debug!("New downstream for {:?}! {:?}", self.token, self.peer);
+            debug!("New downstream for {:?}! {:?}; {:?}", self.token, self.peer, conn);
             *socket = Some(conn);
             sock_status.remove(mio::EventSet::all());
         } else {
@@ -231,11 +241,21 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
             }
             trace!("Re-register {:?} with {:?}", self, flags);
 
-            event_loop.reregister(
+            match event_loop.reregister(
                     sock,
                     self.token,
                     flags,
-                    mio::PollOpt::oneshot()).expect("EventLoop#reinitialize")
+                    mio::PollOpt::oneshot()) {
+                Ok(()) => (),
+                Err(ref e) if e.kind() == ErrorKind::NotFound => {
+                    warn!("Re-registration failed:{}; kind:{:?}", e, e.kind());
+                    self.should_disconnect = true
+                }
+                Err(ref e) => {
+                    warn!("Re-registration failed:{}; kind:{:?}", e, e.kind());
+                    self.should_disconnect = true
+                }
+            }
         }
     }
 }

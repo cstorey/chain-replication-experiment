@@ -36,12 +36,6 @@ impl Listener {
 
     pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
             to_parent: &mut F) -> bool {
-        if !self.active {
-            if (self.sock_status != mio::EventSet::none()) {
-                debug!("Ignoring events on inactive listener: {:?}; {:?}", self.listener.local_addr(), self.sock_status);
-            }
-            return false;
-        }
 
         let mut changed = false;
         if self.sock_status.is_readable() {
@@ -49,7 +43,12 @@ impl Listener {
             match self.listener.accept() {
                 Ok(Some(socket)) => {
                     let cmd = ChainReplMsg::NewClientConn(self.role.clone(), socket);
-                    to_parent(cmd);
+                    if self.active {
+                        to_parent(cmd);
+                    } else {
+                        debug!("Ignoring events on inactive listener: {:?}; {:?}", self.listener.local_addr(), self.sock_status);
+                    }
+
                     changed = true;
                 }
                 Ok(None) => {
