@@ -16,8 +16,10 @@ instance:
   image: ubuntu:14.04
   restart: always
   working_dir: $PWD/
-  command: bash -x -o pipefail -o nounset -c 'exec $PWD/target/release/chain-repl-test -e http://etcd:2379/ -p $$HOSTNAME:7000 -l $$HOSTNAME:7100'
+  command: bash -x -o pipefail -o nounset -c '$PWD/target/debug/chain-repl-test -e http://etcd:2379/ -p $$HOSTNAME:7000 -l $$HOSTNAME:7100'
   volumes:
     - $PWD:$PWD
+  environment:
+    - RUST_BACKTRACE=t
   links:
     - etcd
