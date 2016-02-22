@@ -341,10 +341,10 @@ impl ChainRepl {
     }
 }
 
-pub struct Notifier(mio::Sender<ConfigurationView<NodeViewConfig>>);
+pub struct Notifier(mio::Sender<Option<ConfigurationView<NodeViewConfig>>>);
 
 impl Notifier {
-    pub fn notify(&self, view: ConfigurationView<NodeViewConfig>) {
+    pub fn notify(&self, view: Option<ConfigurationView<NodeViewConfig>>) {
         use mio::NotifyError::*;
         let mut item = view;
         let mut backoff_ms = 1;
@@ -364,7 +364,7 @@ impl Notifier {
 impl mio::Handler for ChainRepl {
     // This is a bit wierd; we can pass a parent action back to enqueue some action.
     type Timeout = mio::Token;
-    type Message = ConfigurationView<NodeViewConfig>;
+    type Message = Option<ConfigurationView<NodeViewConfig>>;
     fn ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token, events: mio::EventSet) {
         trace!("{:?}: {:?}", token, events);
         self.connections[token].handle_event(event_loop, events);
@@ -377,9 +377,14 @@ impl mio::Handler for ChainRepl {
         self.io_ready(event_loop, token);
     }
 
-    fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: ConfigurationView<NodeViewConfig>) {
+    fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: Option<ConfigurationView<NodeViewConfig>>) {
         debug!("Notified: {:?}", msg);
-        self.handle_view_changed(msg);
-        self.converge_state(event_loop);
+        if let Some(view) = msg {
+            self.handle_view_changed(view);
+            self.converge_state(event_loop);
+        } else {
+            info!("Shutting down");
+            event_loop.shutdown();
+        }
     }
 }

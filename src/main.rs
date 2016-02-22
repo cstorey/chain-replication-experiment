@@ -57,9 +57,10 @@ fn main() {
 
     let conf = if let Some(etcd) = matches.value_of("etcd") {
         info!("Etcd at: {:?}", etcd);
-        let notifier = service.get_notifier(&mut event_loop);
+        let view_cb = { let notifier = service.get_notifier(&mut event_loop); move |view| notifier.notify(Some(view)) };
+        let shutdown_cb = { let notifier2 = service.get_notifier(&mut event_loop); move || notifier2.notify(None) };
         let config = ConfigClient::new(etcd, service.node_config(), Duration::new(5, 0),
-            move |view| notifier.notify(view)).expect("Etcd");
+            view_cb, shutdown_cb).expect("Etcd");
         Some(config)
     } else {
         info!("No etcd");

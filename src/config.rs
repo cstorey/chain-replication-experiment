@@ -1,6 +1,6 @@
 use etcd;
 use std::thread;
-use std::sync::atomic::{Ordering,AtomicUsize};
+use std::sync::atomic::{Ordering,AtomicBool};
 use std::fmt;
 use std::time::Duration;
 use std::sync::Arc;
@@ -29,48 +29,52 @@ struct InnerClient<T> {
     data: T,
     lease_time: Duration,
     callback: Box<Fn(ConfigurationView<T>) + Send + Sync + 'static>,
+    on_exit: Box<Fn() + Send + Sync + 'static>,
     lease_key: Option<String>,
-    watch_count: AtomicUsize,
+    lease_alive: AtomicBool,
+    watcher_alive: AtomicBool,
 }
 
 
-struct DeathWatch<'a>(&'a AtomicUsize);
+struct DeathWatch<'a, F>(&'a AtomicBool, F) where F : Fn();
 
-impl<'a> DeathWatch<'a> {
-    fn new(ctr: &'a AtomicUsize) -> DeathWatch<'a> {
-        let cnt = ctr.fetch_add(1, Ordering::Relaxed);
-        let w = DeathWatch(ctr);
-        warn!("Deathwatch::new: New death watcher {:?}", w);
-        w
+impl<'a, F> DeathWatch<'a, F> where F : Fn() {
+    fn new(ctr: &'a AtomicBool, f: F) -> DeathWatch<'a, F> {
+        ctr.store(true, Ordering::SeqCst);
+        DeathWatch(ctr, f)
     }
-    fn count(&self) -> usize {
+    fn is_alive(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
 }
-impl<'a> Drop for DeathWatch<'a> {
+impl<'a, F> Drop for DeathWatch<'a, F> where F : Fn() {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
-        warn!("Exiting: {:?} left", self);
+        warn!("Exiting: {:?}", self);
+        let &mut DeathWatch(ref mut alivep, ref mut cb) = self;
+        alivep.store(false, Ordering::Relaxed);
+        (cb)();
     }
 }
 
-impl<'a> fmt::Debug for DeathWatch<'a> {
+impl<'a, F> fmt::Debug for DeathWatch<'a, F> where F : Fn() {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.debug_struct("DeathWatch").field("count", &self.count()).finish()
+        fmt.debug_struct("DeathWatch").field("alive", &self.is_alive()).finish()
     }
 }
 
 impl<T: 'static + Deserialize + Serialize + fmt::Debug + Eq + Clone + Send + Sync> ConfigClient<T> {
-    pub fn new<F: Fn(ConfigurationView<T>) + Send + Sync + 'static>(addr: &str, data: T, lease_time: Duration, callback: F)
-        -> Result<ConfigClient<T>, ()> {
+    pub fn new<F: Fn(ConfigurationView<T>) + Send + Sync + 'static, S: Fn() + Send + Sync + 'static>(
+        addr: &str, data: T, lease_time: Duration, callback: F, on_exit: S) -> Result<ConfigClient<T>, ()> {
         let etcd = etcd::Client::new(addr).expect("etcd client");
         let mut client = InnerClient {
             etcd: etcd,
             data: data,
             lease_time: lease_time,
             callback: Box::new(callback),
+            on_exit: Box::new(on_exit),
             lease_key: None,
-            watch_count: AtomicUsize::new(0),
+            lease_alive: AtomicBool::new(true),
+            watcher_alive: AtomicBool::new(true),
         };
         let lease = client.setup_lease();
 
@@ -126,7 +130,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn run_lease(&self, mut lease_index: u64) {
-        let watch = self.start_watch();
+        let watch = DeathWatch::new(&self.lease_alive, || (*self.on_exit)() );
         let pausetime = self.lease_time / 2;
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
@@ -161,7 +165,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn run_watch(&self) {
-        let watch = self.start_watch();
+        let watch = DeathWatch::new(&self.watcher_alive, || (*self.on_exit)() );
         info!("Starting etcd watcher");
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
@@ -236,13 +240,8 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
         }
     }
 
-    fn start_watch<'a>(&'a self) -> DeathWatch<'a> {
-        warn!("start_watch: New death watcher {:p}: prev: {:?}", &self.watch_count, self.watch_count.load(Ordering::Relaxed));
-        DeathWatch::new(&self.watch_count)
-    }
-
     fn is_running(&self) -> bool {
-        self.watch_count.load(Ordering::Relaxed) > 0
+        self.lease_alive.load(Ordering::Relaxed) && self.watcher_alive.load(Ordering::Relaxed)
     }
 }
 
