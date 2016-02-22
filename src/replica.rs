@@ -1,4 +1,5 @@
 use std::cmp;
+use std::mem;
 use std::collections::BTreeMap;
 use mio;
 
@@ -249,5 +250,21 @@ impl ReplModel {
 
     pub fn reset(&mut self) {
         self.next.reset()
+    }
+
+    pub fn set_has_downstream(&mut self, is_forwarder: bool) {
+        // XXX: Replays?
+        match (is_forwarder, &mut self.next) {
+            (true, role @ &mut Role::Terminus(_)) => {
+                let prev = mem::replace(role, Role::Forwarder(Forwarder::new()));
+                info!("Switched to forwarding from {:?}", prev);
+            },
+
+            (false, role @ &mut Role::Forwarder(_)) => {
+                let prev = mem::replace(role, Role::Terminus(Terminus::new()));
+                info!("Switched to terminating from {:?}", prev);
+            },
+            _ => { info!("No change of config"); }
+        }
     }
 }

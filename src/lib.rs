@@ -179,8 +179,11 @@ impl ChainRepl {
             } else {
                 panic!("Cannot reconnect to downstream with no peer listener: {:?}", ds);
             }
+
+            self.model.set_has_downstream(true);
         } else {
             info!("Tail node!");
+            self.model.set_has_downstream(false);
             self.set_downstream(event_loop, None);
         }
 
