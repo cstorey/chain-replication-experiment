@@ -41,6 +41,7 @@ enum ChainReplMsg {
     Operation { source: mio::Token, epoch: Option<u64>, seqno: Option<u64>, op: Operation },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
+    ForwardDownstream(u64, u64, Operation)
 }
 
 #[derive(Debug)]
@@ -92,14 +93,11 @@ impl ChainRepl {
         }
     }
 
-    fn seqno(&self) -> u64 {
-        self.model.seqno()
-    }
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
-                self.process_operation(source, seqno, epoch, op)
+                self.model.process_operation(&mut self.connections[source], seqno, epoch, op);
             },
 
             ChainReplMsg::DownstreamResponse(reply) => {
@@ -108,13 +106,13 @@ impl ChainRepl {
 
             ChainReplMsg::NewClientConn(role, socket) => {
                 self.process_new_client_conn(event_loop, role, socket)
-            }
+            },
+            ChainReplMsg::ForwardDownstream(epoch, seq, op) => {
+                self.downstream().expect("Downstream").send_to_downstream(epoch, seq, op)
+            },
         }
     }
 
-    fn process_operation(&mut self, source: mio::Token, seqno: Option<u64>, epoch: Option<u64>, op: Operation){
-        self.model.process_operation(&mut self.connections[source], seqno, epoch, op);
-    }
 
     fn process_downstream_response(&mut self, reply: OpResp) {
         debug!("Downstream response: {:?}", reply);
@@ -127,7 +125,7 @@ impl ChainRepl {
 
     fn process_new_client_conn(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, role: Role, socket: TcpStream) {
         let peer = socket.peer_addr().expect("peer address");
-        let seqno = self.seqno();
+        let seqno = self.model.seqno();
         let token = self.connections
             .insert_with(|token| match role {
                     Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
@@ -144,15 +142,9 @@ impl ChainRepl {
         &self.connections[token].initialize(event_loop, token);
     }
 
-    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>) -> bool {
+    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<Self>, mut action: F) -> bool {
         let mut changed = false;
-        { 
-            let mut to_forward = VecDeque::new();
-            changed |= self.model.process_replication(|epoch, i, op| to_forward.push_back((epoch, i, op)));
-            for (epoch, i, op) in to_forward {
-                self.downstream().expect("Downstream").send_to_downstream(epoch, i, op)
-            }
-        }
+        changed |= self.model.process_replication(|epoch, i, op| action(ChainReplMsg::ForwardDownstream(epoch, i, op)));
 
         if let Some(view) = self.new_view.take() {
             self.reconfigure(event_loop, view);
@@ -223,7 +215,7 @@ impl ChainRepl {
                 changed |= changedp;
             }
 
-            let changedp = self.process_rules(event_loop);
+            let changedp = self.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
             if changedp { debug!("Changed: {:?}", "Model"); }
             changed |= changedp;
 
