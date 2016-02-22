@@ -7,6 +7,9 @@ extern crate serde_json;
 extern crate spki_sexp;
 
 extern crate etcd;
+extern crate tempdir;
+extern crate lmdb_rs;
+extern crate byteorder;
 
 use mio::tcp::*;
 use mio::EventLoop;

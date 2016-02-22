@@ -1,7 +1,13 @@
 use std::cmp;
 use std::mem;
+use std::fmt;
 use std::collections::BTreeMap;
 use mio;
+
+use lmdb_rs::{self, EnvBuilder, Environment, DbFlags, MdbError};
+use tempdir::TempDir;
+use byteorder::{ByteOrder, BigEndian};
+use spki_sexp;
 
 use super::{Operation,OpResp};
 use event_handler::EventHandler;
@@ -26,22 +32,69 @@ enum Role {
     Terminus(Terminus),
 }
 
-#[derive(Debug)]
-struct Log (BTreeMap<u64, Operation>);
+struct Log {
+    dir: TempDir,
+    env: Environment,
+}
 
 impl Log {
-    pub fn seqno(&self) -> u64 {
-        self.0.len() as u64
+    fn new() -> Log {
+        let d = TempDir::new("lmdb-log").expect("new log");
+        info!("DB path: {:?}", d.path());
+        let env = EnvBuilder::new().open(d.path(), 0o777).expect("open db");
+        
+        Log { dir: d, env: env }
     }
 
-    fn read(&self, idx: u64) -> Option<Operation> {
-        self.0.get(&idx).map(|x| x.clone())
+    fn tokey(seq: u64) -> [u8; 8] {
+        let mut buf : [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
+        BigEndian::write_u64(&mut buf, seq);
+        buf
+    }
+
+    fn fromkey(key: &[u8]) -> u64 {
+        BigEndian::read_u64(&key)
+    }
+
+
+
+    pub fn seqno(&self) -> u64 {
+        let mut dbh = self.env.get_default_db(DbFlags::empty()).expect("open-db");
+        let mut rdr = self.env.get_reader().expect("get_reader");
+        let mut db = rdr.bind(&dbh);
+        let mut cur = db.new_cursor().expect("cursor");
+        match cur.to_last() { 
+            Ok(()) => {
+                let last_key = cur.get_key::<&[u8]>().expect("get_key");
+                let current = Self::fromkey(last_key);
+                let next = current + 1;
+                debug!("Last exisiting current: {:?}; key: {:?}; next: {:?}", last_key, current, next);
+                next
+            },
+            Err(MdbError::NotFound) => 0,
+            Err(e) => panic!("Unexpected error getting last item: {:?}", e),
+        }
+    }
+
+    fn read(&self, seqno: u64) -> Option<Operation> {
+        let mut dbh = self.env.get_default_db(DbFlags::empty()).expect("open-db");
+        let mut rdr = self.env.get_reader().expect("get_reader");
+        let mut db = rdr.bind(&dbh);
+        let key = Self::tokey(seqno);
+        let ret = match db.get(&key.as_ref()) {
+            Ok(val) => Some(spki_sexp::from_bytes(val).expect("decode operation")),
+            Err(MdbError::NotFound) => None,
+            Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
+        };
+        debug!("Read: {:?} => {:?}", seqno, ret);
+        ret
     }
 
 
     fn verify_sequential(&self, seqno: u64) -> bool {
-        if !(seqno == 0 || self.0.contains_key(&(seqno-1))) {
-            warn!("Hole in history: saw {}; have: {:?}", seqno, self.0.keys().collect::<Vec<_>>());
+        let current = self.seqno();
+        if !(seqno == 0 || current <= seqno) {
+            warn!("Hole in history: saw {}; have: {:?}", seqno, current);
             false
         } else {
             true
@@ -49,11 +102,20 @@ impl Log {
     }
 
     fn insert_at(&mut self, seqno: u64, op: &Operation) {
-        let prev = self.0.insert(seqno, op.clone());
-        debug!("Log entry {:?}: {:?}", seqno, op);
-        if let Some(prev) = prev {
-            panic!("Unexpectedly existing log entry for item {}: {:?}", seqno, prev);
-        }
+        let bytes = spki_sexp::as_bytes(op).expect("encode operation");
+        let mut dbh = self.env.get_default_db(DbFlags::empty()).expect("open-db");
+        let txn = self.env.new_transaction().expect("new_transaction");
+        debug!("Checking {:?}", seqno);
+        let key = Self::tokey(seqno);
+        match txn.bind(&dbh).get::<&[u8]>(&key.as_ref()) {
+            Err(MdbError::NotFound) => (),
+            Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
+            Ok(_) => panic!("Unexpected entry at seqno: {:?}", seqno),
+        };
+
+        txn.bind(&dbh).set(&key.as_ref(), &bytes).expect("Persist operation");
+        txn.commit().expect("txn commit");
+        debug!("Wrote as {:?}/{:?}: {:?}", seqno, key, bytes.len());
     }
 }
 
@@ -62,6 +124,11 @@ pub struct ReplModel {
     next: Role,
     log: Log,
     current_epoch: u64,
+}
+impl fmt::Debug for Log {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("Log").field("dir", &self.dir.path()).finish()
+    }
 }
 
 
@@ -194,7 +261,7 @@ impl Terminus {
 impl ReplModel {
     pub fn new() -> ReplModel {
         ReplModel {
-            log: Log(BTreeMap::new()),
+            log: Log::new(),
             current_epoch: Default::default(),
             next: Role::Terminus(Terminus::new()),
         }

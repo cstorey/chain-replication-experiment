@@ -9,18 +9,23 @@ serde_codegen = "0.6.13"
 syntex = "0.28.0"
 
 [dependencies]
+byteorder = "0.4.2"
 bytes = "0.2.10"
 clap = "*"
-etcd = { git = "https://github.com/cstorey/rust-etcd.git", branch = "update-serde-deps" }
+lmdb-rs = "0.6.0"
 log = "*"
 log4rs = "*"
 mio = "0.4.1"
 serde = "0.6.13"
 serde_json = "0.6.0"
+tempdir = "0.3.4"
+
+[dependencies.etcd]
+branch = "update-serde-deps"
+git = "https://github.com/cstorey/rust-etcd.git"
 
 [dependencies.spki-sexp]
 git = "https://github.com/cstorey/spki-sexp.rs.git"
-# path = "/home/ceri/personal/spki-sexp.rs"
 optional = false
 
 [profile]
