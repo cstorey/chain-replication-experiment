@@ -219,7 +219,7 @@ impl ReplModel {
             return;
         }
 
-        if self.log.verify_sequential(seqno) {
+        if !self.log.verify_sequential(seqno) {
             let resp = OpResp::Err(epoch, seqno, format!("Bad sequence number; saw: {:?}", seqno));
             channel.response(resp);
             return;
