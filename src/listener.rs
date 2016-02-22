@@ -7,20 +7,26 @@ use super::{Role,ChainRepl, ChainReplMsg};
 #[derive(Debug)]
 pub struct Listener {
     listener: TcpListener,
+    token: mio::Token,
     sock_status: mio::EventSet,
     pub role: Role,
     active: bool,
 }
 
 impl Listener {
-    pub fn new(listen_addr: SocketAddr, role: Role) -> Listener {
+    pub fn new(listen_addr: SocketAddr, token: mio::Token, role: Role) -> Listener {
         let listener = TcpListener::bind(&listen_addr).expect("bind");
         Listener {
             listener: listener,
+            token: token,
             sock_status: mio::EventSet::none(),
             role: role,
             active: false,
         }
+    }
+
+    pub fn token(&self) -> mio::Token {
+        self.token
     }
 
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {

@@ -50,7 +50,7 @@ impl<'a, F> DeathWatch<'a, F> where F : Fn() {
 impl<'a, F> Drop for DeathWatch<'a, F> where F : Fn() {
     fn drop(&mut self) {
         warn!("Exiting: {:?}", self);
-        let &mut DeathWatch(ref mut alivep, ref mut cb) = self;
+        let &mut DeathWatch(ref alivep, ref mut cb) = self;
         alivep.store(false, Ordering::Relaxed);
         (cb)();
     }

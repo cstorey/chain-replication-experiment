@@ -33,6 +33,14 @@ impl EventHandler {
         }
     }
 
+    pub fn token(&self) -> mio::Token {
+        match self {
+            &EventHandler::Conn(ref conn) => conn.token(),
+            &EventHandler::Upstream(ref conn) => conn.token(),
+            &EventHandler::Downstream(ref conn) => conn.token(),
+            &EventHandler::Listener(ref listener) => listener.token(),
+        }
+    }
 
     pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
         to_parent: &mut F) -> bool {

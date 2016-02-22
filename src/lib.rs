@@ -21,6 +21,7 @@ mod listener;
 mod config;
 mod event_handler;
 mod data;
+mod replica;
 
 use line_conn::{SexpPeer,LineConn};
 use downstream_conn::Downstream;
@@ -30,7 +31,7 @@ use event_handler::EventHandler;
 pub use data::*;
 pub use config::*;
 
-const REPLICATION_CREDIT : u64 = 1024;
+use replica::ReplModel;
 
 pub type PeerMsg = (u64, u64, Operation);
 
@@ -46,15 +47,9 @@ enum ChainReplMsg {
 pub struct ChainRepl {
     connections: Slab<EventHandler>,
     downstream_slot: Option<mio::Token>,
-    // "Model" fields
-    last_sent_downstream: Option<u64>,
-    last_acked_downstream: Option<u64>,
-    pending_operations: BTreeMap<u64, mio::Token>,
-    log: BTreeMap<u64, Operation>,
-    state: String,
-    new_view: Option<ConfigurationView<NodeViewConfig>>,
     node_config: NodeViewConfig,
-    current_epoch: u64,
+    new_view: Option<ConfigurationView<NodeViewConfig>>,
+    model: ReplModel,
 }
 
 impl ChainRepl {
@@ -62,26 +57,25 @@ impl ChainRepl {
         ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
-            last_sent_downstream: None,
-            last_acked_downstream: None,
-            log: BTreeMap::new(),
-            pending_operations: BTreeMap::new(),
-            state: String::new(),
-            new_view: None,
             node_config: Default::default(),
-            current_epoch: Default::default(),
+            new_view: None,
+            model: ReplModel::new(),
         }
     }
 
     pub fn listen(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, addr: SocketAddr, role: Role) {
         info!("Listen on {:?} for {:?}", addr, role);
-        let l = Listener::new(addr, role.clone());
-        match role {
-            Role::Upstream => self.node_config.peer_addr = Some(format!("{}", l.listen_addr())),
-            Role::Client => self.node_config.client_addr = Some(format!("{}", l.listen_addr())),
-        }
-        let token = self.connections.insert(EventHandler::Listener(l)).expect("insert listener");
-        &self.connections[token].initialize(event_loop, token);
+        let &mut ChainRepl { ref mut connections, ref mut node_config, .. } = self;
+        let token = connections.insert_with(|token| {
+            let l = Listener::new(addr, token, role.clone());
+            match role {
+                Role::Upstream => node_config.peer_addr = Some(format!("{}", l.listen_addr())),
+                Role::Client => node_config.client_addr = Some(format!("{}", l.listen_addr())),
+            }
+
+            EventHandler::Listener(l)
+        }).expect("insert listener");
+        connections[token].initialize(event_loop, token);
     }
 
     pub fn set_downstream(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, target: Option<SocketAddr>) {
@@ -99,13 +93,8 @@ impl ChainRepl {
     }
 
     fn seqno(&self) -> u64 {
-        self.log.len() as u64
+        self.model.seqno()
     }
-
-    fn next_seqno(&self) -> u64 {
-        self.seqno()
-    }
-
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
@@ -124,76 +113,21 @@ impl ChainRepl {
     }
 
     fn process_operation(&mut self, source: mio::Token, seqno: Option<u64>, epoch: Option<u64>, op: Operation){
-        let seqno = seqno.unwrap_or_else(|| self.next_seqno());
-        // assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
-
-        let epoch = epoch.unwrap_or_else(|| self.current_epoch);
-
-       if epoch != self.current_epoch {
-            warn!("Operation epoch ({}) differers from our last observed configuration: ({})",
-                epoch, self.current_epoch);
-            let resp = OpResp::Err(epoch, seqno, format!("BadEpoch: {}; last seen config: {}", epoch, self.current_epoch));
-            self.connections[source].response(resp);
-            return;
-        }
-
-        if !(seqno == 0 || self.log.get(&(seqno-1)).is_some()) {
-            warn!("Hole in history: saw {}/{}; have: {:?}", epoch, seqno, self.log.keys().collect::<Vec<_>>());
-            let resp = OpResp::Err(epoch, seqno, format!("Bad sequence number; previous: {:?}, saw: {:?}",
-                self.log.keys().rev().next(), seqno));
-            self.connections[source].response(resp);
-            return;
-        }
-
-
-        let prev = self.log.insert(seqno, op.clone());
-        debug!("Log entry {:?}: {:?}", seqno, op);
-        if let Some(prev) = prev {
-            panic!("Unexpectedly existing log entry for item {}: {:?}", seqno, prev);
-        }
-
-        if let Some(_) = self.downstream_slot {
-            self.pending_operations.insert(seqno, source);
-            // Replication mechanism should handle the push to downstream.
-        } else {
-            info!("Terminus! {:?}/{:?}", seqno, op);
-            let resp = match op {
-                Operation::Set(s) => {
-                    self.state = s;
-                    OpResp::Ok(epoch, seqno, None)
-                },
-                Operation::Get => OpResp::Ok(epoch, seqno, Some(self.state.clone()))
-            };
-            self.connections[source].response(resp)
-        }
-
+        self.model.process_operation(&mut self.connections[source], seqno, epoch, op);
     }
 
     fn process_downstream_response(&mut self, reply: OpResp) {
         debug!("Downstream response: {:?}", reply);
-        match reply {
-            OpResp::Ok(epoch, seqno, _) | OpResp::Err(epoch, seqno, _) => {
-                if let Some(token) = self.pending_operations.remove(&seqno) {
-                    info!("Found in-flight op {:?} for client token {:?}", seqno, token);
-                    if let Some(ref mut c)  = self.connections.get_mut(token) {
-                        c.response(reply)
-                    }
-                    self.last_acked_downstream = Some(seqno)
-                } else {
-                    warn!("Unexpected response for seqno: {:?}", seqno);
-                }
-            },
-            OpResp::HelloIWant(last_sent_downstream) => {
-                info!("Downstream has {:?}", last_sent_downstream);
-                assert!(last_sent_downstream <= self.seqno());
-                self.last_sent_downstream = Some(last_sent_downstream);
-            },
-        };
+        if let Some(waiter) = self.model.process_downstream_response(&reply) {
+            if let Some(ref mut c)  = self.connections.get_mut(waiter) {
+                c.response(reply)
+            }
+        }
     }
+
     fn process_new_client_conn(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, role: Role, socket: TcpStream) {
         let peer = socket.peer_addr().expect("peer address");
         let seqno = self.seqno();
-        assert!(self.log.get(&seqno).is_none());
         let token = self.connections
             .insert_with(|token| match role {
                     Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
@@ -211,66 +145,54 @@ impl ChainRepl {
     }
 
     fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>) -> bool {
-        debug!("pre  Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
-            self.seqno(), self.last_sent_downstream, self.last_acked_downstream);
         let mut changed = false;
-        if let Some(send_next) = self.last_sent_downstream {
-            if send_next < self.seqno() {
-                let max_to_push_now = cmp::min(self.last_acked_downstream.unwrap_or(0) + REPLICATION_CREDIT, self.seqno());
-                debug!("Window push {:?} - {:?}; waiting: {:?}", send_next, max_to_push_now, self.seqno() - max_to_push_now);
-                let epoch = self.current_epoch;
-                for i in send_next..max_to_push_now {
-                    debug!("Log item: {:?}: {:?}", i, self.log.get(&i));
-                    let op = self.log[&i].clone();
-                    debug!("Queueing epoch:{:?}; seq:{:?}/{:?}; ds/seqno: {:?}", epoch, i, op, self.last_sent_downstream);
-                    self.downstream().expect("Downstream").send_to_downstream(epoch, i, op);
-                    self.last_sent_downstream = Some(i+1);
-                    changed = true
-                }
+        { 
+            let mut to_forward = VecDeque::new();
+            changed |= self.model.process_replication(|epoch, i, op| to_forward.push_back((epoch, i, op)));
+            for (epoch, i, op) in to_forward {
+                self.downstream().expect("Downstream").send_to_downstream(epoch, i, op)
             }
-            debug!("post Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
-                self.seqno(), self.last_sent_downstream, self.last_acked_downstream);
         }
 
-        // Cases:
-        // Head(nextNode)
-        // Middle(nextNode)
-        // Tail
         if let Some(view) = self.new_view.take() {
-            info!("Reconfigure according to: {:?}", view);
-            if !view.in_configuration() {
-                warn!("I am not in this configuration; shutting down: {:?}", view);
-                event_loop.shutdown();
-            }
-
-            let listen_for_clients = view.should_listen_for_clients();
-            info!("Listen for clients: {:?}", listen_for_clients);
-            for p in self.listeners(Role::Client) {
-                p.set_active(listen_for_clients);
-            }
-            let listen_for_upstreamp = view.should_listen_for_upstream();
-            info!("Listen for upstreams: {:?}", listen_for_upstreamp);
-            for p in self.listeners(Role::Upstream) {
-                p.set_active(listen_for_upstreamp);
-            }
-            if let Some(ds) = view.should_connect_downstream() {
-                info!("Push to downstream on {:?}", ds);
-                if let Some(peer_addr) = ds.peer_addr {
-                    self.set_downstream(event_loop, Some(peer_addr.parse().expect("peer address")));
-                } else {
-                    panic!("Cannot reconnect to downstream with no peer listener: {:?}", ds);
-                }
-            } else {
-                info!("Tail node!");
-                self.set_downstream(event_loop, None);
-            }
-
-            self.current_epoch = view.epoch;
-
+            self.reconfigure(event_loop, view);
             changed = true;
         }
 
         changed
+    }
+
+
+    fn reconfigure(&mut self, event_loop: &mut mio::EventLoop<Self>, view: ConfigurationView<NodeViewConfig>) {
+        info!("Reconfigure according to: {:?}", view);
+        if !view.in_configuration() {
+            warn!("I am not in this configuration; shutting down: {:?}", view);
+            event_loop.shutdown();
+        }
+
+        let listen_for_clients = view.should_listen_for_clients();
+        info!("Listen for clients: {:?}", listen_for_clients);
+        for p in self.listeners(Role::Client) {
+            p.set_active(listen_for_clients);
+        }
+        let listen_for_upstreamp = view.should_listen_for_upstream();
+        info!("Listen for upstreams: {:?}", listen_for_upstreamp);
+        for p in self.listeners(Role::Upstream) {
+            p.set_active(listen_for_upstreamp);
+        }
+        if let Some(ds) = view.should_connect_downstream() {
+            info!("Push to downstream on {:?}", ds);
+            if let Some(peer_addr) = ds.peer_addr {
+                self.set_downstream(event_loop, Some(peer_addr.parse().expect("peer address")));
+            } else {
+                panic!("Cannot reconnect to downstream with no peer listener: {:?}", ds);
+            }
+        } else {
+            info!("Tail node!");
+            self.set_downstream(event_loop, None);
+        }
+
+        self.model.epoch_changed(view.epoch);
     }
 
     fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {
@@ -316,14 +238,13 @@ impl ChainRepl {
 
     fn io_ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
         self.converge_state(event_loop);
-        if self.connections[token].is_closed() && self.pending_operations.values().all(|tok| tok != &token) {
-            debug!("Close candidate: {:?}: pending: {:?}",
-                token, self.pending_operations.values().filter(|tok| **tok == token).count());
+        if self.connections[token].is_closed() && self.model.has_pending(token) {
+            debug!("Close candidate: {:?}", token);
             let it = self.connections.remove(token);
             debug!("Removing; {:?}; {:?}", token, it);
             if Some(token) == self.downstream_slot {
                 self.downstream_slot = None;
-                self.last_sent_downstream = None
+                self.model.reset();
             }
         }
     }
