@@ -43,7 +43,7 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
             pending: VecDeque::new(),
             write_buf: Vec::new(),
             should_disconnect: false,
-            timeout_triggered: false,
+            timeout_triggered: true,
             codec: codec,
         };
         conn
@@ -131,7 +131,7 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
             }
         }
 
-        if self.timeout_triggered {
+        if self.socket.is_none() && self.timeout_triggered {
             self.attempt_connect();
             self.initialize(event_loop, self.token);
             self.timeout_triggered = false;
