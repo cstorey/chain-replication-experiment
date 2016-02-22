@@ -32,6 +32,28 @@ impl Log {
     pub fn seqno(&self) -> u64 {
         self.0.len() as u64
     }
+
+    fn read(&self, idx: u64) -> Option<Operation> {
+        self.0.get(&idx).map(|x| x.clone())
+    }
+
+
+    fn verify_sequential(&self, seqno: u64) -> bool {
+        if !(seqno == 0 || self.0.contains_key(&(seqno-1))) {
+            warn!("Hole in history: saw {}; have: {:?}", seqno, self.0.keys().collect::<Vec<_>>());
+            false
+        } else {
+            true
+        }
+    }
+
+    fn insert_at(&mut self, seqno: u64, op: &Operation) {
+        let prev = self.0.insert(seqno, op.clone());
+        debug!("Log entry {:?}: {:?}", seqno, op);
+        if let Some(prev) = prev {
+            panic!("Unexpectedly existing log entry for item {}: {:?}", seqno, prev);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -122,12 +144,14 @@ impl Forwarder {
                 let max_to_push_now = cmp::min(self.last_acked_downstream.unwrap_or(0) + REPLICATION_CREDIT, log.seqno());
                 debug!("Window push {:?} - {:?}; waiting: {:?}", send_next, max_to_push_now, log.seqno() - max_to_push_now);
                 for i in send_next..max_to_push_now {
-                    debug!("Log item: {:?}: {:?}", i, log.0.get(&i));
-                    let op = log.0[&i].clone();
-                    debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}", i, op, self.last_sent_downstream);
-                    forward(i, op);
-                    self.last_sent_downstream = Some(i+1);
-                    changed = true
+                    if let Some(op) = log.read(i) {
+                        debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}", i, op, self.last_sent_downstream);
+                        forward(i, op);
+                        self.last_sent_downstream = Some(i+1);
+                        changed = true
+                    } else {
+                        panic!("Attempted to replicate item not in log: {:?}", self);
+                    }
                 }
             }
             debug!("post Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
@@ -185,8 +209,6 @@ impl ReplModel {
 
     pub fn process_operation(&mut self, channel: &mut EventHandler, seqno: Option<u64>, epoch: Option<u64>, op: Operation) {
         let seqno = seqno.unwrap_or_else(|| self.next_seqno());
-        // assert!(seqno == 0 || self.log.get(&(seqno-1)).is_some());
-
         let epoch = epoch.unwrap_or_else(|| self.current_epoch);
 
        if epoch != self.current_epoch {
@@ -197,21 +219,14 @@ impl ReplModel {
             return;
         }
 
-        if !(seqno == 0 || self.log.0.get(&(seqno-1)).is_some()) {
-            warn!("Hole in history: saw {}/{}; have: {:?}", epoch, seqno, self.log.0.keys().collect::<Vec<_>>());
-            let resp = OpResp::Err(epoch, seqno, format!("Bad sequence number; previous: {:?}, saw: {:?}",
-                self.log.0.keys().rev().next(), seqno));
+        if self.log.verify_sequential(seqno) {
+            let resp = OpResp::Err(epoch, seqno, format!("Bad sequence number; saw: {:?}", seqno));
             channel.response(resp);
             return;
         }
 
 
-        let prev = self.log.0.insert(seqno, op.clone());
-        debug!("Log entry {:?}: {:?}", seqno, op);
-        if let Some(prev) = prev {
-            panic!("Unexpectedly existing log entry for item {}: {:?}", seqno, prev);
-        }
-
+        self.log.insert_at(seqno, &op);
         self.next.process_operation(channel, epoch, seqno, op)
     }
 
@@ -236,5 +251,3 @@ impl ReplModel {
         self.next.reset()
     }
 }
-
-
