@@ -36,8 +36,6 @@ pub use config::*;
 
 use replica::ReplModel;
 
-pub type PeerMsg = (u64, u64, Operation);
-
 
 #[derive(Debug)]
 enum ChainReplMsg {

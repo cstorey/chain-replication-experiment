@@ -66,7 +66,7 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
     }
 
     pub fn send_to_downstream(&mut self, epoch: u64, seqno: u64, op: Operation) {
-        let msg = (epoch, seqno, op);
+        let msg = PeerMsg::Commit(epoch, seqno, op);
         debug!("Queuing for downstream (qlen: {}): {:?}: {:?}", self.pending.len()+1, self.peer, msg);
         self.pending.push_back(msg);
     }
@@ -192,10 +192,11 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
     }
 
     fn prep_write_buffer(&mut self) {
-        if let Some((epoch, seqno, it)) = self.pending.pop_front() {
-            debug!("Preparing to send downstream (qlen {}): {:?}/{:?}", self.pending.len(), seqno, it);
-            let msg : PeerMsg = (epoch, seqno, it);
-            let out = self.codec.encode(msg);
+        if let Some(it) = self.pending.pop_front() {
+            debug!("Preparing to send downstream (qlen {}): {:?}", self.pending.len(), it);
+            // PeerMsg::Commit(epoch, seqno, it)
+            // let msg : PeerMsg = (epoch, seqno, it);
+            let out = self.codec.encode(it);
             self.write_buf.extend(&out);
         }
     }

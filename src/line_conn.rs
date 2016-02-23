@@ -201,7 +201,7 @@ impl Reader<ChainReplMsg> for SexpPeer {
     fn take(&mut self) -> Option<ChainReplMsg> {
         if let Some(msg) = self.packets.take().expect("Pull packet") {
             debug!("Decoding PeerMsg: {:?}", msg);
-            let (epoch, seqno, op) : PeerMsg = msg;
+            let PeerMsg::Commit (epoch, seqno, op) = msg;
             let ret = ChainReplMsg::Operation { source: self.token, epoch: Some(epoch), seqno: Some(seqno), op: op };
             Some(ret)
         } else {

@@ -1,4 +1,4 @@
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Operation {
     Set(String),
     Get
@@ -23,4 +23,8 @@ pub struct NodeViewConfig {
     pub client_addr: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PeerMsg {
+    Commit (u64, u64, Operation),
+}
 
