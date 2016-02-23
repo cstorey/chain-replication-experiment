@@ -7,7 +7,7 @@ use spki_sexp as sexp;
 use std::fmt;
 use std::collections::VecDeque;
 
-use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg};
+use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg, ReplicationMessage};
 
 const NL : u8 = '\n' as u8;
 
@@ -200,9 +200,12 @@ impl Reader<ChainReplMsg> for SexpPeer {
     }
     fn take(&mut self) -> Option<ChainReplMsg> {
         if let Some(msg) = self.packets.take().expect("Pull packet") {
+            let _ : ReplicationMessage = msg;
             debug!("Decoding PeerMsg: {:?}", msg);
-            let PeerMsg::Commit (epoch, seqno, op) = msg;
-            let ret = ChainReplMsg::Operation { source: self.token, epoch: Some(epoch), seqno: Some(seqno), op: op };
+            let ret = match msg {
+                 ReplicationMessage { epoch, msg: PeerMsg::Commit(seqno, op) } =>
+                    ChainReplMsg::Operation { source: self.token, epoch: Some(epoch), seqno: Some(seqno), op: op },
+            };
             Some(ret)
         } else {
             None

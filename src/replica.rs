@@ -4,7 +4,7 @@ use std::fmt;
 use std::collections::BTreeMap;
 use mio;
 
-use super::{Operation,OpResp};
+use super::{Operation,OpResp, PeerMsg};
 use event_handler::EventHandler;
 use replication_log::Log;
 
@@ -51,7 +51,7 @@ impl Role {
         }
     }
 
-    pub fn process_replication<F: FnMut(u64, Operation)>(&mut self, log: &Log, forward: F) -> bool {
+    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &Log, forward: F) -> bool {
         match self {
             &mut Role::Forwarder(ref mut f) => f.process_replication(log, forward),
             _ => false,
@@ -106,7 +106,7 @@ impl Forwarder {
         }
     }
 
-    pub fn process_replication<F: FnMut(u64, Operation)>(&mut self, log: &Log, mut forward: F) -> bool {
+    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &Log, mut forward: F) -> bool {
         let mut changed = false;
         debug!("pre  Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
             log.seqno(), self.last_sent_downstream, self.last_acked_downstream);
@@ -119,7 +119,7 @@ impl Forwarder {
                 for i in send_next..max_to_push_now {
                     if let Some(op) = log.read(i) {
                         debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}", i, op, self.last_sent_downstream);
-                        forward(i, op);
+                        forward(PeerMsg::Commit(i, op));
                         self.last_sent_downstream = Some(i+1);
                         changed = true
                     } else {
@@ -208,9 +208,9 @@ impl ReplModel {
         self.next.process_downstream_response(reply)
     }
 
-    pub fn process_replication<F: FnMut(u64, u64, Operation)>(&mut self, mut forward: F) -> bool {
+    pub fn process_replication<F: FnMut(u64, PeerMsg)>(&mut self, mut forward: F) -> bool {
         let epoch = self.current_epoch;
-        self.next.process_replication(&self.log, |i, op| forward(epoch, i, op))
+        self.next.process_replication(&self.log, |msg| forward(epoch, msg))
     }
 
     pub fn epoch_changed(&mut self, epoch: u64) {

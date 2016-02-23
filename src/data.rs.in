@@ -25,6 +25,10 @@ pub struct NodeViewConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMsg {
-    Commit (u64, u64, Operation),
+    Commit (u64, Operation),
 }
-
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplicationMessage {
+    pub epoch: u64,
+    pub msg: PeerMsg,
+}

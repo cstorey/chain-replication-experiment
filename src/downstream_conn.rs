@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::fmt;
 use std::io::ErrorKind;
 
-use super::{ChainRepl, ChainReplMsg,OpResp, Operation, PeerMsg};
+use super::{ChainRepl, ChainReplMsg,OpResp, Operation, PeerMsg, ReplicationMessage};
 use line_conn::{Encoder, Reader, SexpPeer};
 
 #[derive(Debug)]
@@ -19,7 +19,7 @@ pub struct Downstream<T: fmt::Debug> {
     // ... LAYERS!
     socket: Option<TcpStream>,
     sock_status: mio::EventSet,
-    pending: VecDeque<PeerMsg>,
+    pending: VecDeque<ReplicationMessage>,
     write_buf: Vec<u8>,
     should_disconnect: bool,
     timeout_triggered: bool,
@@ -32,7 +32,7 @@ impl Downstream<SexpPeer> {
     }
 }
 
-impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
+impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T> {
     pub fn with_codec(target: Option<SocketAddr>, token: mio::Token, codec: T) -> Self {
         debug!("Connecting to {:?}", target);
         let mut conn = Downstream {
@@ -65,10 +65,9 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
         self.should_disconnect = true;
     }
 
-    pub fn send_to_downstream(&mut self, epoch: u64, seqno: u64, op: Operation) {
-        let msg = PeerMsg::Commit(epoch, seqno, op);
+    pub fn send_to_downstream(&mut self, epoch: u64, msg: PeerMsg) {
         debug!("Queuing for downstream (qlen: {}): {:?}: {:?}", self.pending.len()+1, self.peer, msg);
-        self.pending.push_back(msg);
+        self.pending.push_back(ReplicationMessage { epoch: epoch, msg: msg });
     }
 
     pub fn token(&self) -> mio::Token {
@@ -194,8 +193,6 @@ impl<T: Reader<OpResp> + Encoder<PeerMsg> + fmt::Debug> Downstream<T> {
     fn prep_write_buffer(&mut self) {
         if let Some(it) = self.pending.pop_front() {
             debug!("Preparing to send downstream (qlen {}): {:?}", self.pending.len(), it);
-            // PeerMsg::Commit(epoch, seqno, it)
-            // let msg : PeerMsg = (epoch, seqno, it);
             let out = self.codec.encode(it);
             self.write_buf.extend(&out);
         }

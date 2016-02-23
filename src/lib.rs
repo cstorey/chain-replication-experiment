@@ -43,7 +43,7 @@ enum ChainReplMsg {
     Operation { source: mio::Token, epoch: Option<u64>, seqno: Option<u64>, op: Operation },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
-    ForwardDownstream(u64, u64, Operation)
+    ForwardDownstream(u64, PeerMsg)
 }
 
 #[derive(Debug)]
@@ -109,8 +109,8 @@ impl ChainRepl {
             ChainReplMsg::NewClientConn(role, socket) => {
                 self.process_new_client_conn(event_loop, role, socket)
             },
-            ChainReplMsg::ForwardDownstream(epoch, seq, op) => {
-                self.downstream().expect("Downstream").send_to_downstream(epoch, seq, op)
+            ChainReplMsg::ForwardDownstream(epoch, msg) => {
+                self.downstream().expect("Downstream").send_to_downstream(epoch, msg)
             },
         }
     }
@@ -146,7 +146,8 @@ impl ChainRepl {
 
     fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<Self>, mut action: F) -> bool {
         let mut changed = false;
-        changed |= self.model.process_replication(|epoch, i, op| action(ChainReplMsg::ForwardDownstream(epoch, i, op)));
+        changed |= self.model.process_replication(
+            |epoch, msg| action(ChainReplMsg::ForwardDownstream(epoch, msg)));
 
         if let Some(view) = self.new_view.take() {
             self.reconfigure(event_loop, view);
