@@ -24,6 +24,7 @@ mod listener;
 mod config;
 mod event_handler;
 mod data;
+mod replication_log;
 mod replica;
 
 use line_conn::{SexpPeer,LineConn};
