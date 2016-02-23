@@ -42,6 +42,7 @@ struct Log {
 
 const META : &'static str = "meta";
 const DATA : &'static str = "data";
+const META_PREPARED : &'static str = "prepared";
 const META_COMMITTED : &'static str = "committed";
 
 impl Log {
@@ -66,11 +67,15 @@ impl Log {
     }
 
     pub fn seqno(&self) -> u64 {
-        match self.db.get_cf(self.meta, &META_COMMITTED.as_bytes()) {
+        self.read_seqno(META_PREPARED)
+    }
+
+    pub fn read_seqno(&self, name: &str) -> u64 {
+        match self.db.get_cf(self.meta, name.as_bytes()) {
             Ok(Some(val)) => {
                 let current = Self::fromkey(&val);
                 let next = current + 1;
-                debug!("Last exisiting current: {:?}; next: {:?}", current, next);
+                debug!("Last exisiting {:?}: {:?}; next: {:?}", name, current, next);
                 next
             },
             Ok(None) => 0,
@@ -100,9 +105,9 @@ impl Log {
         }
     }
 
-    fn insert_at(&mut self, seqno: u64, op: &Operation) {
+    fn prepare(&mut self, seqno: u64, op: &Operation) {
         let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-        debug!("Checking {:?}", seqno);
+        debug!("Prepare {:?}", seqno);
         let key = Self::tokey(seqno);
         /* match self.db.get_cf(self.data, &key.as_ref()) {
             Ok(None) => (),
@@ -112,9 +117,33 @@ impl Log {
 
         let mut batch = WriteBatch::new();
         batch.put_cf(self.data, &key.as_ref(), &data_bytes).expect("Persist operation");
-        batch.put_cf(self.meta, META_COMMITTED.as_bytes(), &key.as_ref()).expect("Persist operation");
+        batch.put_cf(self.meta, META_PREPARED.as_bytes(), &key.as_ref()).expect("Persist prepare point");
         self.db.write(batch).expect("Write batch");
-        debug!("Wrote as {:?}/{:?}: {:?}", seqno, key, data_bytes.len());
+        debug!("Watermarks: prepared: {:?}; committed: {:?}",
+                self.read_seqno(META_PREPARED),
+                self.read_seqno(META_COMMITTED));
+    }
+
+    fn commit_to(&mut self, seqno: u64) {
+        debug!("Commit {:?}", seqno);
+        let key = Self::tokey(seqno);
+
+        match self.db.get_cf(self.meta, META_PREPARED.as_bytes()) {
+            Ok(Some(val)) => {
+                let prepared = Self::fromkey(&val);
+                debug!("Committing: {:?}, prepared: {:?}", seqno, prepared);
+                assert!(prepared <= seqno);
+            },
+            Ok(None) => panic!("Committing {:?} without having prepared?", seqno),
+            Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
+        };
+
+        let mut batch = WriteBatch::new();
+        batch.put_cf(self.meta, META_COMMITTED.as_bytes(), &key.as_ref()).expect("Persist commit point");
+        self.db.write(batch).expect("Write batch");
+        debug!("Watermarks: prepared: {:?}; committed: {:?}",
+                self.read_seqno(META_PREPARED),
+                self.read_seqno(META_COMMITTED));
     }
 }
 
@@ -292,8 +321,9 @@ impl ReplModel {
             return;
         }
 
+        self.log.prepare(seqno, &op);
+        self.log.commit_to(seqno);
 
-        self.log.insert_at(seqno, &op);
         self.next.process_operation(channel, epoch, seqno, op)
     }
 
