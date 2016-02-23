@@ -8,7 +8,7 @@ extern crate spki_sexp;
 
 extern crate etcd;
 extern crate tempdir;
-extern crate lmdb_rs;
+extern crate rocksdb;
 extern crate byteorder;
 
 use mio::tcp::*;

@@ -4,7 +4,8 @@ use std::fmt;
 use std::collections::BTreeMap;
 use mio;
 
-use lmdb_rs::{self, EnvBuilder, Environment, DbFlags, MdbError};
+use rocksdb::{DB,Writable,Options, WriteBatch};
+use rocksdb::ffi::DBCFHandle;
 use tempdir::TempDir;
 use byteorder::{ByteOrder, BigEndian};
 use spki_sexp;
@@ -34,7 +35,9 @@ enum Role {
 
 struct Log {
     dir: TempDir,
-    env: Environment,
+    db: DB,
+    meta: DBCFHandle,
+    data: DBCFHandle,
 }
 
 const META : &'static str = "meta";
@@ -43,11 +46,13 @@ const META_COMMITTED : &'static str = "committed";
 
 impl Log {
     fn new() -> Log {
-        let d = TempDir::new("lmdb-log").expect("new log");
+        let d = TempDir::new("rocksdb-log").expect("new log");
         info!("DB path: {:?}", d.path());
-        let env = EnvBuilder::new().max_dbs(2).open(d.path(), 0o777).expect("open db");
+        let mut db = DB::open_default(&d.path().to_string_lossy()).expect("open db");
+        let meta = db.create_cf(META, &Options::new()).expect("open meta cf");
+        let data = db.create_cf(DATA, &Options::new()).expect("open data cf");
 
-        Log { dir: d, env: env }
+        Log { dir: d, db: db, meta: meta, data: data }
     }
 
     fn tokey(seq: u64) -> [u8; 8] {
@@ -61,29 +66,23 @@ impl Log {
     }
 
     pub fn seqno(&self) -> u64 {
-        let mut data = self.env.create_db(META, DbFlags::empty()).expect("open-db");
-        let mut rdr = self.env.get_reader().expect("get_reader");
-
-        match rdr.bind(&data).get(&META_COMMITTED) {
-            Ok(val) => {
-                let current = Self::fromkey(val);
+        match self.db.get_cf(self.meta, &META_COMMITTED.as_bytes()) {
+            Ok(Some(val)) => {
+                let current = Self::fromkey(&val);
                 let next = current + 1;
                 debug!("Last exisiting current: {:?}; next: {:?}", current, next);
                 next
             },
-            Err(MdbError::NotFound) => 0,
-            Err(e) => panic!("Unexpected error getting last item: {:?}", e),
+            Ok(None) => 0,
+            Err(e) => panic!("Unexpected error getting commit point: {:?}", e),
         }
     }
 
     fn read(&self, seqno: u64) -> Option<Operation> {
-        let mut data = self.env.create_db(DATA, DbFlags::empty()).expect("open-db");
-        let mut rdr = self.env.get_reader().expect("get_reader");
-        let mut db = rdr.bind(&data);
         let key = Self::tokey(seqno);
-        let ret = match db.get(&key.as_ref()) {
-            Ok(val) => Some(spki_sexp::from_bytes(val).expect("decode operation")),
-            Err(MdbError::NotFound) => None,
+        let ret = match self.db.get_cf(self.data, &key.as_ref()) {
+            Ok(Some(val)) => Some(spki_sexp::from_bytes(&val).expect("decode operation")),
+            Ok(None) => None,
             Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
         };
         debug!("Read: {:?} => {:?}", seqno, ret);
@@ -103,20 +102,18 @@ impl Log {
 
     fn insert_at(&mut self, seqno: u64, op: &Operation) {
         let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-        let mut data = self.env.create_db(DATA, DbFlags::empty()).expect("open-db");
-        let mut meta = self.env.create_db(META, DbFlags::empty()).expect("open-db");
-        let txn = self.env.new_transaction().expect("new_transaction");
         debug!("Checking {:?}", seqno);
         let key = Self::tokey(seqno);
-        match txn.bind(&data).get::<&[u8]>(&key.as_ref()) {
-            Err(MdbError::NotFound) => (),
+        /* match self.db.get_cf(self.data, &key.as_ref()) {
+            Ok(None) => (),
             Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
             Ok(_) => panic!("Unexpected entry at seqno: {:?}", seqno),
-        };
+        }; */
 
-        txn.bind(&data).set(&key.as_ref(), &data_bytes).expect("Persist operation");
-        txn.bind(&meta).set(&META_COMMITTED, &key.as_ref()).expect("Persist operation");
-        txn.commit().expect("txn commit");
+        let mut batch = WriteBatch::new();
+        batch.put_cf(self.data, &key.as_ref(), &data_bytes).expect("Persist operation");
+        batch.put_cf(self.meta, META_COMMITTED.as_bytes(), &key.as_ref()).expect("Persist operation");
+        self.db.write(batch).expect("Write batch");
         debug!("Wrote as {:?}/{:?}: {:?}", seqno, key, data_bytes.len());
     }
 }
