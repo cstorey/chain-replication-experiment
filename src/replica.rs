@@ -89,7 +89,7 @@ impl Forwarder {
             &OpResp::Ok(epoch, seqno, _) | &OpResp::Err(epoch, seqno, _) => {
                 self.last_acked_downstream = Some(seqno);
                 if let Some(token) = self.pending_operations.remove(&seqno) {
-                    info!("Found in-flight op {:?} for client token {:?}", seqno, token);
+                    trace!("Found in-flight op {:?} for client token {:?}", seqno, token);
                     Some(token)
                 } else {
                     warn!("Unexpected response for seqno: {:?}", seqno);
@@ -199,7 +199,6 @@ impl ReplModel {
         }
 
         self.log.prepare(seqno, &op);
-        self.log.commit_to(seqno);
 
         self.next.process_operation(channel, epoch, seqno, op)
     }
@@ -223,6 +222,10 @@ impl ReplModel {
 
     pub fn reset(&mut self) {
         self.next.reset()
+    }
+
+    pub fn flush(&mut self) -> bool {
+        self.log.flush()
     }
 
     pub fn set_has_downstream(&mut self, is_forwarder: bool) {

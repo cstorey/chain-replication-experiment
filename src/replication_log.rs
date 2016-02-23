@@ -46,17 +46,14 @@ impl Log {
     }
 
     pub fn seqno(&self) -> u64 {
-        self.read_seqno(META_PREPARED)
+        let current = self.read_seqno(META_PREPARED);
+        let next = current + 1;
+        next
     }
 
     fn read_seqno(&self, name: &str) -> u64 {
         match self.db.get_cf(self.meta, name.as_bytes()) {
-            Ok(Some(val)) => {
-                let current = Self::fromkey(&val);
-                let next = current + 1;
-                debug!("Last exisiting {:?}: {:?}; next: {:?}", name, current, next);
-                next
-            },
+            Ok(Some(val)) => Self::fromkey(&val),
             Ok(None) => 0,
             Err(e) => panic!("Unexpected error getting commit point: {:?}", e),
         }
@@ -98,7 +95,7 @@ impl Log {
         batch.put_cf(self.data, &key.as_ref(), &data_bytes).expect("Persist operation");
         batch.put_cf(self.meta, META_PREPARED.as_bytes(), &key.as_ref()).expect("Persist prepare point");
         self.db.write(batch).expect("Write batch");
-        debug!("Watermarks: prepared: {:?}; committed: {:?}",
+        trace!("Watermarks: prepared: {:?}; committed: {:?}",
                 self.read_seqno(META_PREPARED),
                 self.read_seqno(META_COMMITTED));
     }
@@ -120,8 +117,20 @@ impl Log {
         let mut batch = WriteBatch::new();
         batch.put_cf(self.meta, META_COMMITTED.as_bytes(), &key.as_ref()).expect("Persist commit point");
         self.db.write(batch).expect("Write batch");
-        debug!("Watermarks: prepared: {:?}; committed: {:?}",
+        trace!("Watermarks: prepared: {:?}; committed: {:?}",
                 self.read_seqno(META_PREPARED),
                 self.read_seqno(META_COMMITTED));
+    }
+
+    pub fn flush(&mut self) -> bool {
+        let prepared = self.read_seqno(META_PREPARED);
+        let committed = self.read_seqno(META_COMMITTED);
+        if committed < prepared {
+            info!("Flushing {} ({:?}->{:?})", prepared - committed, committed, prepared);
+            self.commit_to(prepared);
+            true
+        } else {
+            false
+        }
     }
 }
