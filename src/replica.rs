@@ -37,12 +37,16 @@ struct Log {
     env: Environment,
 }
 
+const META : &'static str = "meta";
+const DATA : &'static str = "data";
+const META_COMMITTED : &'static str = "committed";
+
 impl Log {
     fn new() -> Log {
         let d = TempDir::new("lmdb-log").expect("new log");
         info!("DB path: {:?}", d.path());
-        let env = EnvBuilder::new().open(d.path(), 0o777).expect("open db");
-        
+        let env = EnvBuilder::new().max_dbs(2).open(d.path(), 0o777).expect("open db");
+
         Log { dir: d, env: env }
     }
 
@@ -56,19 +60,15 @@ impl Log {
         BigEndian::read_u64(&key)
     }
 
-
-
     pub fn seqno(&self) -> u64 {
-        let mut dbh = self.env.get_default_db(DbFlags::empty()).expect("open-db");
+        let mut data = self.env.create_db(META, DbFlags::empty()).expect("open-db");
         let mut rdr = self.env.get_reader().expect("get_reader");
-        let mut db = rdr.bind(&dbh);
-        let mut cur = db.new_cursor().expect("cursor");
-        match cur.to_last() { 
-            Ok(()) => {
-                let last_key = cur.get_key::<&[u8]>().expect("get_key");
-                let current = Self::fromkey(last_key);
+
+        match rdr.bind(&data).get(&META_COMMITTED) {
+            Ok(val) => {
+                let current = Self::fromkey(val);
                 let next = current + 1;
-                debug!("Last exisiting current: {:?}; key: {:?}; next: {:?}", last_key, current, next);
+                debug!("Last exisiting current: {:?}; next: {:?}", current, next);
                 next
             },
             Err(MdbError::NotFound) => 0,
@@ -77,9 +77,9 @@ impl Log {
     }
 
     fn read(&self, seqno: u64) -> Option<Operation> {
-        let mut dbh = self.env.get_default_db(DbFlags::empty()).expect("open-db");
+        let mut data = self.env.create_db(DATA, DbFlags::empty()).expect("open-db");
         let mut rdr = self.env.get_reader().expect("get_reader");
-        let mut db = rdr.bind(&dbh);
+        let mut db = rdr.bind(&data);
         let key = Self::tokey(seqno);
         let ret = match db.get(&key.as_ref()) {
             Ok(val) => Some(spki_sexp::from_bytes(val).expect("decode operation")),
@@ -102,20 +102,22 @@ impl Log {
     }
 
     fn insert_at(&mut self, seqno: u64, op: &Operation) {
-        let bytes = spki_sexp::as_bytes(op).expect("encode operation");
-        let mut dbh = self.env.get_default_db(DbFlags::empty()).expect("open-db");
+        let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
+        let mut data = self.env.create_db(DATA, DbFlags::empty()).expect("open-db");
+        let mut meta = self.env.create_db(META, DbFlags::empty()).expect("open-db");
         let txn = self.env.new_transaction().expect("new_transaction");
         debug!("Checking {:?}", seqno);
         let key = Self::tokey(seqno);
-        match txn.bind(&dbh).get::<&[u8]>(&key.as_ref()) {
+        match txn.bind(&data).get::<&[u8]>(&key.as_ref()) {
             Err(MdbError::NotFound) => (),
             Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
             Ok(_) => panic!("Unexpected entry at seqno: {:?}", seqno),
         };
 
-        txn.bind(&dbh).set(&key.as_ref(), &bytes).expect("Persist operation");
+        txn.bind(&data).set(&key.as_ref(), &data_bytes).expect("Persist operation");
+        txn.bind(&meta).set(&META_COMMITTED, &key.as_ref()).expect("Persist operation");
         txn.commit().expect("txn commit");
-        debug!("Wrote as {:?}/{:?}: {:?}", seqno, key, bytes.len());
+        debug!("Wrote as {:?}/{:?}: {:?}", seqno, key, data_bytes.len());
     }
 }
 
