@@ -2,9 +2,9 @@ use etcd;
 use std::thread;
 use std::sync::atomic::{Ordering,AtomicBool};
 use std::fmt;
-use std::time::Duration;
 use std::sync::Arc;
 use std::collections::BTreeMap;
+use time::{SteadyTime,Duration};
 use serde_json as json;
 use serde::ser::Serialize;
 use serde::de::Deserialize;
@@ -119,7 +119,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
             Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
         }
 
-        let me = self.etcd.create_in_order(MEMBERS, &self.data_json(), Some(self.lease_time.as_secs())).expect("Create unique node");
+        let me = self.etcd.create_in_order(MEMBERS, &self.data_json(), Some(self.lease_time.num_seconds() as u64)).expect("Create unique node");
         info!("My node! {:?}", me);
         self.lease_key = Some(me.node.key.expect("Key name"));
         me.node.modified_index.expect("Lease node version")
@@ -131,15 +131,15 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 
     fn run_lease(&self, mut lease_index: u64) {
         let watch = DeathWatch::new(&self.lease_alive, || (*self.on_exit)() );
-        let pausetime = self.lease_time / 2;
+        let update_interval = self.lease_time / 2;
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
         loop {
-
-            thread::sleep(pausetime);
             trace!("touch node: {:?}={:?}", lease_key, self.data);
+            let start_time = SteadyTime::now();
+            let next_wakeup = start_time + update_interval;
             let res = match self.etcd.compare_and_swap(&lease_key, &self.data_json(),
-                Some(self.lease_time.as_secs()), None, Some(lease_index)) {
+                Some(self.lease_time.num_seconds() as u64), None, Some(lease_index)) {
                     Ok(res) => {
                         trace!("refreshed lease:: {}: {:?}: ", lease_key, res.node.modified_index);
                         res
@@ -149,8 +149,14 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
                     },
                     Err(e) => panic!("Unexpected error updating lease {}: {:?}", lease_key, e),
             };
-            trace!("Update: {:?}", res);
             lease_index = res.node.modified_index.expect("lease version");
+            let end_time = SteadyTime::now();
+            trace!("Updated in {}: {:?}", end_time - start_time, res);
+            let pausetime = next_wakeup - end_time; 
+            trace!("Pause for {}", pausetime);
+            if pausetime > Duration::zero() {
+                thread::sleep_ms(pausetime.num_milliseconds() as u32);
+            }
         }
     }
 

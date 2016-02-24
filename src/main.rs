@@ -1,4 +1,5 @@
 extern crate mio;
+extern crate time;
 extern crate log4rs;
 #[macro_use]
 extern crate log;
@@ -7,7 +8,7 @@ extern crate clap;
 extern crate chain_repl_test;
 
 use std::net::SocketAddr;
-use std::time::Duration;
+use time::Duration;
 use std::net::ToSocketAddrs;
 use std::collections::HashSet;
 use clap::{Arg, App};
@@ -59,7 +60,7 @@ fn main() {
         info!("Etcd at: {:?}", etcd);
         let view_cb = { let notifier = service.get_notifier(&mut event_loop); move |view| notifier.notify(Some(view)) };
         let shutdown_cb = { let notifier2 = service.get_notifier(&mut event_loop); move || notifier2.notify(None) };
-        let config = ConfigClient::new(etcd, service.node_config(), Duration::new(5, 0),
+        let config = ConfigClient::new(etcd, service.node_config(), Duration::seconds(5),
             view_cb, shutdown_cb).expect("Etcd");
         Some(config)
     } else {
