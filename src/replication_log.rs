@@ -1,5 +1,5 @@
 use std::fmt;
-use rocksdb::{DB,Writable,Options, WriteBatch};
+use rocksdb::{DB,Writable,Options, WriteBatch,WriteOptions};
 use rocksdb::ffi::DBCFHandle;
 use tempdir::TempDir;
 use byteorder::{ByteOrder, BigEndian};
@@ -114,9 +114,10 @@ impl Log {
             Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
         };
 
-        let mut batch = WriteBatch::new();
-        batch.put_cf(self.meta, META_COMMITTED.as_bytes(), &key.as_ref()).expect("Persist commit point");
-        self.db.write(batch).expect("Write batch");
+        let mut opts = WriteOptions::new();
+        opts.set_sync(true);
+        self.db.put_cf_opt(self.meta, META_COMMITTED.as_bytes(), &key.as_ref(), &opts)
+            .expect("Persist commit point");
         trace!("Watermarks: prepared: {:?}; committed: {:?}",
                 self.read_seqno(META_PREPARED),
                 self.read_seqno(META_COMMITTED));

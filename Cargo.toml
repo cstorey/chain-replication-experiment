@@ -16,10 +16,13 @@ etcd = "0.3.1"
 log = "*"
 log4rs = "*"
 mio = "0.4.1"
-rocksdb = "0.3.0"
 serde = "0.6.13"
 serde_json = "0.6.0"
 tempdir = "0.3.4"
+
+[dependencies.rocksdb]
+git = "https://github.com/cstorey/rust-rocksdb.git"
+optional = false
 
 [dependencies.spki-sexp]
 git = "https://github.com/cstorey/spki-sexp.rs.git"
