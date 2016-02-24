@@ -13,7 +13,8 @@ etcd:
   command: -advertise-client-urls=http://0.0.0.0:2379 -listen-client-urls=http://0.0.0.0:2379
 
 instance:
-  image: ubuntu:14.04
+  # image: ubuntu:14.04
+  build: docker-env/
   restart: always
   working_dir: $PWD/
   command: bash -x -o pipefail -o nounset -c '$PWD/target/debug/chain-repl-test -e http://etcd:2379/ -p $$HOSTNAME:7000 -l $$HOSTNAME:7100'
