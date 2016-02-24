@@ -21,6 +21,7 @@ pub struct Downstream<T: fmt::Debug> {
     sock_status: mio::EventSet,
     pending: VecDeque<ReplicationMessage>,
     write_buf: Vec<u8>,
+    read_buf: Vec<u8>,
     should_disconnect: bool,
     timeout_triggered: bool,
     codec: T,
@@ -41,7 +42,8 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
             socket: None,
             sock_status: mio::EventSet::none(),
             pending: VecDeque::new(),
-            write_buf: Vec::new(),
+            write_buf: Vec::with_capacity(1 << 14),
+            read_buf: Vec::with_capacity(1 << 14),
             should_disconnect: false,
             timeout_triggered: true,
             codec: codec,
@@ -168,16 +170,16 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
 
 
     fn read(&mut self) {
-        let mut abuf = Vec::new();
         if let &mut Downstream { socket: Some(ref mut sock), ref mut codec, token, .. } = self {
-            match sock.try_read_buf(&mut abuf) {
+            match sock.try_read_buf(&mut self.read_buf) {
                 Ok(Some(0)) => {
                     trace!("{:?}: EOF!", token);
                     self.should_disconnect = true
                 },
                 Ok(Some(n)) => {
                     trace!("{:?}: Read {}bytes", token, n);
-                    codec.feed(&abuf);
+                    codec.feed(&self.read_buf);
+                    self.read_buf.clear();
                 },
                 Ok(None) => {
                     trace!("{:?}: Noop!", token);
@@ -191,11 +193,12 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
     }
 
     fn prep_write_buffer(&mut self) {
-        if let Some(it) = self.pending.pop_front() {
-            debug!("Preparing to send downstream (qlen {}): {:?}", self.pending.len(), it);
+        debug!("Preparing to send downstream (qlen {}; bufsz {})", self.pending.len(), self.write_buf.len());
+        while let Some(it) = self.pending.pop_front() {
             let out = self.codec.encode(it);
             self.write_buf.extend(&out);
         }
+        debug!("Prepared to send downstream (qlen {}; bufsz {})", self.pending.len(), self.write_buf.len());
     }
 
     fn write(&mut self) {
