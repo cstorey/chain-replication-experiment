@@ -30,6 +30,7 @@ pub struct LineConn<T> {
     read_eof: bool,
     failed: bool,
     write_buf: Vec<u8>,
+    read_buf: Vec<u8>,
     codec: T,
 }
 
@@ -41,6 +42,7 @@ impl<T: Reader<ChainReplMsg> + Encoder<OpResp> + fmt::Debug> LineConn<T> {
             sock_status: mio::EventSet::none(),
             token: token,
             write_buf: Vec::with_capacity(DEFAULT_BUFSZ),
+            read_buf: Vec::with_capacity(DEFAULT_BUFSZ),
             read_eof: false,
             failed: false,
             codec: codec,
@@ -105,15 +107,15 @@ impl<T: Reader<ChainReplMsg> + Encoder<OpResp> + fmt::Debug> LineConn<T> {
 
 
     fn read(&mut self) {
-        let mut abuf = Vec::with_capacity(DEFAULT_BUFSZ);
-        match self.socket.try_read_buf(&mut abuf) {
+        match self.socket.try_read_buf(&mut self.read_buf) {
             Ok(Some(0)) => {
                 debug!("{:?}: EOF!", self.socket.peer_addr());
                 self.read_eof = true
             },
             Ok(Some(n)) => {
                 trace!("{:?}: Read {}bytes", self.socket.peer_addr(), n);
-                self.codec.feed(&abuf);
+                self.codec.feed(&self.read_buf);
+                self.read_buf.clear();
             },
             Ok(None) => {
                 trace!("{:?}: Noop!", self.socket.peer_addr());
