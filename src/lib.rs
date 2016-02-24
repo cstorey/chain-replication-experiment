@@ -5,6 +5,7 @@ extern crate log;
 extern crate serde;
 extern crate serde_json;
 extern crate spki_sexp;
+extern crate time;
 
 extern crate etcd;
 extern crate tempdir;
@@ -218,14 +219,15 @@ impl ChainRepl {
             changed = false;
             for conn in self.connections.iter_mut() {
                 let changedp = conn.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
-                if changedp { debug!("Changed: {:?}", conn); };
+                if changedp { trace!("Changed: {:?}", conn); };
                 changed |= changedp;
             }
 
             let changedp = self.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
-            if changedp { debug!("Changed: {:?}", "Model"); }
+            if changedp { trace!("Changed: {:?}", "Model"); }
             changed |= changedp;
 
+            debug!("Actions pending: {:?}", parent_actions.len());
             for action in parent_actions.drain(..) {
                 debug!("Action: {:?}", action);
                 self.process_action(action, event_loop);

@@ -19,6 +19,7 @@ mio = "0.4.1"
 serde = "0.6.13"
 serde_json = "0.6.0"
 tempdir = "0.3.4"
+time = "0.1.34"
 
 [dependencies.rocksdb]
 git = "https://github.com/cstorey/rust-rocksdb.git"

@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg, ReplicationMessage};
 
 const NL : u8 = '\n' as u8;
+const DEFAULT_BUFSZ : usize = 1 << 12;
 
 pub trait Encoder<T> {
     fn encode(&self, s: T) -> Vec<u8>;
@@ -39,7 +40,7 @@ impl<T: Reader<ChainReplMsg> + Encoder<OpResp> + fmt::Debug> LineConn<T> {
             socket: socket,
             sock_status: mio::EventSet::none(),
             token: token,
-            write_buf: Vec::new(),
+            write_buf: Vec::with_capacity(DEFAULT_BUFSZ),
             read_eof: false,
             failed: false,
             codec: codec,
@@ -104,7 +105,7 @@ impl<T: Reader<ChainReplMsg> + Encoder<OpResp> + fmt::Debug> LineConn<T> {
 
 
     fn read(&mut self) {
-        let mut abuf = Vec::new();
+        let mut abuf = Vec::with_capacity(DEFAULT_BUFSZ);
         match self.socket.try_read_buf(&mut abuf) {
             Ok(Some(0)) => {
                 debug!("{:?}: EOF!", self.socket.peer_addr());

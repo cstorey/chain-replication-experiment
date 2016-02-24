@@ -5,6 +5,7 @@ use tempdir::TempDir;
 use byteorder::{ByteOrder, BigEndian};
 use spki_sexp;
 use super::Operation;
+use time::{Duration, PreciseTime};
 
 pub struct Log {
     dir: TempDir,
@@ -91,10 +92,13 @@ impl Log {
             Ok(_) => panic!("Unexpected entry at seqno: {:?}", seqno),
         }; */
 
+        let t0 = PreciseTime::now();
         let mut batch = WriteBatch::new();
         batch.put_cf(self.data, &key.as_ref(), &data_bytes).expect("Persist operation");
         batch.put_cf(self.meta, META_PREPARED.as_bytes(), &key.as_ref()).expect("Persist prepare point");
         self.db.write(batch).expect("Write batch");
+        let t1 = PreciseTime::now();
+        debug!("Prepare: {}", t0.to(t1));
         trace!("Watermarks: prepared: {:?}; committed: {:?}",
                 self.read_seqno(META_PREPARED),
                 self.read_seqno(META_COMMITTED));
@@ -114,10 +118,13 @@ impl Log {
             Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
         };
 
+        let t0 = PreciseTime::now();
         let mut opts = WriteOptions::new();
         opts.set_sync(true);
         self.db.put_cf_opt(self.meta, META_COMMITTED.as_bytes(), &key.as_ref(), &opts)
             .expect("Persist commit point");
+        let t1 = PreciseTime::now();
+        debug!("Commit: {}", t0.to(t1));
         trace!("Watermarks: prepared: {:?}; committed: {:?}",
                 self.read_seqno(META_PREPARED),
                 self.read_seqno(META_COMMITTED));
