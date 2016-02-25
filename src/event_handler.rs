@@ -2,16 +2,16 @@ use mio;
 
 use super::{ChainRepl, ChainReplMsg,OpResp};
 
-use line_conn::{SexpPeer, PlainClient, LineConn};
+use line_conn::{SexpPeer, PlainClient, LineConn, ManualClientProto, PeerClientProto};
 use downstream_conn::Downstream;
 use listener::Listener;
 
 #[derive(Debug)]
 pub enum EventHandler {
     Listener (Listener),
-    Conn (LineConn<PlainClient>),
-    Upstream (LineConn<SexpPeer>),
-    Downstream (Downstream<SexpPeer>),
+    Conn (LineConn<PlainClient, ManualClientProto>),
+    Upstream (LineConn<SexpPeer, PeerClientProto>),
+    Downstream (Downstream<SexpPeer/*, ServerProto*/>),
 }
 
 impl EventHandler {
