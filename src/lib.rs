@@ -36,28 +36,28 @@ use event_handler::EventHandler;
 pub use data::*;
 pub use config::*;
 
-use replica::ReplModel;
+use replica::{AppModel, ReplModel};
 
 
 #[derive(Debug)]
-enum ChainReplMsg {
-    Operation { source: mio::Token, epoch: Option<u64>, seqno: Option<u64>, op: Operation },
+enum ChainReplMsg<O> {
+    Operation { source: mio::Token, epoch: Option<u64>, seqno: Option<u64>, op: O },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
-    ForwardDownstream(u64, PeerMsg)
+    ForwardDownstream(u64, PeerMsg<O>)
 }
 
 #[derive(Debug)]
-pub struct ChainRepl {
-    connections: Slab<EventHandler>,
+pub struct ChainRepl<M: AppModel> {
+    connections: Slab<EventHandler<M>>,
     downstream_slot: Option<mio::Token>,
     node_config: NodeViewConfig,
     new_view: Option<ConfigurationView<NodeViewConfig>>,
-    model: ReplModel,
+    model: ReplModel<M>,
 }
 
-impl ChainRepl {
-    pub fn new() -> ChainRepl {
+impl<M: AppModel> ChainRepl<M> {
+    pub fn new() -> ChainRepl<M> {
         ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
@@ -67,7 +67,7 @@ impl ChainRepl {
         }
     }
 
-    pub fn listen(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, addr: SocketAddr, role: Role) {
+    pub fn listen(&mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>, addr: SocketAddr, role: Role) {
         info!("Listen on {:?} for {:?}", addr, role);
         let &mut ChainRepl { ref mut connections, ref mut node_config, .. } = self;
         let token = connections.insert_with(|token| {
@@ -82,7 +82,7 @@ impl ChainRepl {
         connections[token].initialize(event_loop, token);
     }
 
-    pub fn set_downstream(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, target: Option<SocketAddr>) {
+    pub fn set_downstream(&mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>, target: Option<SocketAddr>) {
         match (self.downstream_slot, target) {
             (Some(_), Some(target)) => self.downstream().expect("downstream").reconnect_to(target),
             (None, Some(target)) => {
@@ -96,7 +96,7 @@ impl ChainRepl {
         }
     }
 
-    fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
+    fn process_action(&mut self, msg: ChainReplMsg<M::Operation>, event_loop: &mut mio::EventLoop<ChainRepl<M>>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
@@ -126,7 +126,7 @@ impl ChainRepl {
         }
     }
 
-    fn process_new_client_conn(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, role: Role, socket: TcpStream) {
+    fn process_new_client_conn(&mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>, role: Role, socket: TcpStream) {
         let peer = socket.peer_addr().expect("peer address");
         let seqno = self.model.seqno();
         let token = self.connections
@@ -145,7 +145,7 @@ impl ChainRepl {
         &self.connections[token].initialize(event_loop, token);
     }
 
-    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<Self>, mut action: F) -> bool {
+    fn process_rules<F: FnMut(ChainReplMsg<O>), O>(&mut self, event_loop: &mut mio::EventLoop<Self>, mut action: F) -> bool {
         let mut changed = false;
         changed |= self.model.process_replication(
             |epoch, msg| action(ChainReplMsg::ForwardDownstream(epoch, msg)));
@@ -195,7 +195,7 @@ impl ChainRepl {
         self.model.epoch_changed(view.epoch);
     }
 
-    fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {
+    fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer, M::Operation>> {
         self.downstream_slot.map(move |slot| match &mut self.connections[slot] {
             &mut EventHandler::Downstream(ref mut d) => d,
             other => panic!("Downstream slot not populated with a downstream instance: {:?}", other),
@@ -283,7 +283,7 @@ impl Notifier {
     }
 }
 
-impl mio::Handler for ChainRepl {
+impl<M: AppModel> mio::Handler for ChainRepl<M> {
     // This is a bit wierd; we can pass a parent action back to enqueue some action.
     type Timeout = mio::Token;
     type Message = Option<ConfigurationView<NodeViewConfig>>;

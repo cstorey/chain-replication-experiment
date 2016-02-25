@@ -5,7 +5,9 @@ use tempdir::TempDir;
 use byteorder::{ByteOrder, BigEndian};
 use spki_sexp;
 use super::Operation;
+use replica::AppModel;
 use time::{Duration, PreciseTime};
+use serde::{Serialize,Deserialize};
 
 pub struct Log {
     dir: TempDir,
@@ -82,7 +84,7 @@ impl Log {
         }
     }
 
-    pub fn prepare(&mut self, seqno: u64, op: &Operation) {
+    pub fn prepare<O: Serialize>(&mut self, seqno: u64, op: &O) {
         let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
         debug!("Prepare {:?}", seqno);
         let key = Self::tokey(seqno);

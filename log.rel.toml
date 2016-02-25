@@ -14,12 +14,12 @@ appenders = ["stdout"]
 # and *not* the normal appenders installed at the root
 [[logger]]
 name = "chain_repl_test"
-level = "debug"
+level = "warn"
 
 [[logger]]
 name = "chain_repl_test::replication_log"
-level = "debug"
+level = "warn"
 
 [[logger]]
 name = "chain_repl_test::config"
-level = "warn"
+level = "info"

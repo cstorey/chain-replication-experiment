@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 use std::collections::VecDeque;
 
 use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg, ReplicationMessage};
+use replica::AppModel;
 
 const NL : u8 = '\n' as u8;
 const DEFAULT_BUFSZ : usize = 1 << 12;
@@ -23,19 +24,21 @@ pub trait Reader<T> {
     fn new(mio::Token) -> Self;
 }
 
-trait Protocol : fmt::Debug{
+trait Protocol<O> : fmt::Debug{
+    // What goes over the wire
     type Send;
     type Recv;
 
-    fn as_msg(mio::Token, Self::Recv) -> ChainReplMsg;
+    fn as_msg(mio::Token, Self::Recv) -> ChainReplMsg<O>;
  }
 
 #[derive(Debug)]
-pub struct PeerClientProto;
-impl Protocol for PeerClientProto {
+pub struct PeerClientProto<O>(PhantomData<O>);
+impl<O: fmt::Debug> Protocol<O> for PeerClientProto<O> {
     type Send = OpResp;
-    type Recv = ReplicationMessage;
-    fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg {
+    type Recv = ReplicationMessage<O>;
+
+    fn as_msg<k>(token: mio::Token, msg: Self::Recv) -> ChainReplMsg<O> {
         match msg {
             ReplicationMessage { epoch, msg: PeerMsg::Commit(seqno, op) } =>
                 ChainReplMsg::Operation { source: token, epoch: Some(epoch), seqno: Some(seqno), op: op },
@@ -45,10 +48,10 @@ impl Protocol for PeerClientProto {
 
 #[derive(Debug)]
 pub struct ManualClientProto;
-impl Protocol for ManualClientProto {
+impl<O> Protocol<O> for ManualClientProto {
     type Send = OpResp;
     type Recv = Operation;
-    fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg {
+    fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg<O> {
         ChainReplMsg::Operation { source: token, epoch: None, seqno: None, op: msg }
     }
 }
@@ -78,7 +81,6 @@ impl<T, P> LineConn<T, P> where P: Protocol, T: /* Reader<P::Recv> + Encoder<P::
             read_eof: false,
             failed: false,
             codec: codec,
-            proto: PhantomData,
         }
     }
 
@@ -86,7 +88,7 @@ impl<T, P> LineConn<T, P> where P: Protocol, T: /* Reader<P::Recv> + Encoder<P::
         self.token
     }
 
-    pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
+    pub fn initialize<M: AppModel>(&self, event_loop: &mut mio::EventLoop<ChainRepl<M>>, token: mio::Token) {
         event_loop.register_opt(
                 &self.socket,
                 token,
@@ -96,7 +98,7 @@ impl<T, P> LineConn<T, P> where P: Protocol, T: /* Reader<P::Recv> + Encoder<P::
     }
 
     // Event updates arrive here
-    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+    pub fn handle_event<M: AppModel>(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl<M>>, events: mio::EventSet) {
         self.sock_status.insert(events);
         trace!("LineConn::handle_event: {:?}; this time: {:?}; now: {:?}",
                 self.socket.peer_addr(), events, self.sock_status);
@@ -104,12 +106,14 @@ impl<T, P> LineConn<T, P> where P: Protocol, T: /* Reader<P::Recv> + Encoder<P::
 
 }
 
+    // actions are processed here on down
 
 
 impl<T, P> LineConn<T, P> where
         P: Protocol,
         T: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug {
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+    pub fn process_rules<M: AppModel, F: FnMut(ChainReplMsg<M::Operation>)>(
+        &mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>,
         to_parent: &mut F) -> bool {
 
         if self.sock_status.is_readable() {
@@ -130,7 +134,7 @@ impl<T, P> LineConn<T, P> where
         changed
     }
 
-    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
+    fn process_buffer<O, F: FnMut(ChainReplMsg<O>)>(&mut self, to_parent: &mut F) -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(cmd) = self.codec.take() {
@@ -181,7 +185,7 @@ impl<T, P> LineConn<T, P> where
         }
     }
 
-    fn reinitialize(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>) {
+    fn reinitialize<M: AppModel>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>) {
         let mut flags = mio::EventSet::readable();
         if !self.write_buf.is_empty() {
             flags.insert(mio::EventSet::writable());
@@ -228,7 +232,7 @@ impl<T: Serialize> Encoder<T> for SexpPeer {
     }
 }
 
-impl Reader<ChainReplMsg> for SexpPeer {
+impl<O> Reader<ChainReplMsg<O>> for SexpPeer {
     fn new(token: mio::Token) -> SexpPeer {
         Self::fresh(token)
     }
@@ -236,7 +240,7 @@ impl Reader<ChainReplMsg> for SexpPeer {
     fn feed(&mut self, slice: &[u8]) {
         self.packets.feed(slice)
     }
-    fn take(&mut self) -> Option<ChainReplMsg> {
+    fn take(&mut self) -> Option<ChainReplMsg<O>> {
         if let Some(msg) = self.packets.take().expect("Pull packet") {
             let _ : ReplicationMessage = msg;
             debug!("Decoding PeerMsg: {:?}", msg);

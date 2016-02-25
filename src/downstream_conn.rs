@@ -6,20 +6,22 @@ use serde_json as json;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::fmt;
+use std::marker::PhantomData;
 use std::io::ErrorKind;
 
 use super::{ChainRepl, ChainReplMsg,OpResp, Operation, PeerMsg, ReplicationMessage};
-use line_conn::{Encoder, Reader, SexpPeer};
+use line_conn::{Encoder, Reader, SexpPeer, Protocol};
+use replica::AppModel;
 
 #[derive(Debug)]
-pub struct Downstream<T: fmt::Debug> {
+pub struct Downstream<T: fmt::Debug, O> {
     token: mio::Token,
     peer: Option<SocketAddr>,
     // Rather feels like we need to factor this into per-iteration state.
     // ... LAYERS!
     socket: Option<TcpStream>,
     sock_status: mio::EventSet,
-    pending: VecDeque<ReplicationMessage>,
+    pending: VecDeque<ReplicationMessage<O>>,
     write_buf: Vec<u8>,
     read_buf: Vec<u8>,
     should_disconnect: bool,
@@ -27,13 +29,22 @@ pub struct Downstream<T: fmt::Debug> {
     codec: T,
 }
 
-impl Downstream<SexpPeer> {
+impl<T: fmt::Debug, O: fmt::Debug> Protocol for Downstream<T, O> {
+    type Send = ReplicationMessage<O>;
+    type Recv = OpResp;
+    fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg<O> {
+        // ChainReplMsg::Operation { source: token, epoch: None, seqno: None, op: msg }
+        unimplemented!()
+    }
+}
+
+impl<O> Downstream<SexpPeer, O> {
     pub fn new(target: Option<SocketAddr>, token: mio::Token) -> Self {
        Self::with_codec(target, token, SexpPeer::fresh(token))
     }
 }
 
-impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T> {
+impl<T: Reader<OpResp> + Encoder<ReplicationMessage<O>> + fmt::Debug, O> Downstream<T, O> {
     pub fn with_codec(target: Option<SocketAddr>, token: mio::Token, codec: T) -> Self {
         debug!("Connecting to {:?}", target);
         let mut conn = Downstream {
@@ -67,7 +78,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         self.should_disconnect = true;
     }
 
-    pub fn send_to_downstream(&mut self, epoch: u64, msg: PeerMsg) {
+    pub fn send_to_downstream(&mut self, epoch: u64, msg: PeerMsg<O>) {
         debug!("Queuing for downstream (qlen: {}): {:?}: {:?}", self.pending.len()+1, self.peer, msg);
         self.pending.push_back(ReplicationMessage { epoch: epoch, msg: msg });
     }
@@ -76,7 +87,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         self.token
     }
 
-    pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
+    pub fn initialize<M: AppModel>(&self, event_loop: &mut mio::EventLoop<ChainRepl<M>>, token: mio::Token) {
         if let Some(ref sock) = self.socket {
             debug!("Initialize!{:?}", self);
             match event_loop.register_opt(
@@ -95,7 +106,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         }
     }
 
-    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+    pub fn handle_event<M: AppModel>(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl<M>>, events: mio::EventSet) {
         self.sock_status.insert(events);
         trace!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
                 self.socket.as_ref().map(|s| s.local_addr()), events, self.sock_status);
@@ -105,7 +116,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         self.timeout_triggered = true
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+    pub fn process_rules<F: FnMut(ChainReplMsg<M::Operation>), M: AppModel>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>,
             to_parent: &mut F) -> bool {
         trace!("the downstream socket is {:?}", self.sock_status);
 
@@ -221,7 +232,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         }
     }
 
-    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
+    fn process_buffer<F: FnMut(ChainReplMsg<O>)>(&mut self, to_parent: &mut F) -> bool {
         let mut changed = false;
        // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(cmd) = self.codec.take() {
@@ -238,7 +249,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         self.peer.is_none()
     }
 
-    fn reinitialize(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>) {
+    fn reinitialize<M: AppModel>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>) {
         if let Some(ref sock) = self.socket {
             let mut flags = mio::EventSet::readable();
             if !(self.write_buf.is_empty() && self.pending.is_empty()) {

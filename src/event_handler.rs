@@ -5,17 +5,19 @@ use super::{ChainRepl, ChainReplMsg,OpResp};
 use line_conn::{SexpPeer, PlainClient, LineConn, ManualClientProto, PeerClientProto};
 use downstream_conn::Downstream;
 use listener::Listener;
+use replica::AppModel;
 
 #[derive(Debug)]
-pub enum EventHandler {
+pub enum EventHandler<M: AppModel> {
     Listener (Listener),
     Conn (LineConn<PlainClient, ManualClientProto>),
-    Upstream (LineConn<SexpPeer, PeerClientProto>),
-    Downstream (Downstream<SexpPeer/*, ServerProto*/>),
+    Upstream (LineConn<SexpPeer, PeerClientProto<M::Operation>>),
+    Downstream (Downstream<SexpPeer, M::Operation>),
 }
 
-impl EventHandler {
-    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+impl<M: AppModel> EventHandler<M> {
+    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl<M>>, events: mio::EventSet) 
+        {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.handle_event(_event_loop, events),
             &mut EventHandler::Upstream(ref mut conn) => conn.handle_event(_event_loop, events),
@@ -24,7 +26,7 @@ impl EventHandler {
         }
     }
 
-    pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
+    pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl<M>>, token: mio::Token) {
         match self {
             &EventHandler::Conn(ref conn) => conn.initialize(event_loop, token),
             &EventHandler::Upstream(ref conn) => conn.initialize(event_loop, token),
@@ -42,7 +44,7 @@ impl EventHandler {
         }
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+    pub fn process_rules<F: FnMut(ChainReplMsg<M::Operation>)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>,
         to_parent: &mut F) -> bool {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.process_rules(event_loop, to_parent),

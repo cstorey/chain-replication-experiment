@@ -3,6 +3,7 @@ use mio::tcp::*;
 use std::net::SocketAddr;
 
 use super::{Role,ChainRepl, ChainReplMsg};
+use replica::AppModel;
 
 #[derive(Debug)]
 pub struct Listener {
@@ -29,18 +30,18 @@ impl Listener {
         self.token
     }
 
-    pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
+    pub fn initialize<M: AppModel>(&self, event_loop: &mut mio::EventLoop<ChainRepl<M>>, token: mio::Token) {
         event_loop.register(&self.listener, token).expect("Register listener");
     }
 
-    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+    pub fn handle_event<M: AppModel>(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl<M>>, events: mio::EventSet) {
         assert!(events.is_readable());
         self.sock_status.insert(events);
         trace!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
                 self.listener.local_addr(), events, self.sock_status);
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
+    pub fn process_rules<F: FnMut(ChainReplMsg<M::Operation>), M: AppModel>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl<M>>,
             to_parent: &mut F) -> bool {
 
         let mut changed = false;

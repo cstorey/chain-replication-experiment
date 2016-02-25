@@ -1,44 +1,74 @@
 use std::cmp;
 use std::mem;
 use std::fmt;
+use std::default::Default;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use mio;
 
 use super::{Operation,OpResp, PeerMsg};
 use event_handler::EventHandler;
 use replication_log::Log;
+use serde::{Serialize,Deserialize};
 
 const REPLICATION_CREDIT : u64 = 1024;
 
 #[derive(Debug)]
-struct Forwarder {
+struct Forwarder<M> {
     last_sent_downstream: Option<u64>,
     last_acked_downstream: Option<u64>,
     pending_operations: BTreeMap<u64, mio::Token>,
+    phantom: PhantomData<M>,
+}
+
+trait AppModel : fmt::Debug {
+    type Operation : Serialize + Deserialize + fmt::Debug;
+    fn new() -> Self;
+    fn apply_op(&mut self, epoch: u64, seqno: u64, op: Self::Operation) -> OpResp;
 }
 
 #[derive(Debug)]
-struct Terminus {
-    state: String,
+struct Terminus<M> {
+    state: M,
 }
 
 #[derive(Debug)]
-enum Role {
-    Forwarder(Forwarder),
-    Terminus(Terminus),
+enum Role<M> {
+    Forwarder(Forwarder<M>),
+    Terminus(Terminus<M>),
 }
 
-
-
 #[derive(Debug)]
-pub struct ReplModel {
-    next: Role,
+pub struct ReplModel<M> {
+    next: Role<M>,
     log: Log,
     current_epoch: u64,
 }
 
-impl Role {
-    fn process_operation(&mut self, channel: &mut EventHandler, epoch: u64, seqno: u64, op: Operation) {
+#[derive(Debug)]
+struct StringRegister {
+    value: String,
+}
+
+impl AppModel for StringRegister {
+    type Operation = super::Operation;
+    fn new() -> Self {
+        StringRegister { value: "".to_string() }
+    }
+
+    fn apply_op(&mut self, epoch: u64, seqno: u64, op: Self::Operation) -> OpResp {
+        match op {
+            Operation::Set(s) => {
+                self.value = s;
+                OpResp::Ok(epoch, seqno, None)
+            },
+            Operation::Get => OpResp::Ok(epoch, seqno, Some(self.value.clone()))
+        }
+    }
+}
+
+impl<M: AppModel> Role<M> {
+    fn process_operation(&mut self, channel: &mut EventHandler<M>, epoch: u64, seqno: u64, op: M::Operation) {
         match self {
             &mut Role::Forwarder(ref mut f) => f.process_operation(channel, epoch, seqno, op),
             &mut Role::Terminus(ref mut t) => t.process_operation(channel, epoch, seqno, op),
@@ -51,7 +81,7 @@ impl Role {
         }
     }
 
-    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &Log, forward: F) -> bool {
+    pub fn process_replication<F: FnMut(PeerMsg<M::Operation>)>(&mut self, log: &Log, forward: F) -> bool {
         match self {
             &mut Role::Forwarder(ref mut f) => f.process_replication(log, forward),
             _ => false,
@@ -71,16 +101,17 @@ impl Role {
     }
 }
 
-impl Forwarder {
-    fn new() -> Forwarder {
+impl<M: AppModel> Forwarder<M> {
+    fn new() -> Forwarder<M> {
         Forwarder {
             last_sent_downstream: None,
             last_acked_downstream: None,
             pending_operations: BTreeMap::new(),
+            phantom: PhantomData,
         }
     }
 
-    fn process_operation(&mut self, channel: &mut EventHandler, epoch: u64, seqno: u64, op: Operation) {
+    fn process_operation(&mut self, channel: &mut EventHandler<M>, epoch: u64, seqno: u64, op: M::Operation) {
         self.pending_operations.insert(seqno, channel.token());
     }
 
@@ -106,7 +137,7 @@ impl Forwarder {
         }
     }
 
-    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &Log, mut forward: F) -> bool {
+    pub fn process_replication<F: FnMut(PeerMsg<M::Operation>)>(&mut self, log: &Log, mut forward: F) -> bool {
         let mut changed = false;
         debug!("pre  Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
             log.seqno(), self.last_sent_downstream, self.last_acked_downstream);
@@ -143,28 +174,22 @@ impl Forwarder {
 }
 
 
-impl Terminus {
-    fn new() -> Terminus {
+impl<M: AppModel> Terminus<M> {
+    fn new() -> Terminus<M> {
         Terminus {
-            state: "".to_string()
+            state: M::new(),
         }
     }
 
-    fn process_operation(&mut self, channel: &mut EventHandler, epoch: u64, seqno: u64, op: Operation) {
+    fn process_operation(&mut self, channel: &mut EventHandler<M>, epoch: u64, seqno: u64, op: M::Operation) {
         info!("Terminus! {:?}/{:?}", seqno, op);
-        let resp = match op {
-            Operation::Set(s) => {
-                self.state = s;
-                OpResp::Ok(epoch, seqno, None)
-            },
-                Operation::Get => OpResp::Ok(epoch, seqno, Some(self.state.clone()))
-        };
+        let resp = self.state.apply_op(epoch, seqno, op);
         channel.response(resp)
     }
 }
 
-impl ReplModel {
-    pub fn new() -> ReplModel {
+impl<M: AppModel> ReplModel<M> {
+    pub fn new() -> ReplModel<M> {
         ReplModel {
             log: Log::new(),
             current_epoch: Default::default(),
@@ -180,12 +205,12 @@ impl ReplModel {
         self.log.seqno()
     }
 
-    pub fn process_operation(&mut self, channel: &mut EventHandler, seqno: Option<u64>, epoch: Option<u64>, op: Operation) {
+    pub fn process_operation(&mut self, channel: &mut EventHandler<M>, seqno: Option<u64>, epoch: Option<u64>, op: M::Operation) {
         let seqno = seqno.unwrap_or_else(|| self.next_seqno());
         let epoch = epoch.unwrap_or_else(|| self.current_epoch);
 
        if epoch != self.current_epoch {
-            warn!("Operation epoch ({}) differers from our last observed configuration: ({})",
+            warn!("Operation epoch ({}) differs from our last observed configuration: ({})",
                 epoch, self.current_epoch);
             let resp = OpResp::Err(epoch, seqno, format!("BadEpoch: {}; last seen config: {}", epoch, self.current_epoch));
             channel.response(resp);
@@ -199,7 +224,6 @@ impl ReplModel {
         }
 
         self.log.prepare(seqno, &op);
-
         self.next.process_operation(channel, epoch, seqno, op)
     }
 
@@ -207,7 +231,7 @@ impl ReplModel {
         self.next.process_downstream_response(reply)
     }
 
-    pub fn process_replication<F: FnMut(u64, PeerMsg)>(&mut self, mut forward: F) -> bool {
+    pub fn process_replication<F: FnMut(u64, PeerMsg<M::Operation>)>(&mut self, mut forward: F) -> bool {
         let epoch = self.current_epoch;
         self.next.process_replication(&self.log, |msg| forward(epoch, msg))
     }
