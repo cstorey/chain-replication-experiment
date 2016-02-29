@@ -30,7 +30,7 @@ impl fmt::Debug for Log {
 }
 
 impl Log {
-    pub fn new() -> Log {
+    pub fn new<F: Fn(u64) + Send + 'static>(committed: F) -> Log {
         let d = TempDir::new("rocksdb-log").expect("new log");
         info!("DB path: {:?}", d.path());
         let mut db = DB::open_default(&d.path().to_string_lossy()).expect("open db");
@@ -43,7 +43,7 @@ impl Log {
             let db = db.clone();
             thread::Builder::new()
                 .name("flusher".to_string())
-                .spawn(move || Self::flush_thread_loop(db, flush_rx))
+                .spawn(move || Self::flush_thread_loop(db, flush_rx, committed))
                 .expect("spawn flush thread")
         };
         Log {
@@ -55,7 +55,7 @@ impl Log {
         }
     }
 
-    fn flush_thread_loop(db: Arc<DB>, rx: mpsc::Receiver<u64>) {
+    fn flush_thread_loop<F: Fn(u64)>(db: Arc<DB>, rx: mpsc::Receiver<u64>, committed: F) {
         let meta = db.cf_handle(META).expect("open meta cf").clone();
         let data = db.cf_handle(DATA).expect("open data cf").clone();
         loop {
@@ -68,7 +68,9 @@ impl Log {
                 }
             }
             debug!("Flushing: {:?}", seqno);
-            Self::do_commit_to(db.clone(), meta, data, seqno)
+            Self::do_commit_to(db.clone(), meta, data, seqno);
+            debug!("Flushed: {:?}", seqno);
+            committed(seqno);
         }
     }
 
@@ -174,7 +176,7 @@ impl Log {
         db.put_cf_opt(meta, META_COMMITTED.as_bytes(), &key.as_ref(), &opts)
           .expect("Persist commit point");
         let t1 = PreciseTime::now();
-        debug!("Committed {:?} in: {}", commit_seqno - committed, t0.to(t1));
+        debug!("Committed {:?} in: {}", commit_seqno, t0.to(t1));
     }
 
     pub fn flush(&mut self) -> bool {

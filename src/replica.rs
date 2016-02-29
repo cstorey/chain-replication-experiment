@@ -188,9 +188,9 @@ impl Terminus {
 }
 
 impl ReplModel {
-    pub fn new() -> ReplModel {
+    pub fn new(log: Log) -> ReplModel {
         ReplModel {
-            log: Log::new(),
+            log: log,
             current_epoch: Default::default(),
             next: Role::Terminus(Terminus::new()),
         }

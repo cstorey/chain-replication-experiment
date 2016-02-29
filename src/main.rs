@@ -13,8 +13,7 @@ use std::net::ToSocketAddrs;
 use std::collections::HashSet;
 use clap::{Arg, App};
 
-use chain_repl_test::{ChainRepl, Role, ConfigClient};
-
+use chain_repl_test::{ChainRepl, Role, ConfigClient, ReplModel, Log};
 
 const LOG_FILE: &'static str = "log.toml";
 
@@ -30,7 +29,11 @@ fn main() {
                       .get_matches();
 
     let mut event_loop = mio::EventLoop::new().expect("Create event loop");
-    let mut service = ChainRepl::new();
+
+    let repl_notifier = ChainRepl::get_notifier(&mut event_loop);
+    let log = Log::new(move |seqno| repl_notifier.committed_to(seqno));
+    let replication = ReplModel::new(log);
+    let mut service = ChainRepl::new(replication);
 
     if let Some(listen_addr) = matches.value_of("bind") {
         let listen_addrs = listen_addr.to_socket_addrs()
@@ -66,12 +69,12 @@ fn main() {
     let conf = if let Some(etcd) = matches.value_of("etcd") {
         info!("Etcd at: {:?}", etcd);
         let view_cb = {
-            let notifier = service.get_notifier(&mut event_loop);
-            move |view| notifier.notify(Some(view))
+            let notifier = ChainRepl::get_notifier(&mut event_loop);
+            move |view| notifier.view_changed(view)
         };
         let shutdown_cb = {
-            let notifier2 = service.get_notifier(&mut event_loop);
-            move || notifier2.notify(None)
+            let notifier2 = ChainRepl::get_notifier(&mut event_loop);
+            move || notifier2.shutdown()
         };
         let config = ConfigClient::new(etcd,
                                        service.node_config(),

@@ -36,7 +36,8 @@ use event_handler::EventHandler;
 pub use data::*;
 pub use config::*;
 
-use replica::ReplModel;
+pub use replica::ReplModel;
+pub use replication_log::Log;
 
 
 #[derive(Debug)]
@@ -62,13 +63,13 @@ pub struct ChainRepl {
 }
 
 impl ChainRepl {
-    pub fn new() -> ChainRepl {
+    pub fn new(model: ReplModel) -> ChainRepl {
         ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
             node_config: Default::default(),
             new_view: None,
-            model: ReplModel::new(),
+            model: model,
         }
     }
 
@@ -303,7 +304,10 @@ impl ChainRepl {
         self.new_view = Some(view)
     }
 
-    pub fn get_notifier(&self, event_loop: &mut mio::EventLoop<Self>) -> Notifier {
+    fn committed_to(&mut self, seqno: u64) {
+        info!("Committed upto: {:?}", seqno);
+    }
+    pub fn get_notifier(event_loop: &mut mio::EventLoop<Self>) -> Notifier {
         Notifier(event_loop.channel())
     }
 
@@ -312,12 +316,17 @@ impl ChainRepl {
     }
 }
 
-pub struct Notifier(mio::Sender<Option<ConfigurationView<NodeViewConfig>>>);
+#[derive(Debug)]
+pub enum Notification {
+    ViewChange(ConfigurationView<NodeViewConfig>),
+    Shutdown,
+    CommittedTo(u64),
+}
+pub struct Notifier(mio::Sender<Notification>);
 
 impl Notifier {
-    pub fn notify(&self, view: Option<ConfigurationView<NodeViewConfig>>) {
+    fn notify(&self, mut item: Notification) {
         use mio::NotifyError::*;
-        let mut item = view;
         let mut backoff_ms = 1;
         loop {
             item = match self.0.send(item) {
@@ -330,12 +339,22 @@ impl Notifier {
             backoff_ms *= 2;
         }
     }
+
+    pub fn view_changed(&self, view: ConfigurationView<NodeViewConfig>) {
+        self.notify(Notification::ViewChange(view))
+    }
+    pub fn shutdown(&self) {
+        self.notify(Notification::Shutdown)
+    }
+    pub fn committed_to(&self, seqno: u64) {
+        self.notify(Notification::CommittedTo(seqno))
+    }
 }
 
 impl mio::Handler for ChainRepl {
     // This is a bit wierd; we can pass a parent action back to enqueue some action.
     type Timeout = mio::Token;
-    type Message = Option<ConfigurationView<NodeViewConfig>>;
+    type Message = Notification;
     fn ready(&mut self,
              event_loop: &mut mio::EventLoop<Self>,
              token: mio::Token,
@@ -351,16 +370,16 @@ impl mio::Handler for ChainRepl {
         self.io_ready(event_loop, token);
     }
 
-    fn notify(&mut self,
-              event_loop: &mut EventLoop<Self>,
-              msg: Option<ConfigurationView<NodeViewConfig>>) {
+    fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: Self::Message) {
         debug!("Notified: {:?}", msg);
-        if let Some(view) = msg {
-            self.handle_view_changed(view);
-            self.converge_state(event_loop);
-        } else {
-            info!("Shutting down");
-            event_loop.shutdown();
+        match msg {
+            Notification::ViewChange(view) => self.handle_view_changed(view),
+            Notification::CommittedTo(seqno) => self.committed_to(seqno),
+            Notification::Shutdown => {
+                info!("Shutting down");
+                event_loop.shutdown();
+            }
         }
+        self.converge_state(event_loop);
     }
 }
