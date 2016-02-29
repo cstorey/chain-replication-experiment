@@ -6,12 +6,16 @@ use byteorder::{ByteOrder, BigEndian};
 use spki_sexp;
 use super::Operation;
 use time::{Duration, PreciseTime};
+use std::thread;
+use std::sync::mpsc;
+use std::sync::Arc;
 
 pub struct Log {
     dir: TempDir,
-    db: DB,
+    db: Arc<DB>,
     meta: DBCFHandle,
     data: DBCFHandle,
+    flush_tx: mpsc::SyncSender<u64>,
 }
 
 const META: &'static str = "meta";
@@ -32,12 +36,39 @@ impl Log {
         let mut db = DB::open_default(&d.path().to_string_lossy()).expect("open db");
         let meta = db.create_cf(META, &Options::new()).expect("open meta cf");
         let data = db.create_cf(DATA, &Options::new()).expect("open data cf");
+        let db = Arc::new(db);
+        let (flush_tx, flush_rx) = mpsc::sync_channel(42);
 
+        let flusher = {
+            let db = db.clone();
+            thread::Builder::new()
+                .name("flusher".to_string())
+                .spawn(move || Self::flush_thread_loop(db, flush_rx))
+                .expect("spawn flush thread")
+        };
         Log {
             dir: d,
             db: db,
             meta: meta,
             data: data,
+            flush_tx: flush_tx,
+        }
+    }
+
+    fn flush_thread_loop(db: Arc<DB>, rx: mpsc::Receiver<u64>) {
+        let meta = db.cf_handle(META).expect("open meta cf").clone();
+        let data = db.cf_handle(DATA).expect("open data cf").clone();
+        loop {
+            debug!("Awaiting flush");
+            let mut seqno = rx.recv().expect("recive flush seqno");
+            loop {
+                match rx.try_recv() {
+                    Ok(n) => seqno = n,
+                    Err(_) => break,
+                }
+            }
+            debug!("Flushing: {:?}", seqno);
+            Self::do_commit_to(db.clone(), meta, data, seqno)
         }
     }
 
@@ -111,30 +142,50 @@ impl Log {
     }
 
     pub fn commit_to(&mut self, seqno: u64) {
-        debug!("Commit {:?}", seqno);
-        let key = Self::tokey(seqno);
+        debug!("Request commit upto: {:?}", seqno);
+        self.flush_tx.send(seqno).expect("Send to flusher")
+    }
 
-        match self.db.get_cf(self.meta, META_PREPARED.as_bytes()) {
-            Ok(Some(val)) => {
-                let prepared = Self::fromkey(&val);
-                debug!("Committing: {:?}, prepared: {:?}", seqno, prepared);
-                assert!(prepared <= seqno);
+    fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, data: DBCFHandle, commit_seqno: u64) {
+        debug!("Commit {:?}", commit_seqno);
+        let key = Self::tokey(commit_seqno);
+
+        let prepared = match db.get_cf(meta, META_PREPARED.as_bytes()) {
+            Ok(Some(val)) => Self::fromkey(&val),
+            Ok(None) => panic!("Committing {:?} without having prepared?", commit_seqno),
+            Err(e) => {
+                panic!("Unexpected error reading index: {:?}: {:?}",
+                       commit_seqno,
+                       e)
             }
-            Ok(None) => panic!("Committing {:?} without having prepared?", seqno),
-            Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
         };
+        let committed = match db.get_cf(meta, META_COMMITTED.as_bytes()) {
+            Ok(Some(val)) => Self::fromkey(&val),
+            Ok(None) => 0,
+            Err(e) => {
+                panic!("Unexpected error reading index: {:?}: {:?}",
+                       commit_seqno,
+                       e)
+            }
+        };
+        debug!("Committing: {:?}, committed, {:?}, prepared: {:?}",
+               committed,
+               committed,
+               prepared);
+        assert!(prepared >= commit_seqno);
+
+        if committed == commit_seqno {
+            debug!("Skipping, commits up to date");
+            return;
+        }
 
         let t0 = PreciseTime::now();
         let mut opts = WriteOptions::new();
         opts.set_sync(true);
-        self.db
-            .put_cf_opt(self.meta, META_COMMITTED.as_bytes(), &key.as_ref(), &opts)
-            .expect("Persist commit point");
+        db.put_cf_opt(meta, META_COMMITTED.as_bytes(), &key.as_ref(), &opts)
+          .expect("Persist commit point");
         let t1 = PreciseTime::now();
-        debug!("Commit: {}", t0.to(t1));
-        trace!("Watermarks: prepared: {:?}; committed: {:?}",
-               self.read_seqno(META_PREPARED),
-               self.read_seqno(META_COMMITTED));
+        debug!("Committed {:?} in: {}", commit_seqno - committed, t0.to(t1));
     }
 
     pub fn flush(&mut self) -> bool {

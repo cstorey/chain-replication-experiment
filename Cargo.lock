@@ -330,7 +330,7 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.3.0"
-source = "git+https://github.com/cstorey/rust-rocksdb.git#5744f128fe85821e0592a8dff3de65d02abe21e5"
+source = "git+https://github.com/cstorey/rust-rocksdb.git#a7f36e53b8067c093cd7c1d2874e428c66b93978"
 dependencies = [
  "libc 0.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
