@@ -1,6 +1,6 @@
 use mio;
 
-use super::{ChainRepl, ChainReplMsg,OpResp};
+use super::{ChainRepl, ChainReplMsg, OpResp};
 
 use line_conn::{SexpPeer, PlainClient, LineConn, ManualClientProto, PeerClientProto};
 use downstream_conn::Downstream;
@@ -8,19 +8,23 @@ use listener::Listener;
 
 #[derive(Debug)]
 pub enum EventHandler {
-    Listener (Listener),
-    Conn (LineConn<PlainClient, ManualClientProto>),
-    Upstream (LineConn<SexpPeer, PeerClientProto>),
-    Downstream (Downstream<SexpPeer/*, ServerProto*/>),
+    Listener(Listener),
+    Conn(LineConn<PlainClient, ManualClientProto>),
+    Upstream(LineConn<SexpPeer, PeerClientProto>),
+    Downstream(Downstream<SexpPeer /* , ServerProto */>),
 }
 
 impl EventHandler {
-    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+    pub fn handle_event(&mut self,
+                        _event_loop: &mut mio::EventLoop<ChainRepl>,
+                        events: mio::EventSet) {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.handle_event(_event_loop, events),
             &mut EventHandler::Upstream(ref mut conn) => conn.handle_event(_event_loop, events),
             &mut EventHandler::Downstream(ref mut conn) => conn.handle_event(_event_loop, events),
-            &mut EventHandler::Listener(ref mut listener) => listener.handle_event(_event_loop, events)
+            &mut EventHandler::Listener(ref mut listener) => {
+                listener.handle_event(_event_loop, events)
+            }
         }
     }
 
@@ -29,7 +33,7 @@ impl EventHandler {
             &EventHandler::Conn(ref conn) => conn.initialize(event_loop, token),
             &EventHandler::Upstream(ref conn) => conn.initialize(event_loop, token),
             &EventHandler::Downstream(ref conn) => conn.initialize(event_loop, token),
-            &EventHandler::Listener(ref listener) => listener.initialize(event_loop, token)
+            &EventHandler::Listener(ref listener) => listener.initialize(event_loop, token),
         }
     }
 
@@ -42,13 +46,19 @@ impl EventHandler {
         }
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-        to_parent: &mut F) -> bool {
+    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
+                                                 event_loop: &mut mio::EventLoop<ChainRepl>,
+                                                 to_parent: &mut F)
+                                                 -> bool {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.process_rules(event_loop, to_parent),
             &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, to_parent),
-            &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, to_parent),
-            &mut EventHandler::Listener(ref mut listener) => listener.process_rules(event_loop, to_parent)
+            &mut EventHandler::Downstream(ref mut conn) => {
+                conn.process_rules(event_loop, to_parent)
+            }
+            &mut EventHandler::Listener(ref mut listener) => {
+                listener.process_rules(event_loop, to_parent)
+            }
         }
     }
 
@@ -57,7 +67,7 @@ impl EventHandler {
             &EventHandler::Conn(ref conn) => conn.is_closed(),
             &EventHandler::Upstream(ref conn) => conn.is_closed(),
             &EventHandler::Downstream(ref conn) => conn.is_closed(),
-            &EventHandler::Listener(ref listener) => listener.is_closed()
+            &EventHandler::Listener(ref listener) => listener.is_closed(),
         }
     }
 
@@ -76,5 +86,4 @@ impl EventHandler {
             other => warn!("Unexpected timeout for {:?}", other),
         }
     }
-
 }

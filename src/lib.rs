@@ -15,7 +15,7 @@ extern crate byteorder;
 use mio::tcp::*;
 use mio::EventLoop;
 use mio::util::Slab;
-use std::collections::{VecDeque,BTreeMap};
+use std::collections::{VecDeque, BTreeMap};
 use std::net::SocketAddr;
 use std::cmp;
 
@@ -28,7 +28,7 @@ mod data;
 mod replication_log;
 mod replica;
 
-use line_conn::{SexpPeer,LineConn};
+use line_conn::{SexpPeer, LineConn};
 use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
@@ -41,10 +41,15 @@ use replica::ReplModel;
 
 #[derive(Debug)]
 enum ChainReplMsg {
-    Operation { source: mio::Token, epoch: Option<u64>, seqno: Option<u64>, op: Operation },
+    Operation {
+        source: mio::Token,
+        epoch: Option<u64>,
+        seqno: Option<u64>,
+        op: Operation,
+    },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
-    ForwardDownstream(u64, PeerMsg)
+    ForwardDownstream(u64, PeerMsg),
 }
 
 #[derive(Debug)]
@@ -67,30 +72,45 @@ impl ChainRepl {
         }
     }
 
-    pub fn listen(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, addr: SocketAddr, role: Role) {
+    pub fn listen(&mut self,
+                  event_loop: &mut mio::EventLoop<ChainRepl>,
+                  addr: SocketAddr,
+                  role: Role) {
         info!("Listen on {:?} for {:?}", addr, role);
         let &mut ChainRepl { ref mut connections, ref mut node_config, .. } = self;
         let token = connections.insert_with(|token| {
-            let l = Listener::new(addr, token, role.clone());
-            match role {
-                Role::Upstream => node_config.peer_addr = Some(format!("{}", l.listen_addr())),
-                Role::Client => node_config.client_addr = Some(format!("{}", l.listen_addr())),
-            }
+                                   let l = Listener::new(addr, token, role.clone());
+                                   match role {
+                                       Role::Upstream => {
+                                           node_config.peer_addr = Some(format!("{}",
+                                                                                l.listen_addr()))
+                                       }
+                                       Role::Client => {
+                                           node_config.client_addr = Some(format!("{}",
+                                                                                  l.listen_addr()))
+                                       }
+                                   }
 
-            EventHandler::Listener(l)
-        }).expect("insert listener");
+                                   EventHandler::Listener(l)
+                               })
+                               .expect("insert listener");
         connections[token].initialize(event_loop, token);
     }
 
-    pub fn set_downstream(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, target: Option<SocketAddr>) {
+    pub fn set_downstream(&mut self,
+                          event_loop: &mut mio::EventLoop<ChainRepl>,
+                          target: Option<SocketAddr>) {
         match (self.downstream_slot, target) {
             (Some(_), Some(target)) => self.downstream().expect("downstream").reconnect_to(target),
             (None, Some(target)) => {
-                let token = self.connections.insert_with(|token| EventHandler::Downstream(Downstream::new(Some(target), token)))
-                    .expect("insert downstream");
+                let token = self.connections
+                                .insert_with(|token| {
+                                    EventHandler::Downstream(Downstream::new(Some(target), token))
+                                })
+                                .expect("insert downstream");
                 &self.connections[token].initialize(event_loop, token);
                 self.downstream_slot = Some(token)
-            },
+            }
             (Some(_), None) => self.downstream().expect("downstream").disconnect(),
             (None, None) => (),
         }
@@ -101,18 +121,16 @@ impl ChainRepl {
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
                 self.model.process_operation(&mut self.connections[source], seqno, epoch, op);
-            },
+            }
 
-            ChainReplMsg::DownstreamResponse(reply) => {
-                self.process_downstream_response(reply)
-            },
+            ChainReplMsg::DownstreamResponse(reply) => self.process_downstream_response(reply),
 
             ChainReplMsg::NewClientConn(role, socket) => {
                 self.process_new_client_conn(event_loop, role, socket)
-            },
+            }
             ChainReplMsg::ForwardDownstream(epoch, msg) => {
                 self.downstream().expect("Downstream").send_to_downstream(epoch, msg)
-            },
+            }
         }
     }
 
@@ -120,35 +138,47 @@ impl ChainRepl {
     fn process_downstream_response(&mut self, reply: OpResp) {
         debug!("Downstream response: {:?}", reply);
         if let Some(waiter) = self.model.process_downstream_response(&reply) {
-            if let Some(ref mut c)  = self.connections.get_mut(waiter) {
+            if let Some(ref mut c) = self.connections.get_mut(waiter) {
                 c.response(reply)
             }
         }
     }
 
-    fn process_new_client_conn(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>, role: Role, socket: TcpStream) {
+    fn process_new_client_conn(&mut self,
+                               event_loop: &mut mio::EventLoop<ChainRepl>,
+                               role: Role,
+                               socket: TcpStream) {
         let peer = socket.peer_addr().expect("peer address");
         let seqno = self.model.seqno();
         let token = self.connections
-            .insert_with(|token| match role {
-                    Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
-                    Role::Upstream => {
-                        let mut conn = LineConn::upstream(socket, token);
-                        let msg = OpResp::HelloIWant(seqno);
-                        info!("Inform upstream about our current version, {:?}!", msg);
-                        conn.response(msg);
-                        EventHandler::Upstream(conn)
-                    },
-            })
-            .expect("token insert");
-        debug!("Client connection of {:?}/{:?} from {:?}", role, token, peer);
+                        .insert_with(|token| {
+                            match role {
+                                Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
+                                Role::Upstream => {
+                                    let mut conn = LineConn::upstream(socket, token);
+                                    let msg = OpResp::HelloIWant(seqno);
+                                    info!("Inform upstream about our current version, {:?}!", msg);
+                                    conn.response(msg);
+                                    EventHandler::Upstream(conn)
+                                }
+                            }
+                        })
+                        .expect("token insert");
+        debug!("Client connection of {:?}/{:?} from {:?}",
+               role,
+               token,
+               peer);
         &self.connections[token].initialize(event_loop, token);
     }
 
-    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<Self>, mut action: F) -> bool {
+    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
+                                             event_loop: &mut mio::EventLoop<Self>,
+                                             mut action: F)
+                                             -> bool {
         let mut changed = false;
-        changed |= self.model.process_replication(
-            |epoch, msg| action(ChainReplMsg::ForwardDownstream(epoch, msg)));
+        changed |= self.model.process_replication(|epoch, msg| {
+            action(ChainReplMsg::ForwardDownstream(epoch, msg))
+        });
         changed |= self.model.flush();
 
         if let Some(view) = self.new_view.take() {
@@ -160,7 +190,9 @@ impl ChainRepl {
     }
 
 
-    fn reconfigure(&mut self, event_loop: &mut mio::EventLoop<Self>, view: ConfigurationView<NodeViewConfig>) {
+    fn reconfigure(&mut self,
+                   event_loop: &mut mio::EventLoop<Self>,
+                   view: ConfigurationView<NodeViewConfig>) {
         info!("Reconfigure according to: {:?}", view);
         if !view.in_configuration() {
             warn!("I am not in this configuration; shutting down: {:?}", view);
@@ -182,7 +214,8 @@ impl ChainRepl {
             if let Some(peer_addr) = ds.peer_addr {
                 self.set_downstream(event_loop, Some(peer_addr.parse().expect("peer address")));
             } else {
-                panic!("Cannot reconnect to downstream with no peer listener: {:?}", ds);
+                panic!("Cannot reconnect to downstream with no peer listener: {:?}",
+                       ds);
             }
 
             self.model.set_has_downstream(true);
@@ -196,17 +229,27 @@ impl ChainRepl {
     }
 
     fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {
-        self.downstream_slot.map(move |slot| match &mut self.connections[slot] {
-            &mut EventHandler::Downstream(ref mut d) => d,
-            other => panic!("Downstream slot not populated with a downstream instance: {:?}", other),
+        self.downstream_slot.map(move |slot| {
+            match &mut self.connections[slot] {
+                &mut EventHandler::Downstream(ref mut d) => d,
+                other => {
+                    panic!("Downstream slot not populated with a downstream instance: {:?}",
+                           other)
+                }
+            }
         })
     }
 
     fn listeners<'a>(&'a mut self, role: Role) -> Vec<&'a mut Listener> {
-        self.connections.iter_mut().filter_map(|it| match it {
-            &mut EventHandler::Listener(ref mut l) if l.role == role => Some(l),
-            _ => None
-        }).collect()
+        self.connections
+            .iter_mut()
+            .filter_map(|it| {
+                match it {
+                    &mut EventHandler::Listener(ref mut l) if l.role == role => Some(l),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>) {
@@ -218,13 +261,19 @@ impl ChainRepl {
             trace!("Iter: {:?}", iterations);
             changed = false;
             for conn in self.connections.iter_mut() {
-                let changedp = conn.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
-                if changedp { trace!("Changed: {:?}", conn); };
+                let changedp = conn.process_rules(event_loop,
+                                                  &mut |item| parent_actions.push_back(item));
+                if changedp {
+                    trace!("Changed: {:?}", conn);
+                };
                 changed |= changedp;
             }
 
-            let changedp = self.process_rules(event_loop, &mut |item| parent_actions.push_back(item));
-            if changedp { trace!("Changed: {:?}", "Model"); }
+            let changedp = self.process_rules(event_loop,
+                                              &mut |item| parent_actions.push_back(item));
+            if changedp {
+                trace!("Changed: {:?}", "Model");
+            }
             changed |= changedp;
 
             debug!("Actions pending: {:?}", parent_actions.len());
@@ -287,7 +336,10 @@ impl mio::Handler for ChainRepl {
     // This is a bit wierd; we can pass a parent action back to enqueue some action.
     type Timeout = mio::Token;
     type Message = Option<ConfigurationView<NodeViewConfig>>;
-    fn ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token, events: mio::EventSet) {
+    fn ready(&mut self,
+             event_loop: &mut mio::EventLoop<Self>,
+             token: mio::Token,
+             events: mio::EventSet) {
         trace!("{:?}: {:?}", token, events);
         self.connections[token].handle_event(event_loop, events);
         self.io_ready(event_loop, token);
@@ -299,7 +351,9 @@ impl mio::Handler for ChainRepl {
         self.io_ready(event_loop, token);
     }
 
-    fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: Option<ConfigurationView<NodeViewConfig>>) {
+    fn notify(&mut self,
+              event_loop: &mut EventLoop<Self>,
+              msg: Option<ConfigurationView<NodeViewConfig>>) {
         debug!("Notified: {:?}", msg);
         if let Some(view) = msg {
             self.handle_view_changed(view);

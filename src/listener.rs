@@ -2,7 +2,7 @@ use mio;
 use mio::tcp::*;
 use std::net::SocketAddr;
 
-use super::{Role,ChainRepl, ChainReplMsg};
+use super::{Role, ChainRepl, ChainReplMsg};
 
 #[derive(Debug)]
 pub struct Listener {
@@ -33,15 +33,21 @@ impl Listener {
         event_loop.register(&self.listener, token).expect("Register listener");
     }
 
-    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+    pub fn handle_event(&mut self,
+                        _event_loop: &mut mio::EventLoop<ChainRepl>,
+                        events: mio::EventSet) {
         assert!(events.is_readable());
         self.sock_status.insert(events);
         trace!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
-                self.listener.local_addr(), events, self.sock_status);
+               self.listener.local_addr(),
+               events,
+               self.sock_status);
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-            to_parent: &mut F) -> bool {
+    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
+                                                 event_loop: &mut mio::EventLoop<ChainRepl>,
+                                                 to_parent: &mut F)
+                                                 -> bool {
 
         let mut changed = false;
         if self.sock_status.is_readable() {
@@ -52,7 +58,9 @@ impl Listener {
                     if self.active {
                         to_parent(cmd);
                     } else {
-                        debug!("Ignoring events on inactive listener: {:?}; {:?}", self.listener.local_addr(), self.sock_status);
+                        debug!("Ignoring events on inactive listener: {:?}; {:?}",
+                               self.listener.local_addr(),
+                               self.sock_status);
                     }
 
                     changed = true;

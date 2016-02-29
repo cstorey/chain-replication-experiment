@@ -1,10 +1,10 @@
 use etcd;
 use std::thread;
-use std::sync::atomic::{Ordering,AtomicBool};
+use std::sync::atomic::{Ordering, AtomicBool};
 use std::fmt;
 use std::sync::Arc;
 use std::collections::BTreeMap;
-use time::{SteadyTime,Duration};
+use time::{SteadyTime, Duration};
 use serde_json as json;
 use serde::ser::Serialize;
 use serde::de::Deserialize;
@@ -36,9 +36,11 @@ struct InnerClient<T> {
 }
 
 
-struct DeathWatch<'a, F>(&'a AtomicBool, F) where F : Fn();
+struct DeathWatch<'a, F>(&'a AtomicBool, F) where F: Fn();
 
-impl<'a, F> DeathWatch<'a, F> where F : Fn() {
+impl<'a, F> DeathWatch<'a, F>
+    where F: Fn()
+{
     fn new(ctr: &'a AtomicBool, f: F) -> DeathWatch<'a, F> {
         ctr.store(true, Ordering::SeqCst);
         DeathWatch(ctr, f)
@@ -47,7 +49,9 @@ impl<'a, F> DeathWatch<'a, F> where F : Fn() {
         self.0.load(Ordering::Relaxed)
     }
 }
-impl<'a, F> Drop for DeathWatch<'a, F> where F : Fn() {
+impl<'a, F> Drop for DeathWatch<'a, F>
+    where F: Fn()
+{
     fn drop(&mut self) {
         warn!("Exiting: {:?}", self);
         let &mut DeathWatch(ref alivep, ref mut cb) = self;
@@ -56,15 +60,22 @@ impl<'a, F> Drop for DeathWatch<'a, F> where F : Fn() {
     }
 }
 
-impl<'a, F> fmt::Debug for DeathWatch<'a, F> where F : Fn() {
+impl<'a, F> fmt::Debug for DeathWatch<'a, F>
+    where F: Fn()
+{
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("DeathWatch").field("alive", &self.is_alive()).finish()
     }
 }
 
 impl<T: 'static + Deserialize + Serialize + fmt::Debug + Eq + Clone + Send + Sync> ConfigClient<T> {
-    pub fn new<F: Fn(ConfigurationView<T>) + Send + Sync + 'static, S: Fn() + Send + Sync + 'static>(
-        addr: &str, data: T, lease_time: Duration, callback: F, on_exit: S) -> Result<ConfigClient<T>, ()> {
+    pub fn new<F: Fn(ConfigurationView<T>) + Send + Sync + 'static, S: Fn() + Send + Sync + 'static>
+        (addr: &str,
+         data: T,
+         lease_time: Duration,
+         callback: F,
+         on_exit: S)
+         -> Result<ConfigClient<T>, ()> {
         let etcd = etcd::Client::new(addr).expect("etcd client");
         let mut client = InnerClient {
             etcd: etcd,
@@ -79,18 +90,25 @@ impl<T: 'static + Deserialize + Serialize + fmt::Debug + Eq + Clone + Send + Syn
         let lease = client.setup_lease();
 
         let client = Arc::new(client);
-        let lease_mgr = { let client = client.clone();
-            thread::Builder::new().name("etcd config".to_string()).spawn(move || {
-                client.run_lease(lease)
-            }).expect("etcd thread")
+        let lease_mgr = {
+            let client = client.clone();
+            thread::Builder::new()
+                .name("etcd config".to_string())
+                .spawn(move || client.run_lease(lease))
+                .expect("etcd thread")
         };
         let watcher = {
             let client = client.clone();
-            thread::Builder::new().name("etcd watcher".to_string()).spawn(move || {
-                client.run_watch()
-            }).expect("etcd watcher")
+            thread::Builder::new()
+                .name("etcd watcher".to_string())
+                .spawn(move || client.run_watch())
+                .expect("etcd watcher")
         };
-        Ok(ConfigClient { client: client, lease_mgr: lease_mgr, watcher: watcher })
+        Ok(ConfigClient {
+            client: client,
+            lease_mgr: lease_mgr,
+            watcher: watcher,
+        })
     }
 
     pub fn is_running(&self) -> bool {
@@ -98,28 +116,38 @@ impl<T: 'static + Deserialize + Serialize + fmt::Debug + Eq + Clone + Send + Syn
     }
 }
 
-const MEMBERS : &'static str = "/chain/members";
-const SEQUENCER : &'static str = "/chain/config_seq";
-const KEY_EXISTS : u64 = 105;
-const KEY_NOT_EXISTS : u64 = 100;
-const COMPARE_FAILED : u64 = 101;
+const MEMBERS: &'static str = "/chain/members";
+const SEQUENCER: &'static str = "/chain/config_seq";
+const KEY_EXISTS: u64 = 105;
+const KEY_NOT_EXISTS: u64 = 100;
+const COMPARE_FAILED: u64 = 101;
 
 impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
     fn setup_lease(&mut self) -> u64 {
         match self.etcd.create_dir(MEMBERS, None) {
             Ok(res) => info!("Created dir: {}: {:?}: ", MEMBERS, res),
-            Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_EXISTS => info!("Dir exists: {:?}: ", MEMBERS),
+            Err(etcd::Error::Etcd(ref e)) if e.error_code == KEY_EXISTS => {
+                info!("Dir exists: {:?}: ", MEMBERS)
+            }
             Err(e) => panic!("Unexpected error creating {}: {:?}", MEMBERS, e),
         }
 
-        let seq : ConfigSequencer = Default::default();
-        match self.etcd.create(SEQUENCER, &json::to_string(&seq).expect("encode epoch"), None) {
+        let seq: ConfigSequencer = Default::default();
+        match self.etcd.create(SEQUENCER,
+                               &json::to_string(&seq).expect("encode epoch"),
+                               None) {
             Ok(res) => info!("Created seq: {}: {:?}: ", SEQUENCER, res),
-            Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_EXISTS => info!("Sequencer exists: {:?}: ", SEQUENCER),
+            Err(etcd::Error::Etcd(ref e)) if e.error_code == KEY_EXISTS => {
+                info!("Sequencer exists: {:?}: ", SEQUENCER)
+            }
             Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
         }
 
-        let me = self.etcd.create_in_order(MEMBERS, &self.data_json(), Some(self.lease_time.num_seconds() as u64)).expect("Create unique node");
+        let me = self.etcd
+                     .create_in_order(MEMBERS,
+                                      &self.data_json(),
+                                      Some(self.lease_time.num_seconds() as u64))
+                     .expect("Create unique node");
         info!("My node! {:?}", me);
         self.lease_key = Some(me.node.key.expect("Key name"));
         me.node.modified_index.expect("Lease node version")
@@ -130,7 +158,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn run_lease(&self, mut lease_index: u64) {
-        let watch = DeathWatch::new(&self.lease_alive, || (*self.on_exit)() );
+        let watch = DeathWatch::new(&self.lease_alive, || (*self.on_exit)());
         let update_interval = self.lease_time / 2;
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
@@ -138,21 +166,27 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
             trace!("touch node: {:?}={:?}", lease_key, self.data);
             let start_time = SteadyTime::now();
             let next_wakeup = start_time + update_interval;
-            let res = match self.etcd.compare_and_swap(&lease_key, &self.data_json(),
-                Some(self.lease_time.num_seconds() as u64), None, Some(lease_index)) {
-                    Ok(res) => {
-                        trace!("refreshed lease:: {}: {:?}: ", lease_key, res.node.modified_index);
-                        res
-                    },
-                    Err(etcd::Error::Etcd (ref e)) if e.error_code == KEY_NOT_EXISTS => {
-                        panic!("Could not update lease: expired");
-                    },
-                    Err(e) => panic!("Unexpected error updating lease {}: {:?}", lease_key, e),
+            let res = match self.etcd
+                                .compare_and_swap(&lease_key,
+                                                  &self.data_json(),
+                                                  Some(self.lease_time.num_seconds() as u64),
+                                                  None,
+                                                  Some(lease_index)) {
+                Ok(res) => {
+                    trace!("refreshed lease:: {}: {:?}: ",
+                           lease_key,
+                           res.node.modified_index);
+                    res
+                }
+                Err(etcd::Error::Etcd(ref e)) if e.error_code == KEY_NOT_EXISTS => {
+                    panic!("Could not update lease: expired");
+                }
+                Err(e) => panic!("Unexpected error updating lease {}: {:?}", lease_key, e),
             };
             lease_index = res.node.modified_index.expect("lease version");
             let end_time = SteadyTime::now();
             trace!("Updated in {}: {:?}", end_time - start_time, res);
-            let pausetime = next_wakeup - end_time; 
+            let pausetime = next_wakeup - end_time;
             trace!("Pause for {}", pausetime);
             if pausetime > Duration::zero() {
                 thread::sleep_ms(pausetime.num_milliseconds() as u32);
@@ -163,29 +197,40 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
     fn list_members(&self) -> BTreeMap<String, T> {
         let current_listing = self.etcd.get(MEMBERS, true, true, true).expect("List members");
         trace!("Listing: {:?}", current_listing);
-        current_listing.node.nodes.unwrap_or_else(|| Vec::new()).into_iter()
-                .filter_map(|n|
-                    if let (Some(k), Some(v)) = (n.key, n.value) {
-                        Some((k, json::from_str(&v).expect("decode json"))) } else { None })
-                .collect::<BTreeMap<String, T>>()
+        current_listing.node
+                       .nodes
+                       .unwrap_or_else(|| Vec::new())
+                       .into_iter()
+                       .filter_map(|n| {
+                           if let (Some(k), Some(v)) = (n.key, n.value) {
+                               Some((k, json::from_str(&v).expect("decode json")))
+                           } else {
+                               None
+                           }
+                       })
+                       .collect::<BTreeMap<String, T>>()
     }
 
     fn run_watch(&self) {
-        let watch = DeathWatch::new(&self.watcher_alive, || (*self.on_exit)() );
+        let watch = DeathWatch::new(&self.watcher_alive, || (*self.on_exit)());
         info!("Starting etcd watcher");
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
         let current_listing = self.etcd.get(MEMBERS, true, true, true).expect("List members");
         debug!("Listing: {:?}", current_listing);
-        let mut last_observed_index = current_listing.node.nodes.unwrap_or_else(|| Vec::new()).into_iter()
-            .filter_map(|x| x.modified_index).max();
+        let mut last_observed_index = current_listing.node
+                                                     .nodes
+                                                     .unwrap_or_else(|| Vec::new())
+                                                     .into_iter()
+                                                     .filter_map(|x| x.modified_index)
+                                                     .max();
 
         let mut curr_members = BTreeMap::new();
         loop {
             trace!("Awaiting for {} from {:?}", MEMBERS, last_observed_index);
             let res = self.etcd.watch(MEMBERS, last_observed_index, true).expect("watch");
             trace!("Watch: {:?}", res);
-            last_observed_index = res.node.modified_index.map(|x| x+1);
+            last_observed_index = res.node.modified_index.map(|x| x + 1);
 
             let members = self.list_members();
             let seq = self.verify_epoch(&members);
@@ -212,7 +257,10 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 
     fn verify_epoch(&self, members: &BTreeMap<String, T>) -> ConfigSequencer {
         loop {
-            let (seq_index, mut seq) : (u64, ConfigSequencer) = match self.etcd.get(SEQUENCER, false, false, false) {
+            let (seq_index, mut seq): (u64, ConfigSequencer) = match self.etcd.get(SEQUENCER,
+                                                                                   false,
+                                                                                   false,
+                                                                                   false) {
                 Ok(etcd::KeySpaceInfo {
                     node: etcd::keys::Node {
                         modified_index: Some(modified_index),
@@ -220,7 +268,10 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
                         ..
                     } ,
                     ..
-                }) => (modified_index, json::from_str(&value).expect("decode epoch")),
+                }) => {
+                    (modified_index,
+                     json::from_str(&value).expect("decode epoch"))
+                }
                 Ok(e) => panic!("Unexpected response reading {}: {:?}", SEQUENCER, e),
                 Err(e) => panic!("Unexpected error reading {}: {:?}", SEQUENCER, e),
             };
@@ -231,13 +282,19 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 
                 seq.keys = current_keys;
                 seq.epoch += 1;
-                match self.etcd.compare_and_swap(SEQUENCER, &json::to_string(&seq).expect("encode epoch"), None, None, Some(seq_index)) {
-                        Ok(res) => {
-                            debug!("verify_epoch: Updated seq: {}: {:?}: ", SEQUENCER, seq);
-                            return seq;
-                        },
-                        Err(etcd::Error::Etcd (ref e)) if e.error_code == COMPARE_FAILED => debug!("verify_epoch: Raced out; retry"),
-                        Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
+                match self.etcd.compare_and_swap(SEQUENCER,
+                                                 &json::to_string(&seq).expect("encode epoch"),
+                                                 None,
+                                                 None,
+                                                 Some(seq_index)) {
+                    Ok(res) => {
+                        debug!("verify_epoch: Updated seq: {}: {:?}: ", SEQUENCER, seq);
+                        return seq;
+                    }
+                    Err(etcd::Error::Etcd(ref e)) if e.error_code == COMPARE_FAILED => {
+                        debug!("verify_epoch: Raced out; retry")
+                    }
+                    Err(e) => panic!("Unexpected error creating {}: {:?}", SEQUENCER, e),
                 }
             } else {
                 debug!("verify_epoch: Fresh! {:?}", seq);
@@ -263,7 +320,16 @@ impl<T: Clone> ConfigurationView<T> {
         self.head_key() != Some(&self.this_node)
     }
     pub fn should_connect_downstream(&self) -> Option<T> {
-        let next = self.members.iter().filter_map(|(k, v)| if *k > self.this_node { Some((k, v)) } else { None }).next();
+        let next = self.members
+                       .iter()
+                       .filter_map(|(k, v)| {
+                           if *k > self.this_node {
+                               Some((k, v))
+                           } else {
+                               None
+                           }
+                       })
+                       .next();
         next.map(|(_, val)| val.clone())
     }
 

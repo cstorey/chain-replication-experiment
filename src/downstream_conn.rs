@@ -1,6 +1,6 @@
 use mio;
 use mio::tcp::*;
-use mio::{TryRead,TryWrite};
+use mio::{TryRead, TryWrite};
 use serde_json as json;
 
 use std::collections::VecDeque;
@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::fmt;
 use std::io::ErrorKind;
 
-use super::{ChainRepl, ChainReplMsg,OpResp, Operation, PeerMsg, ReplicationMessage};
+use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg, ReplicationMessage};
 use line_conn::{Encoder, Reader, SexpPeer};
 
 #[derive(Debug)]
@@ -29,7 +29,7 @@ pub struct Downstream<T: fmt::Debug> {
 
 impl Downstream<SexpPeer> {
     pub fn new(target: Option<SocketAddr>, token: mio::Token) -> Self {
-       Self::with_codec(target, token, SexpPeer::fresh(token))
+        Self::with_codec(target, token, SexpPeer::fresh(token))
     }
 }
 
@@ -68,8 +68,14 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
     }
 
     pub fn send_to_downstream(&mut self, epoch: u64, msg: PeerMsg) {
-        debug!("Queuing for downstream (qlen: {}): {:?}: {:?}", self.pending.len()+1, self.peer, msg);
-        self.pending.push_back(ReplicationMessage { epoch: epoch, msg: msg });
+        debug!("Queuing for downstream (qlen: {}): {:?}: {:?}",
+               self.pending.len() + 1,
+               self.peer,
+               msg);
+        self.pending.push_back(ReplicationMessage {
+            epoch: epoch,
+            msg: msg,
+        });
     }
 
     pub fn token(&self) -> mio::Token {
@@ -79,11 +85,10 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
         if let Some(ref sock) = self.socket {
             debug!("Initialize!{:?}", self);
-            match event_loop.register_opt(
-                    sock,
-                    token,
-                    mio::EventSet::readable(),
-                    mio::PollOpt::edge() | mio::PollOpt::oneshot()) {
+            match event_loop.register_opt(sock,
+                                          token,
+                                          mio::EventSet::readable(),
+                                          mio::PollOpt::edge() | mio::PollOpt::oneshot()) {
                 Ok(()) => (),
                 Err(e) => {
                     warn!("Registration failed:{}; kind:{:?}", e, e.kind());
@@ -95,18 +100,24 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         }
     }
 
-    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+    pub fn handle_event(&mut self,
+                        _event_loop: &mut mio::EventLoop<ChainRepl>,
+                        events: mio::EventSet) {
         self.sock_status.insert(events);
         trace!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
-                self.socket.as_ref().map(|s| s.local_addr()), events, self.sock_status);
+               self.socket.as_ref().map(|s| s.local_addr()),
+               events,
+               self.sock_status);
     }
 
     pub fn handle_timeout(&mut self) {
         self.timeout_triggered = true
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-            to_parent: &mut F) -> bool {
+    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
+                                                 event_loop: &mut mio::EventLoop<ChainRepl>,
+                                                 to_parent: &mut F)
+                                                 -> bool {
         trace!("the downstream socket is {:?}", self.sock_status);
 
         if self.sock_status.is_readable() {
@@ -158,9 +169,13 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
     fn attempt_connect(&mut self) {
         assert!(self.socket.is_none());
         debug!("Connecting: {:?}", self);
-        if let &mut Downstream { peer: Some(ref peer), ref mut socket, ref mut sock_status, .. } = self {
+        if let &mut Downstream { peer: Some(ref peer), ref mut socket, ref mut sock_status, .. } =
+               self {
             let conn = TcpStream::connect(peer).expect("Connect downstream");
-            debug!("New downstream for {:?}! {:?}; {:?}", self.token, self.peer, conn);
+            debug!("New downstream for {:?}! {:?}; {:?}",
+                   self.token,
+                   self.peer,
+                   conn);
             *socket = Some(conn);
             sock_status.remove(mio::EventSet::all());
         } else {
@@ -175,15 +190,15 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
                 Ok(Some(0)) => {
                     trace!("{:?}: EOF!", token);
                     self.should_disconnect = true
-                },
+                }
                 Ok(Some(n)) => {
                     trace!("{:?}: Read {}bytes", token, n);
                     codec.feed(&self.read_buf);
                     self.read_buf.clear();
-                },
+                }
                 Ok(None) => {
                     trace!("{:?}: Noop!", token);
-                },
+                }
                 Err(e) => {
                     error!("got an error trying to read; err={:?}", e);
                     self.should_disconnect = true
@@ -193,26 +208,32 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
     }
 
     fn prep_write_buffer(&mut self) {
-        debug!("Preparing to send downstream (qlen {}; bufsz {})", self.pending.len(), self.write_buf.len());
+        debug!("Preparing to send downstream (qlen {}; bufsz {})",
+               self.pending.len(),
+               self.write_buf.len());
         while let Some(it) = self.pending.pop_front() {
             let out = self.codec.encode(it);
             self.write_buf.extend(&out);
         }
-        debug!("Prepared to send downstream (qlen {}; bufsz {})", self.pending.len(), self.write_buf.len());
+        debug!("Prepared to send downstream (qlen {}; bufsz {})",
+               self.pending.len(),
+               self.write_buf.len());
     }
 
     fn write(&mut self) {
         if let &mut Downstream { socket: Some(ref mut sock), ref mut write_buf, token, .. } = self {
             match sock.try_write(write_buf) {
                 Ok(Some(n)) => {
-                    trace!("Downstream: {:?}: Wrote {} of {} in buffer", token, n,
-                            write_buf.len());
+                    trace!("Downstream: {:?}: Wrote {} of {} in buffer",
+                           token,
+                           n,
+                           write_buf.len());
                     *write_buf = write_buf[n..].to_vec();
                     trace!("Downstream: {:?}: Now {:?}b", sock, write_buf.len());
-                },
+                }
                 Ok(None) => {
                     trace!("Write unready");
-                },
+                }
                 Err(e) => {
                     error!("got an error trying to write; err={:?}", e);
                     self.should_disconnect = true
@@ -223,7 +244,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
 
     fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
         let mut changed = false;
-       // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
+        // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(cmd) = self.codec.take() {
             debug!("Read message {:?}", cmd);
             to_parent(ChainReplMsg::DownstreamResponse(cmd));
@@ -246,11 +267,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
             }
             trace!("Re-register {:?} with {:?}", self, flags);
 
-            match event_loop.reregister(
-                    sock,
-                    self.token,
-                    flags,
-                    mio::PollOpt::oneshot()) {
+            match event_loop.reregister(sock, self.token, flags, mio::PollOpt::oneshot()) {
                 Ok(()) => (),
                 Err(ref e) if e.kind() == ErrorKind::NotFound => {
                     warn!("Re-registration failed:{}; kind:{:?}", e, e.kind());

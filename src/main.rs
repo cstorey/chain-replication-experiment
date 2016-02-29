@@ -13,7 +13,7 @@ use std::net::ToSocketAddrs;
 use std::collections::HashSet;
 use clap::{Arg, App};
 
-use chain_repl_test::{ChainRepl,Role, ConfigClient};
+use chain_repl_test::{ChainRepl, Role, ConfigClient};
 
 
 const LOG_FILE: &'static str = "log.toml";
@@ -23,17 +23,19 @@ fn main() {
         panic!("Could not init logger from file {}: {}", LOG_FILE, e);
     }
     let matches = App::new("chain-repl-test")
-        .arg(Arg::with_name("bind").short("l").takes_value(true))
-        .arg(Arg::with_name("peer").short("p").takes_value(true))
-        .arg(Arg::with_name("next").short("n").takes_value(true))
-        .arg(Arg::with_name("etcd").short("e").takes_value(true))
-        .get_matches();
+                      .arg(Arg::with_name("bind").short("l").takes_value(true))
+                      .arg(Arg::with_name("peer").short("p").takes_value(true))
+                      .arg(Arg::with_name("next").short("n").takes_value(true))
+                      .arg(Arg::with_name("etcd").short("e").takes_value(true))
+                      .get_matches();
 
     let mut event_loop = mio::EventLoop::new().expect("Create event loop");
     let mut service = ChainRepl::new();
 
     if let Some(listen_addr) = matches.value_of("bind") {
-        let listen_addrs = listen_addr.to_socket_addrs().expect("parse bind address").collect::<HashSet<_>>();
+        let listen_addrs = listen_addr.to_socket_addrs()
+                                      .expect("parse bind address")
+                                      .collect::<HashSet<_>>();
         info!("Client addresses: {:?}", listen_addrs);
         for listen_addr in listen_addrs {
             service.listen(&mut event_loop, listen_addr, Role::Client);
@@ -41,7 +43,9 @@ fn main() {
     }
 
     if let Some(listen_addr) = matches.value_of("peer") {
-        let listen_addrs = listen_addr.to_socket_addrs().expect("peer listen address").collect::<HashSet<_>>();
+        let listen_addrs = listen_addr.to_socket_addrs()
+                                      .expect("peer listen address")
+                                      .collect::<HashSet<_>>();
         info!("Peer addresses: {:?}", listen_addrs);
         for listen_addr in listen_addrs {
             service.listen(&mut event_loop, listen_addr, Role::Upstream);
@@ -49,7 +53,10 @@ fn main() {
     }
 
     if let Some(next_addr) = matches.value_of("next") {
-        let next_addr = next_addr.to_socket_addrs().expect("address lookup").next().expect("parse next address");
+        let next_addr = next_addr.to_socket_addrs()
+                                 .expect("address lookup")
+                                 .next()
+                                 .expect("parse next address");
         info!("Forwarding to address {:?}", next_addr);
         service.set_downstream(&mut event_loop, Some(next_addr));
     } else {
@@ -58,10 +65,20 @@ fn main() {
 
     let conf = if let Some(etcd) = matches.value_of("etcd") {
         info!("Etcd at: {:?}", etcd);
-        let view_cb = { let notifier = service.get_notifier(&mut event_loop); move |view| notifier.notify(Some(view)) };
-        let shutdown_cb = { let notifier2 = service.get_notifier(&mut event_loop); move || notifier2.notify(None) };
-        let config = ConfigClient::new(etcd, service.node_config(), Duration::seconds(5),
-            view_cb, shutdown_cb).expect("Etcd");
+        let view_cb = {
+            let notifier = service.get_notifier(&mut event_loop);
+            move |view| notifier.notify(Some(view))
+        };
+        let shutdown_cb = {
+            let notifier2 = service.get_notifier(&mut event_loop);
+            move || notifier2.notify(None)
+        };
+        let config = ConfigClient::new(etcd,
+                                       service.node_config(),
+                                       Duration::seconds(5),
+                                       view_cb,
+                                       shutdown_cb)
+                         .expect("Etcd");
         Some(config)
     } else {
         info!("No etcd");

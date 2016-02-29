@@ -1,6 +1,6 @@
 use mio;
 use mio::tcp::*;
-use mio::{TryRead,TryWrite};
+use mio::{TryRead, TryWrite};
 use serde::ser::Serialize;
 use serde::de::Deserialize;
 use spki_sexp as sexp;
@@ -10,8 +10,8 @@ use std::collections::VecDeque;
 
 use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg, ReplicationMessage};
 
-const NL : u8 = '\n' as u8;
-const DEFAULT_BUFSZ : usize = 1 << 12;
+const NL: u8 = '\n' as u8;
+const DEFAULT_BUFSZ: usize = 1 << 12;
 
 pub trait Encoder<T> {
     fn encode(&self, s: T) -> Vec<u8>;
@@ -37,8 +37,14 @@ impl Protocol for PeerClientProto {
     type Recv = ReplicationMessage;
     fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg {
         match msg {
-            ReplicationMessage { epoch, msg: PeerMsg::Commit(seqno, op) } =>
-                ChainReplMsg::Operation { source: token, epoch: Some(epoch), seqno: Some(seqno), op: op },
+            ReplicationMessage { epoch, msg: PeerMsg::Commit(seqno, op) } => {
+                ChainReplMsg::Operation {
+                    source: token,
+                    epoch: Some(epoch),
+                    seqno: Some(seqno),
+                    op: op,
+                }
+            }
         }
     }
 }
@@ -49,7 +55,12 @@ impl Protocol for ManualClientProto {
     type Send = OpResp;
     type Recv = Operation;
     fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg {
-        ChainReplMsg::Operation { source: token, epoch: None, seqno: None, op: msg }
+        ChainReplMsg::Operation {
+            source: token,
+            epoch: None,
+            seqno: None,
+            op: msg,
+        }
     }
 }
 
@@ -66,9 +77,14 @@ pub struct LineConn<T, P> {
     proto: PhantomData<P>,
 }
 
-impl<T, P> LineConn<T, P> where P: Protocol, T: /* Reader<P::Recv> + Encoder<P::Send> +*/ fmt::Debug {
+impl<T, P> LineConn<T, P>
+    where P: Protocol,
+          T: fmt::Debug
+{
     fn new(socket: TcpStream, token: mio::Token, codec: T) -> LineConn<T, P> {
-        trace!("New client connection {:?} from {:?}", token, socket.local_addr());
+        trace!("New client connection {:?} from {:?}",
+               token,
+               socket.local_addr());
         LineConn {
             socket: socket,
             sock_status: mio::EventSet::none(),
@@ -87,30 +103,35 @@ impl<T, P> LineConn<T, P> where P: Protocol, T: /* Reader<P::Recv> + Encoder<P::
     }
 
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
-        event_loop.register_opt(
-                &self.socket,
-                token,
-                mio::EventSet::readable(),
-                mio::PollOpt::edge() | mio::PollOpt::oneshot())
-            .expect("event loop initialize");
+        event_loop.register_opt(&self.socket,
+                                token,
+                                mio::EventSet::readable(),
+                                mio::PollOpt::edge() | mio::PollOpt::oneshot())
+                  .expect("event loop initialize");
     }
 
     // Event updates arrive here
-    pub fn handle_event(&mut self, _event_loop: &mut mio::EventLoop<ChainRepl>, events: mio::EventSet) {
+    pub fn handle_event(&mut self,
+                        _event_loop: &mut mio::EventLoop<ChainRepl>,
+                        events: mio::EventSet) {
         self.sock_status.insert(events);
         trace!("LineConn::handle_event: {:?}; this time: {:?}; now: {:?}",
-                self.socket.peer_addr(), events, self.sock_status);
+               self.socket.peer_addr(),
+               events,
+               self.sock_status);
     }
-
 }
 
 
 
-impl<T, P> LineConn<T, P> where
-        P: Protocol,
-        T: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug {
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self, event_loop: &mut mio::EventLoop<ChainRepl>,
-        to_parent: &mut F) -> bool {
+impl<T, P> LineConn<T, P>
+    where P: Protocol,
+          T: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug
+{
+    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
+                                                 event_loop: &mut mio::EventLoop<ChainRepl>,
+                                                 to_parent: &mut F)
+                                                 -> bool {
 
         if self.sock_status.is_readable() {
             self.read();
@@ -147,18 +168,18 @@ impl<T, P> LineConn<T, P> where
             Ok(Some(0)) => {
                 debug!("{:?}: EOF!", self.socket.peer_addr());
                 self.read_eof = true
-            },
+            }
             Ok(Some(n)) => {
                 trace!("{:?}: Read {}bytes", self.socket.peer_addr(), n);
                 self.codec.feed(&self.read_buf);
                 self.read_buf.clear();
-            },
+            }
             Ok(None) => {
                 trace!("{:?}: Noop!", self.socket.peer_addr());
-            },
+            }
             Err(e) => {
                 error!("got an error trying to read; err={:?}", e);
-                self.failed =true;
+                self.failed = true;
             }
         }
     }
@@ -166,14 +187,18 @@ impl<T, P> LineConn<T, P> where
     fn write(&mut self) {
         match self.socket.try_write(&mut self.write_buf) {
             Ok(Some(n)) => {
-                trace!("{:?}: Wrote {} of {} in buffer", self.socket.peer_addr(), n,
-                    self.write_buf.len());
+                trace!("{:?}: Wrote {} of {} in buffer",
+                       self.socket.peer_addr(),
+                       n,
+                       self.write_buf.len());
                 self.write_buf = self.write_buf[n..].to_vec();
-                trace!("{:?}: Now {:?}b", self.socket.peer_addr(), self.write_buf.len());
-            },
+                trace!("{:?}: Now {:?}b",
+                       self.socket.peer_addr(),
+                       self.write_buf.len());
+            }
             Ok(None) => {
                 trace!("Write unready");
-            },
+            }
             Err(e) => {
                 error!("got an error trying to write; err={:?}", e);
                 self.failed = true;
@@ -188,17 +213,17 @@ impl<T, P> LineConn<T, P> where
         }
         trace!("Registering {:?} with {:?}", self, flags);
 
-        event_loop.reregister(
-                &self.socket,
-                self.token,
-                flags,
-                mio::PollOpt::oneshot()).expect("EventLoop#reinitialize")
+        event_loop.reregister(&self.socket, self.token, flags, mio::PollOpt::oneshot())
+                  .expect("EventLoop#reinitialize")
     }
 
 
 
     pub fn is_closed(&self) -> bool {
-        trace!("Closed? failed: {:?}; read_eof:{:?}; write_empty: {:?}", self.failed, self.read_eof, self.write_buf.is_empty());
+        trace!("Closed? failed: {:?}; read_eof:{:?}; write_empty: {:?}",
+               self.failed,
+               self.read_eof,
+               self.write_buf.is_empty());
         self.failed || (self.read_eof && self.write_buf.is_empty())
     }
 
@@ -207,7 +232,6 @@ impl<T, P> LineConn<T, P> where
         let chunk = self.codec.encode(s);
         self.write_buf.extend(chunk);
     }
-
 }
 
 #[derive(Debug)]
@@ -218,7 +242,10 @@ pub struct SexpPeer {
 
 impl SexpPeer {
     pub fn fresh(token: mio::Token) -> SexpPeer {
-        SexpPeer { token: token, packets: sexp::Packetiser::new() }
+        SexpPeer {
+            token: token,
+            packets: sexp::Packetiser::new(),
+        }
     }
 }
 
@@ -238,11 +265,17 @@ impl Reader<ChainReplMsg> for SexpPeer {
     }
     fn take(&mut self) -> Option<ChainReplMsg> {
         if let Some(msg) = self.packets.take().expect("Pull packet") {
-            let _ : ReplicationMessage = msg;
+            let _: ReplicationMessage = msg;
             debug!("Decoding PeerMsg: {:?}", msg);
             let ret = match msg {
-                 ReplicationMessage { epoch, msg: PeerMsg::Commit(seqno, op) } =>
-                    ChainReplMsg::Operation { source: self.token, epoch: Some(epoch), seqno: Some(seqno), op: op },
+                ReplicationMessage { epoch, msg: PeerMsg::Commit(seqno, op) } => {
+                    ChainReplMsg::Operation {
+                        source: self.token,
+                        epoch: Some(epoch),
+                        seqno: Some(seqno),
+                        op: op,
+                    }
+                }
             };
             Some(ret)
         } else {
@@ -262,7 +295,10 @@ impl<T: Deserialize> Reader<T> for SexpPeer {
     }
 }
 
-impl<P> LineConn<SexpPeer, P> where P: Protocol, SexpPeer: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug {
+impl<P> LineConn<SexpPeer, P>
+    where P: Protocol,
+          SexpPeer: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug
+{
     pub fn upstream(socket: TcpStream, token: mio::Token) -> LineConn<SexpPeer, P> {
         Self::new(socket, token, SexpPeer::fresh(token))
     }
@@ -271,7 +307,7 @@ impl<P> LineConn<SexpPeer, P> where P: Protocol, SexpPeer: Reader<P::Recv> + Enc
 #[derive(Debug)]
 pub struct PlainClient {
     token: mio::Token,
-    buf: VecDeque<u8>
+    buf: VecDeque<u8>,
 }
 
 impl<T: fmt::Debug> Encoder<T> for PlainClient {
@@ -282,13 +318,26 @@ impl<T: fmt::Debug> Encoder<T> for PlainClient {
 
 impl Reader<Operation> for PlainClient {
     fn new(token: mio::Token) -> PlainClient {
-        PlainClient { token: token, buf: VecDeque::new() }
+        PlainClient {
+            token: token,
+            buf: VecDeque::new(),
+        }
     }
     fn feed(&mut self, slice: &[u8]) {
         self.buf.extend(slice);
     }
     fn take(&mut self) -> Option<Operation> {
-        if let Some(idx) = self.buf.iter().enumerate().filter_map(|(i, &c)| if c == NL { Some(i+1) } else { None }).next() {
+        if let Some(idx) = self.buf
+                               .iter()
+                               .enumerate()
+                               .filter_map(|(i, &c)| {
+                                   if c == NL {
+                                       Some(i + 1)
+                                   } else {
+                                       None
+                                   }
+                               })
+                               .next() {
             let slice = self.buf.drain(..idx).collect::<Vec<_>>();
             let s = String::from_utf8_lossy(&slice);
             let op = if s.trim().is_empty() {
@@ -304,7 +353,10 @@ impl Reader<Operation> for PlainClient {
 }
 
 
-impl<P> LineConn<PlainClient, P> where P: Protocol, PlainClient: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug {
+impl<P> LineConn<PlainClient, P>
+    where P: Protocol,
+          PlainClient: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug
+{
     pub fn client(socket: TcpStream, token: mio::Token) -> LineConn<PlainClient, P> {
         Self::new(socket, token, PlainClient::new(token))
     }
