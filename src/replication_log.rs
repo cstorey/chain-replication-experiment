@@ -88,12 +88,16 @@ impl Log {
         next
     }
 
-    fn read_seqno(&self, name: &str) -> u64 {
-        match self.db.get_cf(self.meta, name.as_bytes()) {
+    fn do_read_seqno(db: &DB, meta: DBCFHandle, name: &str) -> u64 {
+        match db.get_cf(meta, name.as_bytes()) {
             Ok(Some(val)) => Self::fromkey(&val),
             Ok(None) => 0,
             Err(e) => panic!("Unexpected error getting commit point: {:?}", e),
         }
+    }
+
+    fn read_seqno(&self, name: &str) -> u64 {
+        Self::do_read_seqno(&self.db, self.meta, name)
     }
 
     pub fn read(&self, seqno: u64) -> Option<Operation> {
@@ -150,24 +154,9 @@ impl Log {
         debug!("Commit {:?}", commit_seqno);
         let key = Self::tokey(commit_seqno);
 
-        let prepared = match db.get_cf(meta, META_PREPARED.as_bytes()) {
-            Ok(Some(val)) => Self::fromkey(&val),
-            Ok(None) => panic!("Committing {:?} without having prepared?", commit_seqno),
-            Err(e) => {
-                panic!("Unexpected error reading index: {:?}: {:?}",
-                       commit_seqno,
-                       e)
-            }
-        };
-        let committed = match db.get_cf(meta, META_COMMITTED.as_bytes()) {
-            Ok(Some(val)) => Self::fromkey(&val),
-            Ok(None) => 0,
-            Err(e) => {
-                panic!("Unexpected error reading index: {:?}: {:?}",
-                       commit_seqno,
-                       e)
-            }
-        };
+        let prepared = Self::do_read_seqno(&db, meta, META_PREPARED);
+        let committed = Self::do_read_seqno(&db, meta, META_COMMITTED);
+
         debug!("Committing: {:?}, committed, {:?}, prepared: {:?}",
                committed,
                committed,
