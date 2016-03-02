@@ -138,6 +138,14 @@ impl Log {
         next
     }
 
+    pub fn read_prepared(&self) -> u64 {
+        self.read_seqno(META_PREPARED)
+    }
+
+    pub fn read_committed(&self) -> u64 {
+        self.read_seqno(META_PREPARED)
+    }
+
     fn do_read_seqno(db: &DB, meta: DBCFHandle, name: &str) -> u64 {
         match db.get_cf(meta, name.as_bytes()) {
             Ok(Some(val)) => Self::fromkey(&val),
@@ -195,9 +203,17 @@ impl Log {
                self.read_seqno(META_COMMITTED));
     }
 
-    pub fn commit_to(&mut self, seqno: u64) {
+    pub fn commit_to(&mut self, seqno: u64) -> bool {
         debug!("Request commit upto: {:?}", seqno);
-        self.flush_tx.send(seqno).expect("Send to flusher")
+        let committed = self.read_seqno(META_COMMITTED);
+        if committed < seqno {
+            debug!("Request to commit {} -> {}", committed, seqno);
+            self.flush_tx.send(seqno).expect("Send to flusher");
+            true
+        } else {
+            debug!("Request to commit {} -> {}; no-op", committed, seqno);
+            false
+        }
     }
 
     fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, data: DBCFHandle, commit_seqno: u64) {
@@ -227,7 +243,7 @@ impl Log {
         debug!("Committed {:?} in: {}", commit_seqno, t0.to(t1));
     }
 
-    pub fn flush(&mut self) -> bool {
+    pub fn auto_commit(&mut self) -> bool {
         let prepared = self.read_seqno(META_PREPARED);
         let committed = self.read_seqno(META_COMMITTED);
         if committed < prepared {

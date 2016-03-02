@@ -25,7 +25,8 @@ pub struct NodeViewConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMsg {
-    Commit (u64, Operation),
+    Prepare (u64, Operation),
+    CommitTo (u64),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicationMessage {

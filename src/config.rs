@@ -322,7 +322,7 @@ impl<T: Clone> ConfigurationView<T> {
         })
     }
 
-    fn is_head(&self) -> bool {
+    pub fn is_head(&self) -> bool {
         self.ord == 0
     }
 

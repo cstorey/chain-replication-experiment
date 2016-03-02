@@ -12,7 +12,8 @@ const REPLICATION_CREDIT: u64 = 1024;
 
 #[derive(Debug)]
 struct Forwarder {
-    last_sent_downstream: Option<u64>,
+    last_prepared_downstream: Option<u64>,
+    last_committed_downstream: Option<u64>,
     last_acked_downstream: Option<u64>,
     pending_operations: BTreeMap<u64, mio::Token>,
 }
@@ -28,13 +29,13 @@ enum Role {
     Terminus(Terminus),
 }
 
-
-
 #[derive(Debug)]
 pub struct ReplModel {
     next: Role,
     log: Log,
     current_epoch: u64,
+    upstream_commited: Option<u64>,
+    auto_commits: bool,
 }
 
 impl Role {
@@ -61,6 +62,7 @@ impl Role {
             _ => false,
         }
     }
+
     fn has_pending(&self, token: mio::Token) -> bool {
         match self {
             &Role::Forwarder(ref f) => f.has_pending(token),
@@ -78,8 +80,9 @@ impl Role {
 impl Forwarder {
     fn new() -> Forwarder {
         Forwarder {
-            last_sent_downstream: None,
+            last_prepared_downstream: None,
             last_acked_downstream: None,
+            last_committed_downstream: None,
             pending_operations: BTreeMap::new(),
         }
     }
@@ -106,11 +109,11 @@ impl Forwarder {
                     None
                 }
             }
-            &OpResp::HelloIWant(last_sent_downstream) => {
-                info!("Downstream has {:?}", last_sent_downstream);
-                // assert!(last_sent_downstream <= self.seqno());
-                self.last_acked_downstream = Some(last_sent_downstream);
-                self.last_sent_downstream = Some(last_sent_downstream);
+            &OpResp::HelloIWant(last_prepared_downstream) => {
+                info!("Downstream has {:?}", last_prepared_downstream);
+                // assert!(last_prepared_downstream <= self.seqno());
+                self.last_acked_downstream = Some(last_prepared_downstream);
+                self.last_prepared_downstream = Some(last_prepared_downstream);
                 None
             }
         }
@@ -118,29 +121,30 @@ impl Forwarder {
 
     pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &Log, mut forward: F) -> bool {
         let mut changed = false;
-        debug!("pre  Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
+        debug!("pre  Repl: Ours: {:?}; downstream prepared: {:?}; committed: {:?}; acked: {:?}",
                log.seqno(),
-               self.last_sent_downstream,
+               self.last_prepared_downstream,
+               self.last_committed_downstream,
                self.last_acked_downstream);
 
         let mut changed = false;
-        if let Some(send_next) = self.last_sent_downstream {
+        if let Some(send_next) = self.last_prepared_downstream {
             if send_next < log.seqno() {
-                let max_to_push_now = cmp::min(self.last_acked_downstream.unwrap_or(0) +
-                                               REPLICATION_CREDIT,
-                                               log.seqno());
-                debug!("Window push {:?} - {:?}; waiting: {:?}",
+                let max_to_prepare_now = cmp::min(self.last_acked_downstream.unwrap_or(0) +
+                                                  REPLICATION_CREDIT,
+                                                  log.seqno());
+                debug!("Window prepare {:?} - {:?}; waiting: {:?}",
                        send_next,
-                       max_to_push_now,
-                       log.seqno() - max_to_push_now);
-                for i in send_next..max_to_push_now {
+                       max_to_prepare_now,
+                       log.seqno() - max_to_prepare_now);
+                for i in send_next..max_to_prepare_now {
                     if let Some(op) = log.read(i) {
                         debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}",
                                i,
                                op,
-                               self.last_sent_downstream);
-                        forward(PeerMsg::Commit(i, op));
-                        self.last_sent_downstream = Some(i + 1);
+                               self.last_prepared_downstream);
+                        forward(PeerMsg::Prepare(i, op));
+                        self.last_prepared_downstream = Some(i + 1);
                         changed = true
                     } else {
                         panic!("Attempted to replicate item not in log: {:?}", self);
@@ -149,8 +153,22 @@ impl Forwarder {
             }
             debug!("post Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
                    log.seqno(),
-                   self.last_sent_downstream,
+                   self.last_prepared_downstream,
                    self.last_acked_downstream);
+        }
+        if let (Some(prepared), committed) = (self.last_prepared_downstream,
+                                              self.last_committed_downstream.unwrap_or(0)) {
+            if committed < log.read_committed() {
+                let max_to_commit_now = cmp::min(prepared, log.read_committed());
+                debug!("Window commit {:?} - {:?}; waiting: {:?}",
+                       committed,
+                       max_to_commit_now,
+                       log.read_committed() - max_to_commit_now);
+
+                forward(PeerMsg::CommitTo(max_to_commit_now));
+                self.last_committed_downstream = Some(max_to_commit_now);
+                changed = true
+            }
         }
         changed
     }
@@ -160,7 +178,7 @@ impl Forwarder {
     }
 
     fn reset(&mut self) {
-        self.last_sent_downstream = None
+        self.last_prepared_downstream = None
     }
 }
 
@@ -193,6 +211,8 @@ impl ReplModel {
             log: log,
             current_epoch: Default::default(),
             next: Role::Terminus(Terminus::new()),
+            upstream_commited: None,
+            auto_commits: false,
         }
     }
 
@@ -259,8 +279,29 @@ impl ReplModel {
         self.next.reset()
     }
 
+    pub fn commit_observed(&mut self, seqno: u64) -> bool {
+        debug!("Observed upstream commit point: {:?}; current: {:?}",
+               seqno,
+               self.upstream_commited);
+        assert!(self.upstream_commited.map(|committed| committed <= seqno).unwrap_or(true));
+        self.upstream_commited = Some(seqno);
+        true
+    }
+
     pub fn flush(&mut self) -> bool {
-        self.log.flush()
+        if self.auto_commits {
+            self.upstream_commited = Some(self.log.read_prepared());
+            debug!("Auto committing to: {:?}", self.upstream_commited);
+        } else {
+            debug!("Flush to upstream commit point: {:?}",
+                   self.upstream_commited);
+        }
+        if let Some(seqno) = self.upstream_commited {
+            info!("Generate downstream commit message for {:?}", seqno);
+            self.log.commit_to(seqno)
+        } else {
+            false
+        }
     }
 
     pub fn set_has_downstream(&mut self, is_forwarder: bool) {
@@ -279,5 +320,8 @@ impl ReplModel {
                 info!("No change of config");
             }
         }
+    }
+    pub fn set_should_auto_commit(&mut self, auto_commits: bool) {
+        self.auto_commits = auto_commits;
     }
 }

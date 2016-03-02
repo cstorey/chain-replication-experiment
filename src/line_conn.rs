@@ -37,12 +37,19 @@ impl Protocol for PeerClientProto {
     type Recv = ReplicationMessage;
     fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg {
         match msg {
-            ReplicationMessage { epoch, msg: PeerMsg::Commit(seqno, op) } => {
+            ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => {
                 ChainReplMsg::Operation {
                     source: token,
                     epoch: Some(epoch),
                     seqno: Some(seqno),
                     op: op,
+                }
+            }
+            ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => {
+                ChainReplMsg::Commit {
+                    source: token,
+                    epoch: epoch,
+                    seqno: seqno,
                 }
             }
         }
@@ -268,12 +275,19 @@ impl Reader<ChainReplMsg> for SexpPeer {
             let _: ReplicationMessage = msg;
             debug!("Decoding PeerMsg: {:?}", msg);
             let ret = match msg {
-                ReplicationMessage { epoch, msg: PeerMsg::Commit(seqno, op) } => {
+                ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => {
                     ChainReplMsg::Operation {
                         source: self.token,
                         epoch: Some(epoch),
                         seqno: Some(seqno),
                         op: op,
+                    }
+                }
+                ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => {
+                    ChainReplMsg::Commit {
+                        source: self.token,
+                        epoch: epoch,
+                        seqno: seqno,
                     }
                 }
             };

@@ -48,6 +48,11 @@ enum ChainReplMsg {
         seqno: Option<u64>,
         op: Operation,
     },
+    Commit {
+        source: mio::Token,
+        epoch: u64,
+        seqno: u64,
+    },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
     ForwardDownstream(u64, PeerMsg),
@@ -124,6 +129,10 @@ impl ChainRepl {
                 self.model.process_operation(&mut self.connections[source], seqno, epoch, op);
             }
 
+            ChainReplMsg::Commit { source, seqno, epoch } => {
+                self.model.commit_observed(seqno);
+            }
+
             ChainReplMsg::DownstreamResponse(reply) => self.process_downstream_response(reply),
 
             ChainReplMsg::NewClientConn(role, socket) => {
@@ -180,6 +189,7 @@ impl ChainRepl {
         changed |= self.model.process_replication(|epoch, msg| {
             action(ChainReplMsg::ForwardDownstream(epoch, msg))
         });
+
         changed |= self.model.flush();
 
         if let Some(view) = self.new_view.take() {
@@ -195,16 +205,21 @@ impl ChainRepl {
                    event_loop: &mut mio::EventLoop<Self>,
                    view: ConfigurationView<NodeViewConfig>) {
         info!("Reconfigure according to: {:?}", view);
+
         let listen_for_clients = view.should_listen_for_clients();
         info!("Listen for clients: {:?}", listen_for_clients);
         for p in self.listeners(Role::Client) {
             p.set_active(listen_for_clients);
         }
+
         let listen_for_upstreamp = view.should_listen_for_upstream();
         info!("Listen for upstreams: {:?}", listen_for_upstreamp);
         for p in self.listeners(Role::Upstream) {
             p.set_active(listen_for_upstreamp);
         }
+
+        self.model.set_should_auto_commit(view.is_head());
+
         if let Some(ds) = view.should_connect_downstream() {
             info!("Push to downstream on {:?}", ds);
             if let Some(ref peer_addr) = ds.peer_addr {
