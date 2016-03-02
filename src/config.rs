@@ -19,9 +19,9 @@ pub struct ConfigClient<T> {
 
 #[derive(Clone,Debug, Default)]
 pub struct ConfigurationView<T> {
-    this_node: String,
-    members: BTreeMap<String, T>,
     pub epoch: u64,
+    ord: usize,
+    next: Option<T>,
 }
 
 struct InnerClient<T> {
@@ -235,21 +235,19 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
             let members = self.list_members();
             let seq = self.verify_epoch(&members);
 
-            let in_current_configuration = members.contains_key(lease_key);
-
             trace!("Members: {:?}; seq: {:?}", members, seq);
             if curr_members != members {
                 curr_members = members;
                 info!("Membership change! {:?}", curr_members);
-                (self.callback)(ConfigurationView {
-                    this_node: lease_key.clone(),
-                    members: curr_members.clone(),
-                    epoch: seq.epoch,
-                })
-            }
-
-            if !in_current_configuration {
-                warn!("I seem to have died: {:?}", lease_key);
+                if let Some(view) = ConfigurationView::of_membership(seq.epoch,
+                                                                     lease_key,
+                                                                     curr_members.clone()) {
+                    (self.callback)(view)
+                } else {
+                    warn!("I seem to have died: {:?}", lease_key);
+                    (self.on_exit)();
+                    break;
+                }
             }
         }
 
@@ -309,31 +307,33 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 }
 
 impl<T: Clone> ConfigurationView<T> {
-    fn head_key(&self) -> Option<&str> {
-        self.members.keys().next().map(|s| &**s)
+    fn of_membership(epoch: u64,
+                     this_node: &str,
+                     members: BTreeMap<String, T>)
+                     -> Option<ConfigurationView<T>> {
+        let ordp = members.keys().position(|x| *x == this_node);
+        ordp.map(|ord| {
+            let next = members.values().nth(ord + 1).map(|v| v.clone());
+            ConfigurationView {
+                epoch: epoch,
+                ord: ord,
+                next: next,
+            }
+        })
+    }
+
+    fn is_head(&self) -> bool {
+        self.ord == 0
     }
 
     pub fn should_listen_for_clients(&self) -> bool {
-        self.head_key() == Some(&self.this_node)
+        self.is_head()
     }
     pub fn should_listen_for_upstream(&self) -> bool {
-        self.head_key() != Some(&self.this_node)
-    }
-    pub fn should_connect_downstream(&self) -> Option<T> {
-        let next = self.members
-                       .iter()
-                       .filter_map(|(k, v)| {
-                           if *k > self.this_node {
-                               Some((k, v))
-                           } else {
-                               None
-                           }
-                       })
-                       .next();
-        next.map(|(_, val)| val.clone())
+        !self.is_head()
     }
 
-    pub fn in_configuration(&self) -> bool {
-        self.members.keys().any(|k| k == &self.this_node)
+    pub fn should_connect_downstream<'a>(&'a self) -> Option<&'a T> {
+        self.next.as_ref()
     }
 }

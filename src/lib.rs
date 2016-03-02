@@ -195,11 +195,6 @@ impl ChainRepl {
                    event_loop: &mut mio::EventLoop<Self>,
                    view: ConfigurationView<NodeViewConfig>) {
         info!("Reconfigure according to: {:?}", view);
-        if !view.in_configuration() {
-            warn!("I am not in this configuration; shutting down: {:?}", view);
-            event_loop.shutdown();
-        }
-
         let listen_for_clients = view.should_listen_for_clients();
         info!("Listen for clients: {:?}", listen_for_clients);
         for p in self.listeners(Role::Client) {
@@ -212,7 +207,7 @@ impl ChainRepl {
         }
         if let Some(ds) = view.should_connect_downstream() {
             info!("Push to downstream on {:?}", ds);
-            if let Some(peer_addr) = ds.peer_addr {
+            if let Some(ref peer_addr) = ds.peer_addr {
                 self.set_downstream(event_loop, Some(peer_addr.parse().expect("peer address")));
             } else {
                 panic!("Cannot reconnect to downstream with no peer listener: {:?}",
