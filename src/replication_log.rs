@@ -10,6 +10,54 @@ use std::thread;
 use std::sync::mpsc;
 use std::sync::Arc;
 
+// Approximate structure of the log.
+//
+// The fun part is that each sequence number is Some(n) where n points to
+// the *next* unwritten log slot. Unless it's unset, in which case we use
+// None. This is ... suspect, and what happens when you just bang out code. It
+// originally originated though, because at the time, the `Log#seqno` method
+// was used solely to figure out the next slot that we should be writing to.
+
+// However, we also use this very same logic to understand where we are in the
+// replication stream. When we attempt to write say, two entries, we end up
+// publishing the following messages:
+//
+// Prepare(0, "a")
+// Prepare(1, "b")
+// CommitTo(2)
+//
+// Which seems great, but we've just told the downstream replica to commit to
+// an entry that hasn't been written yet. So've just told the downstream to
+// commit an unwritten slot, triggers an `assert!` (the nearest I get to Hoare
+// triples), and the whole castle comes tumbling down.
+
+// Log Entries
+//
+//        R R R                        Replicas
+//  ┌──┐  0 1 2
+//  │  │        ◀─┐                    0   Head
+//  │00│  X X O   │                    1 Middle
+//  │ 1│  X X O   └───R2.Commit        2   Tail
+//  │ 2│  X X O
+//  │ 3│  X X O
+//  │ 4│  X X   ◀─────R2.Prepare
+//  │ 5│  X X
+//  │ 6│  X X
+//  │ 7│  X X
+//  │ 8│  X O   ◀─────R1.Commit
+//  │ 9│  X O
+//  │10│  X O
+//  │ 1│  X O
+//  │ 2│  O O   ◀─────R0.Commit
+//  │ 3│  O O
+//  │ 4│  O O
+//  │ 5│  O O
+//  │ 6│  O     ◀─────R1.Prepare
+//  │ 7│  O
+//  │ 8│  O
+//  │ 9│  O
+//  └──┘        ◀─────R0.Prepare
+
 pub struct Log {
     dir: TempDir,
     db: Arc<DB>,
