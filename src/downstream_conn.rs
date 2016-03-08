@@ -9,6 +9,7 @@ use std::fmt;
 use std::io::ErrorKind;
 
 use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg, ReplicationMessage};
+use config::Epoch;
 use line_conn::{Encoder, Reader, SexpPeer};
 
 #[derive(Debug)]
@@ -67,7 +68,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         self.should_disconnect = true;
     }
 
-    pub fn send_to_downstream(&mut self, epoch: u64, msg: PeerMsg) {
+    pub fn send_to_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
         debug!("Queuing for downstream (qlen: {}): {:?}: {:?}",
                self.pending.len() + 1,
                self.peer,

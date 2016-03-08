@@ -19,7 +19,7 @@ pub struct ConfigClient<T> {
 
 #[derive(Clone,Debug, Default)]
 pub struct ConfigurationView<T> {
-    pub epoch: u64,
+    pub epoch: Epoch,
     ord: usize,
     next: Option<T>,
 }
@@ -35,8 +35,14 @@ struct InnerClient<T> {
     watcher_alive: AtomicBool,
 }
 
+impl Epoch {
+    fn succ(&mut self) {
+        self.0 += 1
+    }
+}
 
 struct DeathWatch<'a, F>(&'a AtomicBool, F) where F: Fn();
+
 
 impl<'a, F> DeathWatch<'a, F>
     where F: Fn()
@@ -279,7 +285,8 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
                 debug!("Stale! {:?}", seq);
 
                 seq.keys = current_keys;
-                seq.epoch += 1;
+                seq.epoch.succ();
+
                 match self.etcd.compare_and_swap(SEQUENCER,
                                                  &json::to_string(&seq).expect("encode epoch"),
                                                  None,
@@ -307,7 +314,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 }
 
 impl<T: Clone> ConfigurationView<T> {
-    fn of_membership(epoch: u64,
+    fn of_membership(epoch: Epoch,
                      this_node: &str,
                      members: BTreeMap<String, T>)
                      -> Option<ConfigurationView<T>> {

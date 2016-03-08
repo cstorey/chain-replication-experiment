@@ -44,18 +44,18 @@ pub use replication_log::Log;
 enum ChainReplMsg {
     Operation {
         source: mio::Token,
-        epoch: Option<u64>,
+        epoch: Option<Epoch>,
         seqno: Option<u64>,
         op: Operation,
     },
     Commit {
         source: mio::Token,
-        epoch: u64,
+        epoch: Epoch,
         seqno: u64,
     },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
-    ForwardDownstream(u64, PeerMsg),
+    ForwardDownstream(Epoch, PeerMsg),
 }
 
 #[derive(Debug)]

@@ -7,6 +7,7 @@ use mio;
 use super::{Operation, OpResp, PeerMsg};
 use event_handler::EventHandler;
 use replication_log::Log;
+use config::Epoch;
 
 const REPLICATION_CREDIT: u64 = 1024;
 
@@ -33,7 +34,7 @@ enum Role {
 pub struct ReplModel {
     next: Role,
     log: Log,
-    current_epoch: u64,
+    current_epoch: Epoch,
     upstream_commited: Option<u64>,
     auto_commits: bool,
 }
@@ -41,7 +42,7 @@ pub struct ReplModel {
 impl Role {
     fn process_operation(&mut self,
                          channel: &mut EventHandler,
-                         epoch: u64,
+                         epoch: Epoch,
                          seqno: u64,
                          op: Operation) {
         match self {
@@ -89,7 +90,7 @@ impl Forwarder {
 
     fn process_operation(&mut self,
                          channel: &mut EventHandler,
-                         epoch: u64,
+                         epoch: Epoch,
                          seqno: u64,
                          op: Operation) {
         self.pending_operations.insert(seqno, channel.token());
@@ -190,7 +191,7 @@ impl Terminus {
 
     fn process_operation(&mut self,
                          channel: &mut EventHandler,
-                         epoch: u64,
+                         epoch: Epoch,
                          seqno: u64,
                          op: Operation) {
         info!("Terminus! {:?}/{:?}", seqno, op);
@@ -227,18 +228,18 @@ impl ReplModel {
     pub fn process_operation(&mut self,
                              channel: &mut EventHandler,
                              seqno: Option<u64>,
-                             epoch: Option<u64>,
+                             epoch: Option<Epoch>,
                              op: Operation) {
         let seqno = seqno.unwrap_or_else(|| self.next_seqno());
         let epoch = epoch.unwrap_or_else(|| self.current_epoch);
 
         if epoch != self.current_epoch {
-            warn!("Operation epoch ({}) differers from our last observed configuration: ({})",
+            warn!("Operation epoch ({:?}) differers from our last observed configuration: ({:?})",
                   epoch,
                   self.current_epoch);
             let resp = OpResp::Err(epoch,
                                    seqno,
-                                   format!("BadEpoch: {}; last seen config: {}",
+                                   format!("BadEpoch: {:?}; last seen config: {:?}",
                                            epoch,
                                            self.current_epoch));
             channel.response(resp);
@@ -262,12 +263,12 @@ impl ReplModel {
         self.next.process_downstream_response(reply)
     }
 
-    pub fn process_replication<F: FnMut(u64, PeerMsg)>(&mut self, mut forward: F) -> bool {
+    pub fn process_replication<F: FnMut(Epoch, PeerMsg)>(&mut self, mut forward: F) -> bool {
         let epoch = self.current_epoch;
         self.next.process_replication(&self.log, |msg| forward(epoch, msg))
     }
 
-    pub fn epoch_changed(&mut self, epoch: u64) {
+    pub fn epoch_changed(&mut self, epoch: Epoch) {
         self.current_epoch = epoch;
     }
 
