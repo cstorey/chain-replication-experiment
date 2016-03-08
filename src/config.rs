@@ -11,6 +11,13 @@ use serde::de::Deserialize;
 
 include!(concat!(env!("OUT_DIR"), "/config_data.rs"));
 
+impl ConfigSequencer {
+    fn update_from_keys(&mut self, current_keys: Vec<String>) {
+        self.keys = current_keys;
+        self.epoch = self.epoch.succ();
+    }
+}
+
 pub struct ConfigClient<T> {
     client: Arc<InnerClient<T>>,
     lease_mgr: thread::JoinHandle<()>,
@@ -36,8 +43,8 @@ struct InnerClient<T> {
 }
 
 impl Epoch {
-    fn succ(&mut self) {
-        self.0 += 1
+    fn succ(&self) -> Epoch {
+        Epoch(self.0 + 1)
     }
 }
 
@@ -233,7 +240,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 
         let mut curr_members = BTreeMap::new();
         loop {
-            trace!("Awaiting for {} from {:?}", MEMBERS, last_observed_index);
+            trace!("Awaiting for {} from etcd index {:?}", MEMBERS, last_observed_index);
             let res = self.etcd.watch(MEMBERS, last_observed_index, true).expect("watch");
             trace!("Watch: {:?}", res);
             last_observed_index = res.node.modified_index.map(|x| x + 1);
@@ -282,10 +289,9 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
             trace!("Sequencer: {}/{:?}", seq_index, seq);
             let current_keys = members.keys().cloned().collect::<Vec<_>>();
             if current_keys != seq.keys {
-                debug!("Stale! {:?}", seq);
+                debug!("verify_epoch: Stale! {:?}", seq);
 
-                seq.keys = current_keys;
-                seq.epoch.succ();
+                seq.update_from_keys(current_keys);
 
                 match self.etcd.compare_and_swap(SEQUENCER,
                                                  &json::to_string(&seq).expect("encode epoch"),
