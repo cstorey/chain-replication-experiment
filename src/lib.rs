@@ -45,13 +45,13 @@ enum ChainReplMsg {
     Operation {
         source: mio::Token,
         epoch: Option<Epoch>,
-        seqno: Option<u64>,
+        seqno: Option<Seqno>,
         op: Operation,
     },
     Commit {
         source: mio::Token,
         epoch: Epoch,
-        seqno: u64,
+        seqno: Seqno,
     },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
@@ -314,7 +314,7 @@ impl ChainRepl {
         self.new_view = Some(view)
     }
 
-    fn committed_to(&mut self, seqno: u64) {
+    fn committed_to(&mut self, seqno: Seqno) {
         info!("Committed upto: {:?}", seqno);
     }
     pub fn get_notifier(event_loop: &mut mio::EventLoop<Self>) -> Notifier {
@@ -330,7 +330,7 @@ impl ChainRepl {
 pub enum Notification {
     ViewChange(ConfigurationView<NodeViewConfig>),
     Shutdown,
-    CommittedTo(u64),
+    CommittedTo(Seqno),
 }
 pub struct Notifier(mio::Sender<Notification>);
 
@@ -356,7 +356,7 @@ impl Notifier {
     pub fn shutdown(&self) {
         self.notify(Notification::Shutdown)
     }
-    pub fn committed_to(&self, seqno: u64) {
+    pub fn committed_to(&self, seqno: Seqno) {
         self.notify(Notification::CommittedTo(seqno))
     }
 }

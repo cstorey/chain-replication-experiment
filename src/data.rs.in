@@ -1,3 +1,6 @@
+#[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone,Copy,Default, Serialize, Deserialize)]
+pub struct Seqno(u64);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Operation {
     Set(String),
@@ -6,9 +9,9 @@ pub enum Operation {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum OpResp {
-    Ok(Epoch, u64, Option<String>),
-    HelloIWant(u64),
-    Err(Epoch, u64, String),
+    Ok(Epoch, Seqno, Option<String>),
+    HelloIWant(Seqno),
+    Err(Epoch, Seqno, String),
 }
 
 #[derive(Eq,PartialEq, Clone, Debug, Serialize, Deserialize)]
@@ -25,8 +28,8 @@ pub struct NodeViewConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMsg {
-    Prepare (u64, Operation),
-    CommitTo (u64),
+    Prepare (Seqno, Operation),
+    CommitTo (Seqno),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicationMessage {

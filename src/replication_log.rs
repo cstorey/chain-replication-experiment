@@ -5,6 +5,7 @@ use tempdir::TempDir;
 use byteorder::{ByteOrder, BigEndian};
 use spki_sexp;
 use super::Operation;
+use data::Seqno;
 use time::{Duration, PreciseTime};
 use std::thread;
 use std::sync::mpsc;
@@ -63,7 +64,7 @@ pub struct Log {
     db: Arc<DB>,
     meta: DBCFHandle,
     data: DBCFHandle,
-    flush_tx: mpsc::SyncSender<u64>,
+    flush_tx: mpsc::SyncSender<Seqno>,
 }
 
 const META: &'static str = "meta";
@@ -78,7 +79,7 @@ impl fmt::Debug for Log {
 }
 
 impl Log {
-    pub fn new<F: Fn(u64) + Send + 'static>(committed: F) -> Log {
+    pub fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Log {
         let d = TempDir::new("rocksdb-log").expect("new log");
         info!("DB path: {:?}", d.path());
         let mut db = DB::open_default(&d.path().to_string_lossy()).expect("open db");
@@ -103,7 +104,7 @@ impl Log {
         }
     }
 
-    fn flush_thread_loop<F: Fn(u64)>(db: Arc<DB>, rx: mpsc::Receiver<u64>, committed: F) {
+    fn flush_thread_loop<F: Fn(Seqno)>(db: Arc<DB>, rx: mpsc::Receiver<Seqno>, committed: F) {
         let meta = db.cf_handle(META).expect("open meta cf").clone();
         let data = db.cf_handle(DATA).expect("open data cf").clone();
         loop {
@@ -122,44 +123,33 @@ impl Log {
         }
     }
 
-    fn tokey(seq: u64) -> [u8; 8] {
-        let mut buf: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
-        BigEndian::write_u64(&mut buf, seq);
-        buf
+    pub fn seqno(&self) -> Seqno {
+        let current = self.read_prepared();
+        current.succ()
     }
 
-    fn fromkey(key: &[u8]) -> u64 {
-        BigEndian::read_u64(&key)
-    }
-
-    pub fn seqno(&self) -> u64 {
-        let current = self.read_seqno(META_PREPARED);
-        let next = current + 1;
-        next
-    }
-
-    pub fn read_prepared(&self) -> u64 {
+    pub fn read_prepared(&self) -> Seqno {
         self.read_seqno(META_PREPARED)
     }
 
-    pub fn read_committed(&self) -> u64 {
+    pub fn read_committed(&self) -> Seqno {
         self.read_seqno(META_PREPARED)
     }
 
-    fn do_read_seqno(db: &DB, meta: DBCFHandle, name: &str) -> u64 {
+    fn do_read_seqno(db: &DB, meta: DBCFHandle, name: &str) -> Seqno {
         match db.get_cf(meta, name.as_bytes()) {
-            Ok(Some(val)) => Self::fromkey(&val),
-            Ok(None) => 0,
+            Ok(Some(val)) => Seqno::fromkey(&val),
+            Ok(None) => Seqno::none(),
             Err(e) => panic!("Unexpected error getting commit point: {:?}", e),
         }
     }
 
-    fn read_seqno(&self, name: &str) -> u64 {
+    fn read_seqno(&self, name: &str) -> Seqno {
         Self::do_read_seqno(&self.db, self.meta, name)
     }
 
-    pub fn read(&self, seqno: u64) -> Option<Operation> {
-        let key = Self::tokey(seqno);
+    pub fn read(&self, seqno: Seqno) -> Option<Operation> {
+        let key = Seqno::tokey(&seqno);
         let ret = match self.db.get_cf(self.data, &key.as_ref()) {
             Ok(Some(val)) => Some(spki_sexp::from_bytes(&val).expect("decode operation")),
             Ok(None) => None,
@@ -170,20 +160,20 @@ impl Log {
     }
 
 
-    pub fn verify_sequential(&self, seqno: u64) -> bool {
+    pub fn verify_sequential(&self, seqno: Seqno) -> bool {
         let current = self.seqno();
-        if !(seqno == 0 || current <= seqno) {
-            warn!("Hole in history: saw {}; have: {:?}", seqno, current);
+        if !(seqno.is_none() || current <= seqno) {
+            warn!("Hole in history: saw {:?}; have: {:?}", seqno, current);
             false
         } else {
             true
         }
     }
 
-    pub fn prepare(&mut self, seqno: u64, op: &Operation) {
+    pub fn prepare(&mut self, seqno: Seqno, op: &Operation) {
         let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
         debug!("Prepare {:?}", seqno);
-        let key = Self::tokey(seqno);
+        let key = Seqno::tokey(&seqno);
         // match self.db.get_cf(self.data, &key.as_ref()) {
         // Ok(None) => (),
         // Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
@@ -203,22 +193,22 @@ impl Log {
                self.read_seqno(META_COMMITTED));
     }
 
-    pub fn commit_to(&mut self, seqno: u64) -> bool {
+    pub fn commit_to(&mut self, seqno: Seqno) -> bool {
         debug!("Request commit upto: {:?}", seqno);
         let committed = self.read_seqno(META_COMMITTED);
         if committed < seqno {
-            debug!("Request to commit {} -> {}", committed, seqno);
+            debug!("Request to commit {:?} -> {:?}", committed, seqno);
             self.flush_tx.send(seqno).expect("Send to flusher");
             true
         } else {
-            debug!("Request to commit {} -> {}; no-op", committed, seqno);
+            debug!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
             false
         }
     }
 
-    fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, data: DBCFHandle, commit_seqno: u64) {
+    fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, data: DBCFHandle, commit_seqno: Seqno) {
         debug!("Commit {:?}", commit_seqno);
-        let key = Self::tokey(commit_seqno);
+        let key = Seqno::tokey(&commit_seqno);
 
         let prepared = Self::do_read_seqno(&db, meta, META_PREPARED);
         let committed = Self::do_read_seqno(&db, meta, META_COMMITTED);
@@ -247,8 +237,7 @@ impl Log {
         let prepared = self.read_seqno(META_PREPARED);
         let committed = self.read_seqno(META_COMMITTED);
         if committed < prepared {
-            info!("Flushing {} ({:?}->{:?})",
-                  prepared - committed,
+            info!("Flushing ({:?}->{:?})",
                   committed,
                   prepared);
             self.commit_to(prepared);

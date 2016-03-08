@@ -5,18 +5,17 @@ use std::collections::BTreeMap;
 use mio;
 
 use super::{Operation, OpResp, PeerMsg};
+use data::Seqno;
 use event_handler::EventHandler;
 use replication_log::Log;
 use config::Epoch;
 
-const REPLICATION_CREDIT: u64 = 1024;
-
 #[derive(Debug)]
 struct Forwarder {
-    last_prepared_downstream: Option<u64>,
-    last_committed_downstream: Option<u64>,
-    last_acked_downstream: Option<u64>,
-    pending_operations: BTreeMap<u64, mio::Token>,
+    last_prepared_downstream: Option<Seqno>,
+    last_committed_downstream: Option<Seqno>,
+    last_acked_downstream: Option<Seqno>,
+    pending_operations: BTreeMap<Seqno, mio::Token>,
 }
 
 #[derive(Debug)]
@@ -35,7 +34,7 @@ pub struct ReplModel {
     next: Role,
     log: Log,
     current_epoch: Epoch,
-    upstream_commited: Option<u64>,
+    upstream_commited: Option<Seqno>,
     auto_commits: bool,
 }
 
@@ -43,7 +42,7 @@ impl Role {
     fn process_operation(&mut self,
                          channel: &mut EventHandler,
                          epoch: Epoch,
-                         seqno: u64,
+                         seqno: Seqno,
                          op: Operation) {
         match self {
             &mut Role::Forwarder(ref mut f) => f.process_operation(channel, epoch, seqno, op),
@@ -91,7 +90,7 @@ impl Forwarder {
     fn process_operation(&mut self,
                          channel: &mut EventHandler,
                          epoch: Epoch,
-                         seqno: u64,
+                         seqno: Seqno,
                          op: Operation) {
         self.pending_operations.insert(seqno, channel.token());
     }
@@ -131,21 +130,19 @@ impl Forwarder {
         let mut changed = false;
         if let Some(send_next) = self.last_prepared_downstream {
             if send_next < log.seqno() {
-                let max_to_prepare_now = cmp::min(self.last_acked_downstream.unwrap_or(0) +
-                                                  REPLICATION_CREDIT,
-                                                  log.seqno());
-                debug!("Window prepare {:?} - {:?}; waiting: {:?}",
+                let max_to_prepare_now = log.seqno();
+                debug!("Window prepare {:?} - {:?}; prepared locally: {:?}",
                        send_next,
                        max_to_prepare_now,
-                       log.seqno() - max_to_prepare_now);
-                for i in send_next..max_to_prepare_now {
+                       log.read_prepared());
+                for i in send_next.upto(&max_to_prepare_now) {
                     if let Some(op) = log.read(i) {
                         debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}",
                                i,
                                op,
                                self.last_prepared_downstream);
                         forward(PeerMsg::Prepare(i, op));
-                        self.last_prepared_downstream = Some(i + 1);
+                        self.last_prepared_downstream = Some(i.succ());
                         changed = true
                     } else {
                         panic!("Attempted to replicate item not in log: {:?}", self);
@@ -158,13 +155,13 @@ impl Forwarder {
                    self.last_acked_downstream);
         }
         if let (Some(prepared), committed) = (self.last_prepared_downstream,
-                                              self.last_committed_downstream.unwrap_or(0)) {
+                                              self.last_committed_downstream.unwrap_or(Seqno::none())) {
             if committed < log.read_committed() {
                 let max_to_commit_now = cmp::min(prepared, log.read_committed());
-                debug!("Window commit {:?} - {:?}; waiting: {:?}",
+                debug!("Window commit {:?} - {:?}; committed locally: {:?}",
                        committed,
                        max_to_commit_now,
-                       log.read_committed() - max_to_commit_now);
+                       log.read_committed());
 
                 forward(PeerMsg::CommitTo(max_to_commit_now));
                 self.last_committed_downstream = Some(max_to_commit_now);
@@ -192,7 +189,7 @@ impl Terminus {
     fn process_operation(&mut self,
                          channel: &mut EventHandler,
                          epoch: Epoch,
-                         seqno: u64,
+                         seqno: Seqno,
                          op: Operation) {
         info!("Terminus! {:?}/{:?}", seqno, op);
         let resp = match op {
@@ -217,17 +214,17 @@ impl ReplModel {
         }
     }
 
-    pub fn seqno(&self) -> u64 {
+    pub fn seqno(&self) -> Seqno {
         self.log.seqno()
     }
 
-    fn next_seqno(&self) -> u64 {
+    fn next_seqno(&self) -> Seqno {
         self.log.seqno()
     }
 
     pub fn process_operation(&mut self,
                              channel: &mut EventHandler,
-                             seqno: Option<u64>,
+                             seqno: Option<Seqno>,
                              epoch: Option<Epoch>,
                              op: Operation) {
         let seqno = seqno.unwrap_or_else(|| self.next_seqno());
@@ -280,7 +277,7 @@ impl ReplModel {
         self.next.reset()
     }
 
-    pub fn commit_observed(&mut self, seqno: u64) -> bool {
+    pub fn commit_observed(&mut self, seqno: Seqno) -> bool {
         debug!("Observed upstream commit point: {:?}; current: {:?}",
                seqno,
                self.upstream_commited);
