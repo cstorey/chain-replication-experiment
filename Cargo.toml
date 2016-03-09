@@ -29,6 +29,9 @@ optional = false
 git = "https://github.com/cstorey/spki-sexp.rs.git"
 optional = false
 
+[features]
+unstable = []
+
 [profile]
 
 [profile.release]
