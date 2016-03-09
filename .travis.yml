@@ -11,10 +11,21 @@ cache:
     - $HOME/.cargo
     - target
 
+install:
+  - git clone https://github.com/facebook/rocksdb.git /tmp/rocksdb
+  - pushd /tmp/rocksdb
+  - git checkout v4.2
+  - make install-shared
+
 before_script:
 - |
     pip install 'travis-cargo<0.2' --user &&
     export PATH=$HOME/.local/bin:$PATH
+
+env:
+  global:
+    - LIBRARY_PATH=/usr/local/lib
+    - LD_LIBRARY_PATH=/usr/local/lib
 
 script:
 - |
