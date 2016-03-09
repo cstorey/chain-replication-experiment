@@ -28,10 +28,20 @@ enum ReplRole {
     Terminus(Terminus),
 }
 
+pub trait Log {
+    fn seqno(&self) -> Seqno;
+    fn read_prepared(&self) -> Seqno;
+    fn read_committed(&self) -> Seqno;
+    fn read(&self, Seqno) -> Option<Operation>;
+    fn verify_sequential(&self, Seqno) -> bool;
+    fn prepare(&mut self, Seqno, &Operation);
+    fn commit_to(&mut self, Seqno) -> bool;
+}
+
 #[derive(Debug)]
-pub struct ReplModel {
+pub struct ReplModel<L> {
     next: ReplRole,
-    log: RocksdbLog,
+    log: L,
     current_epoch: Epoch,
     upstream_commited: Option<Seqno>,
     auto_commits: bool,
@@ -55,7 +65,7 @@ impl ReplRole {
         }
     }
 
-    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &RocksdbLog, forward: F) -> bool {
+    pub fn process_replication<L: Log, F: FnMut(PeerMsg)>(&mut self, log: &L, forward: F) -> bool {
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_replication(log, forward),
             _ => false,
@@ -118,7 +128,7 @@ impl Forwarder {
         }
     }
 
-    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &RocksdbLog, mut forward: F) -> bool {
+    pub fn process_replication<L: Log, F: FnMut(PeerMsg)>(&mut self, log: &L, mut forward: F) -> bool {
         let mut changed = false;
         debug!("pre  Repl: Ours: {:?}; downstream prepared: {:?}; committed: {:?}; acked: {:?}",
                log.seqno(),
@@ -202,8 +212,8 @@ impl Terminus {
     }
 }
 
-impl ReplModel {
-    pub fn new(log: RocksdbLog) -> ReplModel {
+impl<L: Log> ReplModel<L> {
+    pub fn new(log: L) -> ReplModel<L> {
         ReplModel {
             log: log,
             current_epoch: Default::default(),

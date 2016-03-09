@@ -6,6 +6,7 @@ use byteorder::{ByteOrder, BigEndian};
 use spki_sexp;
 use data::Operation;
 use data::Seqno;
+use replica::Log;
 use time::{Duration, PreciseTime};
 use std::thread;
 use std::sync::mpsc;
@@ -122,20 +123,6 @@ impl RocksdbLog {
             committed(seqno);
         }
     }
-
-    pub fn seqno(&self) -> Seqno {
-        let current = self.read_prepared();
-        current.succ()
-    }
-
-    pub fn read_prepared(&self) -> Seqno {
-        self.read_seqno(META_PREPARED)
-    }
-
-    pub fn read_committed(&self) -> Seqno {
-        self.read_seqno(META_PREPARED)
-    }
-
     fn do_read_seqno(db: &DB, meta: DBCFHandle, name: &str) -> Seqno {
         match db.get_cf(meta, name.as_bytes()) {
             Ok(Some(val)) => Seqno::fromkey(&val),
@@ -146,64 +133,6 @@ impl RocksdbLog {
 
     fn read_seqno(&self, name: &str) -> Seqno {
         Self::do_read_seqno(&self.db, self.meta, name)
-    }
-
-    pub fn read(&self, seqno: Seqno) -> Option<Operation> {
-        let key = Seqno::tokey(&seqno);
-        let ret = match self.db.get_cf(self.data, &key.as_ref()) {
-            Ok(Some(val)) => Some(spki_sexp::from_bytes(&val).expect("decode operation")),
-            Ok(None) => None,
-            Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
-        };
-        debug!("Read: {:?} => {:?}", seqno, ret);
-        ret
-    }
-
-
-    pub fn verify_sequential(&self, seqno: Seqno) -> bool {
-        let current = self.seqno();
-        if !(seqno.is_none() || current <= seqno) {
-            warn!("Hole in history: saw {:?}; have: {:?}", seqno, current);
-            false
-        } else {
-            true
-        }
-    }
-
-    pub fn prepare(&mut self, seqno: Seqno, op: &Operation) {
-        let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-        debug!("Prepare {:?}", seqno);
-        let key = Seqno::tokey(&seqno);
-        // match self.db.get_cf(self.data, &key.as_ref()) {
-        // Ok(None) => (),
-        // Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
-        // Ok(_) => panic!("Unexpected entry at seqno: {:?}", seqno),
-        // };
-
-        let t0 = PreciseTime::now();
-        let mut batch = WriteBatch::new();
-        batch.put_cf(self.data, &key.as_ref(), &data_bytes).expect("Persist operation");
-        batch.put_cf(self.meta, META_PREPARED.as_bytes(), &key.as_ref())
-             .expect("Persist prepare point");
-        self.db.write(batch).expect("Write batch");
-        let t1 = PreciseTime::now();
-        debug!("Prepare: {}", t0.to(t1));
-        trace!("Watermarks: prepared: {:?}; committed: {:?}",
-               self.read_seqno(META_PREPARED),
-               self.read_seqno(META_COMMITTED));
-    }
-
-    pub fn commit_to(&mut self, seqno: Seqno) -> bool {
-        debug!("Request commit upto: {:?}", seqno);
-        let committed = self.read_seqno(META_COMMITTED);
-        if committed < seqno {
-            debug!("Request to commit {:?} -> {:?}", committed, seqno);
-            self.flush_tx.send(seqno).expect("Send to flusher");
-            true
-        } else {
-            debug!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
-            false
-        }
     }
 
     fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, data: DBCFHandle, commit_seqno: Seqno) {
@@ -246,4 +175,78 @@ impl RocksdbLog {
             false
         }
     }
+}
+
+impl Log for RocksdbLog {
+    fn seqno(&self) -> Seqno {
+        let current = self.read_prepared();
+        current.succ()
+    }
+
+    fn read_prepared(&self) -> Seqno {
+        self.read_seqno(META_PREPARED)
+    }
+
+    fn read_committed(&self) -> Seqno {
+        self.read_seqno(META_PREPARED)
+    }
+
+    fn read(&self, seqno: Seqno) -> Option<Operation> {
+        let key = Seqno::tokey(&seqno);
+        let ret = match self.db.get_cf(self.data, &key.as_ref()) {
+            Ok(Some(val)) => Some(spki_sexp::from_bytes(&val).expect("decode operation")),
+            Ok(None) => None,
+            Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
+        };
+        debug!("Read: {:?} => {:?}", seqno, ret);
+        ret
+    }
+
+
+    fn verify_sequential(&self, seqno: Seqno) -> bool {
+        let current = self.seqno();
+        if !(seqno.is_none() || current <= seqno) {
+            warn!("Hole in history: saw {:?}; have: {:?}", seqno, current);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn prepare(&mut self, seqno: Seqno, op: &Operation) {
+        let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
+        debug!("Prepare {:?}", seqno);
+        let key = Seqno::tokey(&seqno);
+        // match self.db.get_cf(self.data, &key.as_ref()) {
+        // Ok(None) => (),
+        // Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
+        // Ok(_) => panic!("Unexpected entry at seqno: {:?}", seqno),
+        // };
+
+        let t0 = PreciseTime::now();
+        let mut batch = WriteBatch::new();
+        batch.put_cf(self.data, &key.as_ref(), &data_bytes).expect("Persist operation");
+        batch.put_cf(self.meta, META_PREPARED.as_bytes(), &key.as_ref())
+             .expect("Persist prepare point");
+        self.db.write(batch).expect("Write batch");
+        let t1 = PreciseTime::now();
+        debug!("Prepare: {}", t0.to(t1));
+        trace!("Watermarks: prepared: {:?}; committed: {:?}",
+               self.read_seqno(META_PREPARED),
+               self.read_seqno(META_COMMITTED));
+    }
+
+    fn commit_to(&mut self, seqno: Seqno) -> bool {
+        debug!("Request commit upto: {:?}", seqno);
+        let committed = self.read_seqno(META_COMMITTED);
+        if committed < seqno {
+            debug!("Request to commit {:?} -> {:?}", committed, seqno);
+            self.flush_tx.send(seqno).expect("Send to flusher");
+            true
+        } else {
+            debug!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
+            false
+        }
+    }
+
 }

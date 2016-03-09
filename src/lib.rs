@@ -66,11 +66,11 @@ pub struct ChainRepl {
     downstream_slot: Option<mio::Token>,
     node_config: NodeViewConfig,
     new_view: Option<ConfigurationView<NodeViewConfig>>,
-    model: ReplModel,
+    model: ReplModel<RocksdbLog>,
 }
 
 impl ChainRepl {
-    pub fn new(model: ReplModel) -> ChainRepl {
+    pub fn new(model: ReplModel<RocksdbLog>) -> ChainRepl {
         ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
