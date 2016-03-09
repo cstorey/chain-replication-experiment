@@ -3,8 +3,8 @@ sudo: false
 language: rust
 addons:
   apt:
-    #sources:
-    #- ubuntu-toolchain-r-test
+    sources:
+    - ubuntu-toolchain-r-test
     packages:
     - g++-4.8
     - libsnappy-dev
