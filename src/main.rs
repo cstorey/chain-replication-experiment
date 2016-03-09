@@ -13,7 +13,7 @@ use std::net::ToSocketAddrs;
 use std::collections::HashSet;
 use clap::{Arg, App};
 
-use chain_repl_test::{ChainRepl, Role, ConfigClient, ReplModel, Log};
+use chain_repl_test::{ChainRepl, Role, ConfigClient, ReplModel, RocksdbLog};
 
 const LOG_FILE: &'static str = "log.toml";
 
@@ -31,7 +31,7 @@ fn main() {
     let mut event_loop = mio::EventLoop::new().expect("Create event loop");
 
     let repl_notifier = ChainRepl::get_notifier(&mut event_loop);
-    let log = Log::new(move |seqno| repl_notifier.committed_to(seqno));
+    let log = RocksdbLog::new(move |seqno| repl_notifier.committed_to(seqno));
     let replication = ReplModel::new(log);
     let mut service = ChainRepl::new(replication);
 

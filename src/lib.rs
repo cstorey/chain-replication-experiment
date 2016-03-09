@@ -38,7 +38,7 @@ use config::{ConfigurationView, Epoch};
 
 pub use config::ConfigClient;
 pub use replica::ReplModel;
-pub use replication_log::Log;
+pub use replication_log::RocksdbLog;
 pub use data::Role;
 
 

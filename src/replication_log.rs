@@ -59,7 +59,7 @@ use std::sync::Arc;
 //  │ 9│  O
 //  └──┘        ◀─────R0.Prepare
 
-pub struct Log {
+pub struct RocksdbLog {
     dir: TempDir,
     db: Arc<DB>,
     meta: DBCFHandle,
@@ -72,14 +72,14 @@ const DATA: &'static str = "data";
 const META_PREPARED: &'static str = "prepared";
 const META_COMMITTED: &'static str = "committed";
 
-impl fmt::Debug for Log {
+impl fmt::Debug for RocksdbLog {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.debug_struct("Log").field("dir", &self.dir.path()).finish()
+        fmt.debug_struct("RocksdbLog").field("dir", &self.dir.path()).finish()
     }
 }
 
-impl Log {
-    pub fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Log {
+impl RocksdbLog {
+    pub fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> RocksdbLog {
         let d = TempDir::new("rocksdb-log").expect("new log");
         info!("DB path: {:?}", d.path());
         let mut db = DB::open_default(&d.path().to_string_lossy()).expect("open db");
@@ -95,7 +95,7 @@ impl Log {
                 .spawn(move || Self::flush_thread_loop(db, flush_rx, committed))
                 .expect("spawn flush thread")
         };
-        Log {
+        RocksdbLog {
             dir: d,
             db: db,
             meta: meta,

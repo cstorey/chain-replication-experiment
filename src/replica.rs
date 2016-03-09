@@ -6,7 +6,7 @@ use mio;
 
 use data::{Operation, OpResp, PeerMsg, Seqno};
 use event_handler::EventHandler;
-use replication_log::Log;
+use replication_log::RocksdbLog;
 use config::Epoch;
 
 #[derive(Debug)]
@@ -31,7 +31,7 @@ enum ReplRole {
 #[derive(Debug)]
 pub struct ReplModel {
     next: ReplRole,
-    log: Log,
+    log: RocksdbLog,
     current_epoch: Epoch,
     upstream_commited: Option<Seqno>,
     auto_commits: bool,
@@ -55,7 +55,7 @@ impl ReplRole {
         }
     }
 
-    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &Log, forward: F) -> bool {
+    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &RocksdbLog, forward: F) -> bool {
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_replication(log, forward),
             _ => false,
@@ -118,7 +118,7 @@ impl Forwarder {
         }
     }
 
-    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &Log, mut forward: F) -> bool {
+    pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &RocksdbLog, mut forward: F) -> bool {
         let mut changed = false;
         debug!("pre  Repl: Ours: {:?}; downstream prepared: {:?}; committed: {:?}; acked: {:?}",
                log.seqno(),
@@ -203,7 +203,7 @@ impl Terminus {
 }
 
 impl ReplModel {
-    pub fn new(log: Log) -> ReplModel {
+    pub fn new(log: RocksdbLog) -> ReplModel {
         ReplModel {
             log: log,
             current_epoch: Default::default(),
