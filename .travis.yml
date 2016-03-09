@@ -32,6 +32,7 @@ install:
       git checkout v4.2
       mkdir -vp $HOME/lib $HOME/include
       env CXX="g++-4.8" CC="gcc-4.8" make install-shared INSTALL_PATH=$HOME
+      popd
     fi
 
 before_script:
