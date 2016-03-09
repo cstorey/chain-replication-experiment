@@ -49,3 +49,8 @@ script:
 - |
     travis-cargo build &&
     travis-cargo test
+
+matrix:
+    allow_failures:
+        - rust: nightly
+        - rust: beta
