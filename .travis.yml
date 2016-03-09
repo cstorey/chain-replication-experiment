@@ -19,15 +19,20 @@ rust:
 cache:
   directories:
     - $HOME/.cargo
+    - $HOME/lib
+    - $HOME/include
     - target
 
 install:
   - env
-  - git clone https://github.com/facebook/rocksdb.git /tmp/rocksdb
-  - pushd /tmp/rocksdb
-  - git checkout v4.2
-  - mkdir -vp $HOME/lib $HOME/include
-  - env CXX="g++-4.8" CC="gcc-4.8" make install-shared INSTALL_PATH=$HOME
+  - |
+    if [ ! -f $HOME/lib/librocksdb.so ]; then
+      git clone https://github.com/facebook/rocksdb.git /tmp/rocksdb
+      pushd /tmp/rocksdb
+      git checkout v4.2
+      mkdir -vp $HOME/lib $HOME/include
+      env CXX="g++-4.8" CC="gcc-4.8" make install-shared INSTALL_PATH=$HOME
+    fi
 
 before_script:
 - |
