@@ -106,14 +106,14 @@ impl<T: 'static + Deserialize + Serialize + fmt::Debug + Eq + Clone + Send + Syn
         let lease_mgr = {
             let client = client.clone();
             thread::Builder::new()
-                .name("etcd config".to_string())
+                .name("etcd-config".to_string())
                 .spawn(move || client.run_lease(lease))
                 .expect("etcd thread")
         };
         let watcher = {
             let client = client.clone();
             thread::Builder::new()
-                .name("etcd watcher".to_string())
+                .name("etcd-watcher".to_string())
                 .spawn(move || client.run_watch())
                 .expect("etcd watcher")
         };
