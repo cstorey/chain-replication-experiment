@@ -22,11 +22,12 @@ cache:
     - target
 
 install:
+  - env
   - git clone https://github.com/facebook/rocksdb.git /tmp/rocksdb
   - pushd /tmp/rocksdb
   - git checkout v4.2
-  - mkdir -vp /usr/local/lib /usr/local/include
-  - env CXX="g++-4.8" CC="gcc-4.8" make install-shared
+  - mkdir -vp $HOME/lib $HOME/include
+  - env CXX="g++-4.8" CC="gcc-4.8" make install-shared INSTALL_PATH=$HOME
 
 before_script:
 - |
@@ -35,8 +36,8 @@ before_script:
 
 env:
   global:
-    - LIBRARY_PATH=/usr/local/lib
-    - LD_LIBRARY_PATH=/usr/local/lib
+    - LIBRARY_PATH=$HOME/lib
+    - LD_LIBRARY_PATH=$HOME/lib
 
 script:
 - |
