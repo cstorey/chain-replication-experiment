@@ -1,6 +1,7 @@
 use mio;
 
-use super::{ChainRepl, ChainReplMsg, OpResp};
+use super::{ChainRepl, ChainReplMsg};
+use data::OpResp;
 
 use line_conn::{SexpPeer, PlainClient, LineConn, ManualClientProto, PeerClientProto};
 use downstream_conn::Downstream;

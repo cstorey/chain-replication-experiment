@@ -4,7 +4,7 @@ use rocksdb::ffi::DBCFHandle;
 use tempdir::TempDir;
 use byteorder::{ByteOrder, BigEndian};
 use spki_sexp;
-use super::Operation;
+use data::Operation;
 use data::Seqno;
 use time::{Duration, PreciseTime};
 use std::thread;

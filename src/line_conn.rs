@@ -8,7 +8,8 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::collections::VecDeque;
 
-use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg, ReplicationMessage};
+use super::{ChainRepl, ChainReplMsg};
+use data::{OpResp, Operation, PeerMsg, ReplicationMessage};
 
 const NL: u8 = '\n' as u8;
 const DEFAULT_BUFSZ: usize = 1 << 12;

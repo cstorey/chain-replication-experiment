@@ -33,11 +33,13 @@ use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
 
-pub use data::*;
-pub use config::*;
+use data::{Seqno,Operation,OpResp, PeerMsg, NodeViewConfig};
+use config::{ConfigurationView, Epoch};
 
+pub use config::ConfigClient;
 pub use replica::ReplModel;
 pub use replication_log::Log;
+pub use data::Role;
 
 
 #[derive(Debug)]

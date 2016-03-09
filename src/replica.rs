@@ -4,8 +4,7 @@ use std::fmt;
 use std::collections::BTreeMap;
 use mio;
 
-use super::{Operation, OpResp, PeerMsg};
-use data::Seqno;
+use data::{Operation, OpResp, PeerMsg, Seqno};
 use event_handler::EventHandler;
 use replication_log::Log;
 use config::Epoch;
@@ -24,54 +23,54 @@ struct Terminus {
 }
 
 #[derive(Debug)]
-enum Role {
+enum ReplRole {
     Forwarder(Forwarder),
     Terminus(Terminus),
 }
 
 #[derive(Debug)]
 pub struct ReplModel {
-    next: Role,
+    next: ReplRole,
     log: Log,
     current_epoch: Epoch,
     upstream_commited: Option<Seqno>,
     auto_commits: bool,
 }
 
-impl Role {
+impl ReplRole {
     fn process_operation(&mut self,
                          channel: &mut EventHandler,
                          epoch: Epoch,
                          seqno: Seqno,
                          op: Operation) {
         match self {
-            &mut Role::Forwarder(ref mut f) => f.process_operation(channel, epoch, seqno, op),
-            &mut Role::Terminus(ref mut t) => t.process_operation(channel, epoch, seqno, op),
+            &mut ReplRole::Forwarder(ref mut f) => f.process_operation(channel, epoch, seqno, op),
+            &mut ReplRole::Terminus(ref mut t) => t.process_operation(channel, epoch, seqno, op),
         }
     }
     pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
         match self {
-            &mut Role::Forwarder(ref mut f) => f.process_downstream_response(reply),
+            &mut ReplRole::Forwarder(ref mut f) => f.process_downstream_response(reply),
             _ => None,
         }
     }
 
     pub fn process_replication<F: FnMut(PeerMsg)>(&mut self, log: &Log, forward: F) -> bool {
         match self {
-            &mut Role::Forwarder(ref mut f) => f.process_replication(log, forward),
+            &mut ReplRole::Forwarder(ref mut f) => f.process_replication(log, forward),
             _ => false,
         }
     }
 
     fn has_pending(&self, token: mio::Token) -> bool {
         match self {
-            &Role::Forwarder(ref f) => f.has_pending(token),
+            &ReplRole::Forwarder(ref f) => f.has_pending(token),
             _ => false,
         }
     }
     fn reset(&mut self) {
         match self {
-            &mut Role::Forwarder(ref mut f) => f.reset(),
+            &mut ReplRole::Forwarder(ref mut f) => f.reset(),
             _ => (),
         }
     }
@@ -208,7 +207,7 @@ impl ReplModel {
         ReplModel {
             log: log,
             current_epoch: Default::default(),
-            next: Role::Terminus(Terminus::new()),
+            next: ReplRole::Terminus(Terminus::new()),
             upstream_commited: None,
             auto_commits: false,
         }
@@ -305,13 +304,13 @@ impl ReplModel {
     pub fn set_has_downstream(&mut self, is_forwarder: bool) {
         // XXX: Replays?
         match (is_forwarder, &mut self.next) {
-            (true, role @ &mut Role::Terminus(_)) => {
-                let prev = mem::replace(role, Role::Forwarder(Forwarder::new()));
+            (true, role @ &mut ReplRole::Terminus(_)) => {
+                let prev = mem::replace(role, ReplRole::Forwarder(Forwarder::new()));
                 info!("Switched to forwarding from {:?}", prev);
             }
 
-            (false, role @ &mut Role::Forwarder(_)) => {
-                let prev = mem::replace(role, Role::Terminus(Terminus::new()));
+            (false, role @ &mut ReplRole::Forwarder(_)) => {
+                let prev = mem::replace(role, ReplRole::Terminus(Terminus::new()));
                 info!("Switched to terminating from {:?}", prev);
             }
             _ => {

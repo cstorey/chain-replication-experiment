@@ -2,7 +2,8 @@ use mio;
 use mio::tcp::*;
 use std::net::SocketAddr;
 
-use super::{Role, ChainRepl, ChainReplMsg};
+use super::{ChainRepl, ChainReplMsg};
+use data::Role;
 
 #[derive(Debug)]
 pub struct Listener {

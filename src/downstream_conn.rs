@@ -8,7 +8,8 @@ use std::net::SocketAddr;
 use std::fmt;
 use std::io::ErrorKind;
 
-use super::{ChainRepl, ChainReplMsg, OpResp, Operation, PeerMsg, ReplicationMessage};
+use super::{ChainRepl, ChainReplMsg};
+use data::{OpResp, Operation, PeerMsg, ReplicationMessage};
 use config::Epoch;
 use line_conn::{Encoder, Reader, SexpPeer};
 
