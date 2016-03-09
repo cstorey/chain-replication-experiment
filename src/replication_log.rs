@@ -203,20 +203,16 @@ impl Log for RocksdbLog {
     }
 
 
-    fn verify_sequential(&self, seqno: Seqno) -> bool {
-        let current = self.seqno();
-        if !(seqno.is_none() || current <= seqno) {
-            warn!("Hole in history: saw {:?}; have: {:?}", seqno, current);
-            false
-        } else {
-            true
-        }
-    }
-
     fn prepare(&mut self, seqno: Seqno, op: &Operation) {
         let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
         debug!("Prepare {:?}", seqno);
         let key = Seqno::tokey(&seqno);
+
+        let current = self.seqno();
+        if !(seqno.is_none() || current <= seqno) {
+            panic!("Hole in history: saw {:?}; have: {:?}", seqno, current);
+        }
+
         // match self.db.get_cf(self.data, &key.as_ref()) {
         // Ok(None) => (),
         // Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
@@ -248,5 +244,4 @@ impl Log for RocksdbLog {
             false
         }
     }
-
 }

@@ -33,7 +33,6 @@ pub trait Log {
     fn read_prepared(&self) -> Seqno;
     fn read_committed(&self) -> Seqno;
     fn read(&self, Seqno) -> Option<Operation>;
-    fn verify_sequential(&self, Seqno) -> bool;
     fn prepare(&mut self, Seqno, &Operation);
     fn commit_to(&mut self, Seqno) -> bool;
 }
@@ -248,14 +247,6 @@ impl<L: Log> ReplModel<L> {
                                    format!("BadEpoch: {:?}; last seen config: {:?}",
                                            epoch,
                                            self.current_epoch));
-            channel.response(resp);
-            return;
-        }
-
-        if !self.log.verify_sequential(seqno) {
-            let resp = OpResp::Err(epoch,
-                                   seqno,
-                                   format!("Bad sequence number; saw: {:?}", seqno));
             channel.response(resp);
             return;
         }
