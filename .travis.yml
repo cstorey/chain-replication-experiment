@@ -25,6 +25,7 @@ install:
   - git clone https://github.com/facebook/rocksdb.git /tmp/rocksdb
   - pushd /tmp/rocksdb
   - git checkout v4.2
+  - mkdir -vp /usr/local/lib /usr/local/include
   - env CXX="g++-4.8" CC="gcc-4.8" make install-shared
 
 before_script:
