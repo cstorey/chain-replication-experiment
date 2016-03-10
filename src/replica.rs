@@ -330,3 +330,130 @@ impl<L: Log> ReplModel<L> {
         self.auto_commits = auto_commits;
     }
 }
+
+#[cfg(test)]
+mod test {
+    use rand;
+    use data::{Operation, Seqno, OpResp};
+    use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
+    use super::ReplModel;
+    use std::io::Write;
+    use std::sync::mpsc::channel;
+    use replication_log::RocksdbLog;
+    use replica::Log;
+    use env_logger;
+    use std::collections::{VecDeque, BTreeMap};
+    use mio::Token;
+
+    // impl<L: Log> ReplModel<L>
+    // fn new(log: L) -> ReplModel<L>
+    // fn seqno(&self) -> Seqno
+    // fn process_operation(&mut self, token: Token, seqno: Option<Seqno>, epoch: Option<Epoch>, op: Operation) -> Option<OpResp>
+    // fn process_downstream_response(&mut self, reply: &OpResp) -> Option<Token>
+    // fn process_replication<F: FnMut(Epoch, PeerMsg)>(&mut self, forward: F) -> bool
+    // fn epoch_changed(&mut self, epoch: Epoch)
+    // fn has_pending(&self, token: Token) -> bool
+    // fn reset(&mut self)
+    // fn commit_observed(&mut self, seqno: Seqno) -> bool
+    // fn flush(&mut self) -> bool
+    // fn set_has_downstream(&mut self, is_forwarder: bool)
+    // fn set_should_auto_commit(&mut self, auto_commits: bool)
+    //
+
+    #[derive(Debug,PartialEq,Eq,Clone)]
+    enum ReplicaCommand {
+        ClientOperation(Token, Operation), // UpstreamOperation(Token, Seqno, Epoch, Operation),
+    }
+
+    impl Arbitrary for ReplicaCommand {
+        fn arbitrary<G: Gen>(g: &mut G) -> ReplicaCommand {
+            let case = u64::arbitrary(g) % 1;
+            let res = match case {
+                0 => {
+                    ReplicaCommand::ClientOperation(Token(Arbitrary::arbitrary(g)),
+                                                    Arbitrary::arbitrary(g))
+                }
+                _ => unimplemented!(),
+            };
+            res
+        }
+        fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
+            match self {
+                &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                    Box::new((token.as_usize(), op.clone())
+                                 .shrink()
+                                 .map(|(t, op)| ReplicaCommand::ClientOperation(Token(t), op)))
+                }
+            }
+        }
+    }
+
+
+
+    // Simulate a single node in a Chain. We mostly just end up verifing that
+    // results are as our trivial register model.
+
+    #[test]
+    fn simulate_single_node_chain() {
+        fn thetest(vals: Vec<ReplicaCommand>) -> TestResult {
+            env_logger::init().unwrap_or(());
+
+            debug!("commands: {:?}", vals);
+            let (tx, rx) = channel();
+            let mut log = RocksdbLog::new(move |seq| {
+                info!("committed: {:?}", seq);
+                tx.send(seq).expect("send")
+            });
+
+            let mut replication = ReplModel::new(log);
+            let mut observed_responses = VecDeque::new();
+
+            for cmd in vals.iter() {
+                match cmd {
+                    &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                        if let Some(resp) = replication.process_operation(token.clone(),
+                                                                          None,
+                                                                          None,
+                                                                          op.clone()) {
+                            observed_responses.push_back(resp);
+                        }
+                    }
+                }
+            }
+            debug!("Stopping Log");
+            drop(replication);
+            debug!("Stopped Log");
+
+            let expected_responses = vals.iter()
+                                         .filter_map(|c| {
+                                             let &ReplicaCommand::ClientOperation(ref t, ref op) =
+                                                 c;
+                                             Some((t.clone(), op.clone()))
+                                         })
+                                         .scan("".to_string(), |reg, (tok, cmd)| {
+                                             match cmd {
+                                                 Operation::Set(s) => {
+                                                     *reg = s;
+                                                     Some(None)
+                                                 }
+                                                 Operation::Get => Some(Some(reg.clone())),
+                                             }
+                                         })
+                                         .collect::<Vec<_>>();
+            trace!("Expected: {:?}", expected_responses);
+            trace!("Observed: {:?}", observed_responses);
+            assert_eq!(expected_responses.len(), observed_responses.len());
+            let result = expected_responses.iter()
+                                           .zip(observed_responses.iter())
+                                           .all(|(exp, obs)| {
+                                               match obs {
+                                                   &OpResp::Ok(_, _, ref val) => val == exp,
+                                                   _ => false,
+                                               }
+                                           });
+
+            TestResult::from_bool(result)
+        }
+        quickcheck::quickcheck(thetest as fn(vals: Vec<ReplicaCommand>) -> TestResult)
+    }
+}

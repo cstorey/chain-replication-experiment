@@ -181,7 +181,7 @@ impl RocksdbLog {
             false
         }
     }
-    fn stop(self) {
+    pub fn stop(self) {
         let RocksdbLog { db, flush_thread, flush_tx, .. } = self;
         drop(flush_tx);
         flush_thread.join().expect("Join flusher thread");
@@ -284,22 +284,6 @@ mod test {
         PrepareNext(Operation),
         CommitTo(Seqno),
         ReadAt(Seqno),
-    }
-
-    impl Arbitrary for Operation {
-        fn arbitrary<G: Gen>(g: &mut G) -> Operation {
-            match u64::arbitrary(g) % 2 {
-                0 => Operation::Set(Arbitrary::arbitrary(g)),
-                1 => Operation::Get,
-                _ => unimplemented!(),
-            }
-        }
-        fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
-            match self {
-                &Operation::Set(ref s) => Box::new(s.shrink().map(Operation::Set)),
-                &Operation::Get => quickcheck::empty_shrinker(),
-            }
-        }
     }
 
     impl Arbitrary for LogCommand {
