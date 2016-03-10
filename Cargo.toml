@@ -41,3 +41,6 @@ unstable = []
 
 [profile.release]
 debug = true
+
+[[bin]]
+name = "chain-repl"

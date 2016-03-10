@@ -20,13 +20,10 @@ impl Iterator for SeqIter {
 }
 
 impl Seqno {
-    pub fn none() -> Seqno {
+    pub fn zero() -> Seqno {
         Seqno(0)
     }
-    pub fn is_none(&self) -> bool {
-        let &Seqno(ref n) = self;
-        n == &0
-    }
+
     pub fn succ(&self) -> Seqno {
         let &Seqno(ref n) = self;
         Seqno(n + 1)
@@ -48,5 +45,20 @@ impl Seqno {
 
     pub fn new(n: u64) -> Seqno {
         Seqno(n)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use quickcheck::{Arbitrary, Gen, StdGen, TestResult, quickcheck};
+    use super::Seqno;
+    impl Arbitrary for Seqno {
+        fn arbitrary<G: Gen>(g: &mut G) -> Self {
+            Seqno::new(Arbitrary::arbitrary(g))
+        }
+        fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
+            Box::new(self.0.shrink().map(Seqno))
+        }
     }
 }

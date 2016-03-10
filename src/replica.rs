@@ -28,8 +28,8 @@ enum ReplRole {
 
 pub trait Log {
     fn seqno(&self) -> Seqno;
-    fn read_prepared(&self) -> Seqno;
-    fn read_committed(&self) -> Seqno;
+    fn read_prepared(&self) -> Option<Seqno>;
+    fn read_committed(&self) -> Option<Seqno>;
     fn read(&self, Seqno) -> Option<Operation>;
     fn prepare(&mut self, Seqno, &Operation);
     fn commit_to(&mut self, Seqno) -> bool;
@@ -162,15 +162,17 @@ impl Forwarder {
                    self.last_prepared_downstream,
                    self.last_acked_downstream);
         }
-        if let (Some(prepared), committed) = (self.last_prepared_downstream,
-                                              self.last_committed_downstream
-                                                  .unwrap_or(Seqno::none())) {
-            if committed < log.read_committed() {
-                let max_to_commit_now = cmp::min(prepared, log.read_committed());
+
+        if let (Some(ds_prepared), ds_committed, Some(our_committed)) =
+               (self.last_prepared_downstream,
+                self.last_committed_downstream,
+                log.read_committed()) {
+            if ds_committed.map(|c| c < our_committed).unwrap_or(true) {
+                let max_to_commit_now = cmp::min(ds_prepared, our_committed);
                 debug!("Window commit {:?} - {:?}; committed locally: {:?}",
-                       committed,
+                       ds_committed,
                        max_to_commit_now,
-                       log.read_committed());
+                       our_committed);
 
                 forward(PeerMsg::CommitTo(max_to_commit_now));
                 self.last_committed_downstream = Some(max_to_commit_now);
@@ -289,7 +291,7 @@ impl<L: Log> ReplModel<L> {
 
     pub fn flush(&mut self) -> bool {
         if self.auto_commits {
-            self.upstream_commited = Some(self.log.read_prepared());
+            self.upstream_commited = self.log.read_prepared();
             debug!("Auto committing to: {:?}", self.upstream_commited);
         } else {
             debug!("Flush to upstream commit point: {:?}",
