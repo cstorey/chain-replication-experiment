@@ -46,9 +46,9 @@ env:
     - LD_LIBRARY_PATH=$HOME/lib
 
 script:
-- |
-    travis-cargo build &&
-    travis-cargo test
+- travis-cargo build
+- travis-cargo test --no-run
+- travis-cargo test
 
 matrix:
     allow_failures:
