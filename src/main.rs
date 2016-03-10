@@ -7,7 +7,6 @@ extern crate log;
 extern crate clap;
 extern crate chain_repl_test;
 
-use std::net::SocketAddr;
 use time::Duration;
 use std::net::ToSocketAddrs;
 use std::collections::HashSet;
@@ -66,7 +65,7 @@ fn main() {
         service.set_downstream(&mut event_loop, None);
     }
 
-    let conf = if let Some(etcd) = matches.value_of("etcd") {
+    if let Some(etcd) = matches.value_of("etcd") {
         info!("Etcd at: {:?}", etcd);
         let view_cb = {
             let notifier = ChainRepl::get_notifier(&mut event_loop);
@@ -76,16 +75,14 @@ fn main() {
             let notifier2 = ChainRepl::get_notifier(&mut event_loop);
             move || notifier2.shutdown()
         };
-        let config = ConfigClient::new(etcd,
-                                       service.node_config(),
-                                       Duration::seconds(5),
-                                       view_cb,
-                                       shutdown_cb)
-                         .expect("Etcd");
-        Some(config)
+        let _ = ConfigClient::new(etcd,
+                                  service.node_config(),
+                                  Duration::seconds(5),
+                                  view_cb,
+                                  shutdown_cb)
+                    .expect("Etcd");
     } else {
         info!("No etcd");
-        None
     };
 
     info!("running chain-repl-test listener");

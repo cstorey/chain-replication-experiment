@@ -12,12 +12,16 @@ extern crate tempdir;
 extern crate rocksdb;
 extern crate byteorder;
 
+#[cfg(test)]
+extern crate rand;
+#[cfg(test)]
+extern crate quickcheck;
+
 use mio::tcp::*;
 use mio::EventLoop;
 use mio::util::Slab;
-use std::collections::{VecDeque, BTreeMap};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::cmp;
 
 mod line_conn;
 mod downstream_conn;
@@ -33,7 +37,7 @@ use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
 
-use data::{Seqno,Operation,OpResp, PeerMsg, NodeViewConfig};
+use data::{Seqno, Operation, OpResp, PeerMsg, NodeViewConfig};
 use config::{ConfigurationView, Epoch};
 
 pub use config::ConfigClient;
@@ -131,7 +135,7 @@ impl ChainRepl {
                 self.model.process_operation(&mut self.connections[source], seqno, epoch, op);
             }
 
-            ChainReplMsg::Commit { source, seqno, epoch } => {
+            ChainReplMsg::Commit { seqno, .. } => {
                 self.model.commit_observed(seqno);
             }
 
@@ -339,16 +343,17 @@ pub struct Notifier(mio::Sender<Notification>);
 impl Notifier {
     fn notify(&self, mut item: Notification) {
         use mio::NotifyError::*;
-        let mut backoff_ms = 1;
+        use std::time::Duration;
+        let mut backoff = Duration::from_millis(1);
         loop {
             item = match self.0.send(item) {
                 Ok(_) => return,
                 Err(Full(it)) => it,
                 Err(e) => panic!("{:?}", e),
             };
-            info!("Backoff: {}ms", backoff_ms);
-            std::thread::sleep_ms(backoff_ms);
-            backoff_ms *= 2;
+            info!("Backoff: {:?}", backoff);
+            std::thread::sleep(backoff);
+            backoff = backoff * 2;
         }
     }
 

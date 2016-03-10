@@ -1,12 +1,10 @@
 use std::cmp;
 use std::mem;
-use std::fmt;
 use std::collections::BTreeMap;
 use mio;
 
 use data::{Operation, OpResp, PeerMsg, Seqno};
 use event_handler::EventHandler;
-use replication_log::RocksdbLog;
 use config::Epoch;
 
 #[derive(Debug)]
@@ -97,15 +95,15 @@ impl Forwarder {
 
     fn process_operation(&mut self,
                          channel: &mut EventHandler,
-                         epoch: Epoch,
+                         _epoch: Epoch,
                          seqno: Seqno,
-                         op: Operation) {
+                         _op: Operation) {
         self.pending_operations.insert(seqno, channel.token());
     }
 
     fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
         match reply {
-            &OpResp::Ok(epoch, seqno, _) | &OpResp::Err(epoch, seqno, _) => {
+            &OpResp::Ok(_epoch, seqno, _) | &OpResp::Err(_epoch, seqno, _) => {
                 self.last_acked_downstream = Some(seqno);
                 if let Some(token) = self.pending_operations.remove(&seqno) {
                     trace!("Found in-flight op {:?} for client token {:?}",
@@ -127,8 +125,10 @@ impl Forwarder {
         }
     }
 
-    pub fn process_replication<L: Log, F: FnMut(PeerMsg)>(&mut self, log: &L, mut forward: F) -> bool {
-        let mut changed = false;
+    pub fn process_replication<L: Log, F: FnMut(PeerMsg)>(&mut self,
+                                                          log: &L,
+                                                          mut forward: F)
+                                                          -> bool {
         debug!("pre  Repl: Ours: {:?}; downstream prepared: {:?}; committed: {:?}; acked: {:?}",
                log.seqno(),
                self.last_prepared_downstream,
@@ -163,7 +163,8 @@ impl Forwarder {
                    self.last_acked_downstream);
         }
         if let (Some(prepared), committed) = (self.last_prepared_downstream,
-                                              self.last_committed_downstream.unwrap_or(Seqno::none())) {
+                                              self.last_committed_downstream
+                                                  .unwrap_or(Seqno::none())) {
             if committed < log.read_committed() {
                 let max_to_commit_now = cmp::min(prepared, log.read_committed());
                 debug!("Window commit {:?} - {:?}; committed locally: {:?}",

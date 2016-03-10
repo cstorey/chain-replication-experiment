@@ -2,12 +2,11 @@ use std::fmt;
 use rocksdb::{DB, Writable, Options, WriteBatch, WriteOptions};
 use rocksdb::ffi::DBCFHandle;
 use tempdir::TempDir;
-use byteorder::{ByteOrder, BigEndian};
 use spki_sexp;
 use data::Operation;
 use data::Seqno;
 use replica::Log;
-use time::{Duration, PreciseTime};
+use time::PreciseTime;
 use std::thread;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -66,6 +65,7 @@ pub struct RocksdbLog {
     meta: DBCFHandle,
     data: DBCFHandle,
     flush_tx: mpsc::SyncSender<Seqno>,
+    flush_thread: thread::JoinHandle<()>,
 }
 
 const META: &'static str = "meta";
@@ -102,6 +102,7 @@ impl RocksdbLog {
             meta: meta,
             data: data,
             flush_tx: flush_tx,
+            flush_thread: flusher,
         }
     }
 
@@ -118,7 +119,7 @@ impl RocksdbLog {
                 }
             }
             debug!("Flushing: {:?}", seqno);
-            Self::do_commit_to(db.clone(), meta, data, seqno);
+            Self::do_commit_to(db.clone(), meta, seqno);
             debug!("Flushed: {:?}", seqno);
             committed(seqno);
         }
@@ -135,7 +136,7 @@ impl RocksdbLog {
         Self::do_read_seqno(&self.db, self.meta, name)
     }
 
-    fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, data: DBCFHandle, commit_seqno: Seqno) {
+    fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, commit_seqno: Seqno) {
         debug!("Commit {:?}", commit_seqno);
         let key = Seqno::tokey(&commit_seqno);
 
@@ -166,9 +167,7 @@ impl RocksdbLog {
         let prepared = self.read_seqno(META_PREPARED);
         let committed = self.read_seqno(META_COMMITTED);
         if committed < prepared {
-            info!("Flushing ({:?}->{:?})",
-                  committed,
-                  prepared);
+            info!("Flushing ({:?}->{:?})", committed, prepared);
             self.commit_to(prepared);
             true
         } else {
@@ -220,7 +219,7 @@ impl Log for RocksdbLog {
         // };
 
         let t0 = PreciseTime::now();
-        let mut batch = WriteBatch::new();
+        let batch = WriteBatch::new();
         batch.put_cf(self.data, &key.as_ref(), &data_bytes).expect("Persist operation");
         batch.put_cf(self.meta, META_PREPARED.as_bytes(), &key.as_ref())
              .expect("Persist prepare point");

@@ -1,5 +1,4 @@
 use config::Epoch;
-use std::ops::Range;
 use byteorder::{ByteOrder, BigEndian};
 
 include!(concat!(env!("OUT_DIR"), "/data.rs"));
@@ -30,7 +29,7 @@ impl Seqno {
     }
     pub fn succ(&self) -> Seqno {
         let &Seqno(ref n) = self;
-        Seqno(n+1)
+        Seqno(n + 1)
     }
 
     pub fn upto(&self, other: &Seqno) -> SeqIter {

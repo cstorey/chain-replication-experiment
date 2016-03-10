@@ -1,7 +1,6 @@
 use mio;
 use mio::tcp::*;
 use mio::{TryRead, TryWrite};
-use serde_json as json;
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -9,7 +8,7 @@ use std::fmt;
 use std::io::ErrorKind;
 
 use super::{ChainRepl, ChainReplMsg};
-use data::{OpResp, Operation, PeerMsg, ReplicationMessage};
+use data::{OpResp, PeerMsg, ReplicationMessage};
 use config::Epoch;
 use line_conn::{Encoder, Reader, SexpPeer};
 
@@ -38,7 +37,7 @@ impl Downstream<SexpPeer> {
 impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T> {
     pub fn with_codec(target: Option<SocketAddr>, token: mio::Token, codec: T) -> Self {
         debug!("Connecting to {:?}", target);
-        let mut conn = Downstream {
+        let conn = Downstream {
             token: token,
             peer: target,
             socket: None,

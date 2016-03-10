@@ -20,7 +20,9 @@ impl ConfigSequencer {
 
 pub struct ConfigClient<T> {
     client: Arc<InnerClient<T>>,
+    #[allow(dead_code)]
     lease_mgr: thread::JoinHandle<()>,
+    #[allow(dead_code)]
     watcher: thread::JoinHandle<()>,
 }
 
@@ -171,6 +173,10 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn run_lease(&self, mut lease_index: u64) {
+        fn std_time(t: ::time::Duration) -> ::std::time::Duration {
+            ::std::time::Duration::from_millis(t.num_milliseconds() as u64)
+        }
+
         let watch = DeathWatch::new(&self.lease_alive, || (*self.on_exit)());
         let update_interval = self.lease_time / 2;
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
@@ -202,7 +208,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
             let pausetime = next_wakeup - end_time;
             trace!("Pause for {}", pausetime);
             if pausetime > Duration::zero() {
-                thread::sleep_ms(pausetime.num_milliseconds() as u32);
+                thread::sleep(std_time(pausetime));
             }
         }
     }
@@ -240,7 +246,9 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 
         let mut curr_members = BTreeMap::new();
         loop {
-            trace!("Awaiting for {} from etcd index {:?}", MEMBERS, last_observed_index);
+            trace!("Awaiting for {} from etcd index {:?}",
+                   MEMBERS,
+                   last_observed_index);
             let res = self.etcd.watch(MEMBERS, last_observed_index, true).expect("watch");
             trace!("Watch: {:?}", res);
             last_observed_index = res.node.modified_index.map(|x| x + 1);
@@ -298,7 +306,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
                                                  None,
                                                  None,
                                                  Some(seq_index)) {
-                    Ok(res) => {
+                    Ok(_) => {
                         debug!("verify_epoch: Updated seq: {}: {:?}: ", SEQUENCER, seq);
                         return seq;
                     }
