@@ -14,10 +14,14 @@ struct Forwarder {
     last_acked_downstream: Option<Seqno>,
     pending_operations: BTreeMap<Seqno, mio::Token>,
 }
+#[derive(Debug)]
+struct Register {
+    content: String,
+}
 
 #[derive(Debug)]
 struct Terminus {
-    state: String,
+    app: Register,
 }
 
 #[derive(Debug)]
@@ -194,10 +198,24 @@ impl Forwarder {
     }
 }
 
+impl Register {
+    fn new() -> Register {
+        Register { content: "".to_string() }
+    }
+    fn apply(&mut self, op: Operation) -> Option<String> {
+        match op {
+            Operation::Set(s) => {
+                self.content = s;
+                None
+            }
+            Operation::Get => Some(self.content.clone()),
+        }
+    }
+}
 
 impl Terminus {
     fn new() -> Terminus {
-        Terminus { state: "".to_string() }
+        Terminus { app: Register::new() }
     }
 
     fn process_operation(&mut self,
@@ -207,14 +225,8 @@ impl Terminus {
                          op: Operation)
                          -> Option<OpResp> {
         info!("Terminus! {:?}/{:?}", seqno, op);
-        let resp = match op {
-            Operation::Set(s) => {
-                self.state = s;
-                OpResp::Ok(epoch, seqno, None)
-            }
-            Operation::Get => OpResp::Ok(epoch, seqno, Some(self.state.clone())),
-        };
-        Some(resp)
+        let resp = self.app.apply(op);
+        Some(OpResp::Ok(epoch, seqno, resp))
     }
 }
 
@@ -336,7 +348,7 @@ mod test {
     use rand;
     use data::{Operation, Seqno, OpResp};
     use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
-    use super::ReplModel;
+    use super::{ReplModel, Register};
     use std::io::Write;
     use std::sync::mpsc::channel;
     use replication_log::RocksdbLog;
@@ -388,8 +400,6 @@ mod test {
         }
     }
 
-
-
     // Simulate a single node in a Chain. We mostly just end up verifing that
     // results are as our trivial register model.
 
@@ -430,15 +440,8 @@ mod test {
                                                  c;
                                              Some((t.clone(), op.clone()))
                                          })
-                                         .scan("".to_string(), |reg, (tok, cmd)| {
-                                             match cmd {
-                                                 Operation::Set(s) => {
-                                                     *reg = s;
-                                                     Some(None)
-                                                 }
-                                                 Operation::Get => Some(Some(reg.clone())),
-                                             }
-                                         })
+                                         .scan(Register::new(),
+                                               |reg, (_tok, cmd)| Some(reg.apply(cmd)))
                                          .collect::<Vec<_>>();
             trace!("Expected: {:?}", expected_responses);
             trace!("Observed: {:?}", observed_responses);
