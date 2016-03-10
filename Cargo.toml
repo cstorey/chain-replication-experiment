@@ -29,6 +29,11 @@ optional = false
 git = "https://github.com/cstorey/spki-sexp.rs.git"
 optional = false
 
+[dev-dependencies]
+env_logger = "0.3.2"
+quickcheck = "=0.2.24"
+rand = "0.3.14"
+
 [features]
 unstable = []
 

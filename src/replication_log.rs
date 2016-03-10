@@ -109,9 +109,8 @@ impl RocksdbLog {
     fn flush_thread_loop<F: Fn(Seqno)>(db: Arc<DB>, rx: mpsc::Receiver<Seqno>, committed: F) {
         let meta = db.cf_handle(META).expect("open meta cf").clone();
         let data = db.cf_handle(DATA).expect("open data cf").clone();
-        loop {
-            debug!("Awaiting flush");
-            let mut seqno = rx.recv().expect("recive flush seqno");
+        debug!("Awaiting flush");
+        while let Ok(mut seqno) = rx.recv() {
             loop {
                 match rx.try_recv() {
                     Ok(n) => seqno = n,
@@ -124,6 +123,7 @@ impl RocksdbLog {
             committed(seqno);
         }
     }
+
     fn do_read_seqno(db: &DB, meta: DBCFHandle, name: &str) -> Seqno {
         match db.get_cf(meta, name.as_bytes()) {
             Ok(Some(val)) => Seqno::fromkey(&val),
@@ -242,5 +242,120 @@ impl Log for RocksdbLog {
             debug!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use rand;
+    use data::{Operation, Seqno};
+    use quickcheck::{Arbitrary, Gen, StdGen, TestResult, quickcheck};
+    use std::io::Write;
+    use std::sync::mpsc::channel;
+    use super::RocksdbLog;
+    use replica::Log;
+    use env_logger;
+    use std::collections::BTreeMap;
+
+    // pub trait Log {
+    // fn seqno(&self) -> Seqno;
+    // fn read_prepared(&self) -> Seqno;
+    // fn read_committed(&self) -> Seqno;
+    // fn read(&self, Seqno) -> Option<Operation>;
+    // fn prepare(&mut self, Seqno, &Operation);
+    // fn commit_to(&mut self, Seqno) -> bool;
+    // }
+    //
+
+    #[derive(Debug,PartialEq,Eq,Clone)]
+    enum LogCommand {
+        PrepareNext(Operation),
+        CommitTo(Seqno),
+        ReadAt(Seqno),
+    }
+
+    impl Arbitrary for Operation {
+        fn arbitrary<G: Gen>(g: &mut G) -> Operation {
+            match u64::arbitrary(g) % 2 {
+                0 => Operation::Set(Arbitrary::arbitrary(g)),
+                1 => Operation::Get,
+                _ => unimplemented!(),
+            }
+        }
+    }
+
+    impl Arbitrary for LogCommand {
+        fn arbitrary<G: Gen>(g: &mut G) -> LogCommand {
+            match u64::arbitrary(g) % 3 {
+                0 => LogCommand::PrepareNext(Arbitrary::arbitrary(g)),
+                1 => LogCommand::CommitTo(Seqno::new(Arbitrary::arbitrary(g))),
+                2 => LogCommand::ReadAt(Seqno::new(Arbitrary::arbitrary(g))),
+                _ => unimplemented!(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_can_read_prepared_values() {
+        fn thetest(mut vals: Vec<LogCommand>) -> TestResult {
+            env_logger::init().unwrap_or(());
+
+            {
+                let mut seq: Option<Seqno> = None;
+                for cmd in vals.iter_mut() {
+                    match (seq, cmd) {
+                        (ref mut seq, &mut LogCommand::PrepareNext(_)) => {
+                            *seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::none))
+                        }
+                        (None, &mut LogCommand::CommitTo(_)) => return TestResult::discard(),
+                        (Some(seq), &mut LogCommand::CommitTo(ref mut commit)) if *commit > seq => {
+                            *commit = seq
+                        }
+                        _ => (),
+                    }
+                }
+            }
+
+
+            debug!("commands: {:?}", vals);
+            let (tx, rx) = channel();
+            let mut log = RocksdbLog::new(move |seq| tx.send(seq).expect("send"));
+            let mut seq = Seqno::none();
+            let mut prepared = BTreeMap::new();
+            for cmd in vals {
+                match cmd {
+                    LogCommand::PrepareNext(op) => {
+                        seq = seq.succ();
+                        assert_eq!(log.seqno(), seq);
+                        log.prepare(seq, &op);
+                        let _ = prepared.insert(seq, op);
+                    }
+                    LogCommand::CommitTo(ref commit) if *commit <= seq => {
+                        log.commit_to(*commit);
+                        let mut committed = None;
+                        for _ in 0..100 {
+                            match rx.try_recv() {
+                                Ok(c) => {
+                                    committed = Some(c);
+                                    break;
+                                }
+                                Err(_) => (),
+                            }
+                        }
+                        assert_eq!(committed, Some(*commit))
+                    }
+                    LogCommand::CommitTo(ref commit) => {
+                        return TestResult::discard();
+                    }
+                    LogCommand::ReadAt(ref read_seq) => {
+                        let result = log.read(*read_seq);
+                        assert_eq!(result.as_ref(), prepared.get(read_seq))
+                    }
+
+                }
+            }
+            TestResult::passed()
+        }
+        quickcheck(thetest as fn(vals: Vec<LogCommand>) -> TestResult)
     }
 }

@@ -16,6 +16,8 @@ extern crate byteorder;
 extern crate rand;
 #[cfg(test)]
 extern crate quickcheck;
+#[cfg(test)]
+extern crate env_logger;
 
 use mio::tcp::*;
 use mio::EventLoop;
