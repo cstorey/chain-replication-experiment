@@ -46,13 +46,14 @@ pub struct ReplModel<L> {
 
 impl ReplRole {
     fn process_operation(&mut self,
-                         channel: &mut EventHandler,
+                         token: mio::Token,
                          epoch: Epoch,
                          seqno: Seqno,
-                         op: Operation) {
+                         op: Operation)
+                         -> Option<OpResp> {
         match self {
-            &mut ReplRole::Forwarder(ref mut f) => f.process_operation(channel, epoch, seqno, op),
-            &mut ReplRole::Terminus(ref mut t) => t.process_operation(channel, epoch, seqno, op),
+            &mut ReplRole::Forwarder(ref mut f) => f.process_operation(token, epoch, seqno, op),
+            &mut ReplRole::Terminus(ref mut t) => t.process_operation(token, epoch, seqno, op),
         }
     }
     pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
@@ -94,11 +95,13 @@ impl Forwarder {
     }
 
     fn process_operation(&mut self,
-                         channel: &mut EventHandler,
+                         token: mio::Token,
                          _epoch: Epoch,
                          seqno: Seqno,
-                         _op: Operation) {
-        self.pending_operations.insert(seqno, channel.token());
+                         _op: Operation)
+                         -> Option<OpResp> {
+        self.pending_operations.insert(seqno, token);
+        None
     }
 
     fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
@@ -198,10 +201,11 @@ impl Terminus {
     }
 
     fn process_operation(&mut self,
-                         channel: &mut EventHandler,
+                         token: mio::Token,
                          epoch: Epoch,
                          seqno: Seqno,
-                         op: Operation) {
+                         op: Operation)
+                         -> Option<OpResp> {
         info!("Terminus! {:?}/{:?}", seqno, op);
         let resp = match op {
             Operation::Set(s) => {
@@ -210,7 +214,7 @@ impl Terminus {
             }
             Operation::Get => OpResp::Ok(epoch, seqno, Some(self.state.clone())),
         };
-        channel.response(resp)
+        Some(resp)
     }
 }
 
@@ -234,10 +238,11 @@ impl<L: Log> ReplModel<L> {
     }
 
     pub fn process_operation(&mut self,
-                             channel: &mut EventHandler,
+                             token: mio::Token,
                              seqno: Option<Seqno>,
                              epoch: Option<Epoch>,
-                             op: Operation) {
+                             op: Operation)
+                             -> Option<OpResp> {
         let seqno = seqno.unwrap_or_else(|| self.next_seqno());
         let epoch = epoch.unwrap_or_else(|| self.current_epoch);
 
@@ -250,13 +255,12 @@ impl<L: Log> ReplModel<L> {
                                    format!("BadEpoch: {:?}; last seen config: {:?}",
                                            epoch,
                                            self.current_epoch));
-            channel.response(resp);
-            return;
+            return Some(resp);
         }
 
         self.log.prepare(seqno, &op);
 
-        self.next.process_operation(channel, epoch, seqno, op)
+        self.next.process_operation(token, epoch, seqno, op)
     }
 
     pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {

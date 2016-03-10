@@ -134,7 +134,9 @@ impl ChainRepl {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
-                self.model.process_operation(&mut self.connections[source], seqno, epoch, op);
+                if let Some(resp) = self.model.process_operation(source, seqno, epoch, op) {
+                    self.connections[source].response(resp);
+                }
             }
 
             ChainReplMsg::Commit { seqno, .. } => {
