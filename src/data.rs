@@ -1,6 +1,10 @@
 use config::Epoch;
 use byteorder::{ByteOrder, BigEndian};
 
+#[cfg(feature = "serde_macros")]
+include!("data.rs.in");
+
+#[cfg(not(feature = "serde_macros"))]
 include!(concat!(env!("OUT_DIR"), "/data.rs"));
 
 pub struct SeqIter(u64, u64);

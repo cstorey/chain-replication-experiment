@@ -9,6 +9,10 @@ use serde_json as json;
 use serde::ser::Serialize;
 use serde::de::Deserialize;
 
+#[cfg(feature = "serde_macros")]
+include!("config_data.rs.in");
+
+#[cfg(not(feature = "serde_macros"))]
 include!(concat!(env!("OUT_DIR"), "/config_data.rs"));
 
 impl ConfigSequencer {
