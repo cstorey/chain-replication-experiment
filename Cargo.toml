@@ -46,7 +46,7 @@ quickcheck = "=0.2.24"
 rand = "0.3.14"
 
 [features]
-default = ["serde_codegen"]
+default = ["serde_codegen/default"]
 nightly = ["serde_macros", "serde_codegen/nightly", "etcd/nightly"]
 
 [profile]
