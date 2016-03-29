@@ -266,7 +266,6 @@ mod test {
     use std::sync::mpsc::channel;
     use super::RocksdbLog;
     use replica::Log;
-    use env_logger;
     use std::collections::BTreeMap;
 
     // pub trait Log {
@@ -278,6 +277,20 @@ mod test {
     // fn commit_to(&mut self, Seqno) -> bool;
     // }
     //
+
+    trait TestLog : Log {
+        fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self;
+        fn stop(self);
+    }
+
+    impl TestLog for RocksdbLog {
+        fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self {
+            RocksdbLog::new(committed)
+        }
+        fn stop(self) {
+            RocksdbLog::stop(self)
+        }
+    }
 
     #[derive(Debug,PartialEq,Eq,Clone)]
     enum LogCommand {
@@ -308,141 +321,156 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_can_read_prepared_values() {
-        fn thetest(mut vals: Vec<LogCommand>) -> TestResult {
-            env_logger::init().unwrap_or(());
+    fn test_can_read_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> TestResult {
 
-            {
-                let mut seq: Option<Seqno> = None;
-                for cmd in vals.iter_mut() {
-                    match (seq, cmd) {
-                        (ref mut seq, &mut LogCommand::PrepareNext(_)) => {
-                            *seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero))
-                        }
-                        _ => (),
+        {
+            let mut seq: Option<Seqno> = None;
+            for cmd in vals.iter_mut() {
+                match (seq, cmd) {
+                    (ref mut seq, &mut LogCommand::PrepareNext(_)) => {
+                        *seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero))
                     }
+                    _ => (),
                 }
             }
-
-
-            debug!("commands: {:?}", vals);
-            let mut log = RocksdbLog::new(move |seq| ());
-            let mut seq = None;
-            let mut prepared = BTreeMap::new();
-            for cmd in vals {
-                match cmd {
-                    LogCommand::PrepareNext(op) => {
-                        seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero));
-                        assert!(seq.is_some());
-                        if let Some(seq) = seq {
-                            assert_eq!(log.seqno(), seq);
-                            log.prepare(seq, &op);
-                            let _ = prepared.insert(seq, op);
-                        }
-                    }
-                    LogCommand::ReadAt(ref read_seq) => {
-                        let result = log.read(*read_seq);
-                        assert_eq!(result.as_ref(), prepared.get(read_seq))
-                    }
-                    LogCommand::CommitTo(_) => (),
-                }
-            }
-            debug!("Stopping Log");
-            log.stop();
-            debug!("Stopped Log");
-            TestResult::passed()
         }
-        quickcheck::quickcheck(thetest as fn(vals: Vec<LogCommand>) -> TestResult)
+
+
+        debug!("commands: {:?}", vals);
+        let mut log = L::new(move |seq| ());
+        let mut seq = None;
+        let mut prepared = BTreeMap::new();
+        for cmd in vals {
+            match cmd {
+                LogCommand::PrepareNext(op) => {
+                    seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero));
+                    assert!(seq.is_some());
+                    if let Some(seq) = seq {
+                        assert_eq!(log.seqno(), seq);
+                        log.prepare(seq, &op);
+                        let _ = prepared.insert(seq, op);
+                    }
+                }
+                LogCommand::ReadAt(ref read_seq) => {
+                    let result = log.read(*read_seq);
+                    assert_eq!(result.as_ref(), prepared.get(read_seq))
+                }
+                LogCommand::CommitTo(_) => (),
+            }
+        }
+        debug!("Stopping Log");
+        log.stop();
+        debug!("Stopped Log");
+        TestResult::passed()
     }
 
-    #[test]
-    fn test_can_commit_prepared_values() {
-        fn thetest(mut vals: Vec<LogCommand>) -> TestResult {
-            env_logger::init().unwrap_or(());
+    fn test_can_commit_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> TestResult {
 
-            debug!("commands: {:?}", vals);
-            let vals: Vec<LogCommand> = vals.into_iter()
-                                            .scan(None, |seq, cmd| {
-                                                match (seq, cmd) {
-                                                    (seq, cmd @ LogCommand::PrepareNext(_)) => {
-                                                        *seq =
-                                                            Some(seq.as_ref()
-                                                                    .map(Seqno::succ)
-                                                                    .unwrap_or_else(Seqno::zero));
-                                                        Some(cmd)
-                                                    }
-                                                    (&mut None, LogCommand::CommitTo(commit)) => {
-                                                        debug!("Commit to {:?} before prepare",
-                                                               commit);
-                                                        None
-                                                    }
-                                                    (&mut Some(seq),
-                                                     LogCommand::CommitTo(ref commit))
-                                                        if *commit > seq => {
-                                                        Some(LogCommand::CommitTo(seq))
-                                                    }
-                                                    (_, cmd) => Some(cmd),
+        debug!("commands: {:?}", vals);
+        let vals: Vec<LogCommand> = vals.into_iter()
+                                        .scan(None, |seq, cmd| {
+                                            match (seq, cmd) {
+                                                (seq, cmd @ LogCommand::PrepareNext(_)) => {
+                                                    *seq = Some(seq.as_ref()
+                                                                   .map(Seqno::succ)
+                                                                   .unwrap_or_else(Seqno::zero));
+                                                    Some(cmd)
                                                 }
-                                            })
-                                            .collect();
+                                                (&mut None, LogCommand::CommitTo(commit)) => {
+                                                    debug!("Commit to {:?} before prepare", commit);
+                                                    None
+                                                }
+                                                (&mut Some(seq),
+                                                 LogCommand::CommitTo(ref commit))
+                                                    if *commit > seq => {
+                                                    Some(LogCommand::CommitTo(seq))
+                                                }
+                                                (_, cmd) => Some(cmd),
+                                            }
+                                        })
+                                        .collect();
 
-            let expected_commit = vals.iter()
-                                      .filter_map(|v| {
-                                          if let &LogCommand::CommitTo(ref pt) = v {
-                                              Some(*pt)
-                                          } else {
-                                              None
-                                          }
-                                      })
-                                      .max();
-            debug!("Expected commit: {:?}", expected_commit);
-            if expected_commit.is_none() {
-                warn!("Discard: {:?}", vals);
-                return TestResult::discard();
-            }
-
-
-            let (tx, rx) = channel();
-            let mut log = RocksdbLog::new(move |seq| {
-                info!("committed: {:?}", seq);
-                tx.send(seq).expect("send")
-            });
-            let mut seq = None;
-            let mut prepared = BTreeMap::new();
-            for cmd in vals {
-                warn!("Apply: {:?}", cmd);
-                match cmd {
-                    LogCommand::PrepareNext(op) => {
-                        seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero));
-                        assert!(seq.is_some());
-                        if let Some(seq) = seq {
-                            assert_eq!(log.seqno(), seq);
-                            log.prepare(seq, &op);
-                            let _ = prepared.insert(seq, op);
-                        }
-                    }
-                    LogCommand::CommitTo(ref commit) => {
-                        let result = log.commit_to(*commit);
-                    }
-                    LogCommand::ReadAt(_) => (),
-                }
-            }
-            debug!("Stopping Log");
-            log.stop();
-            debug!("Stopped Log");
-
-            let mut observed = None;
-
-            debug!("Fetching commits");
-            while let Ok(c) = rx.recv() {
-                observed = Some(c)
-            }
-            debug!("observed: {:?}; expect: {:?}", observed, expected_commit);
-            assert_eq!(observed, expected_commit);
-
-            TestResult::passed()
+        let expected_commit = vals.iter()
+                                  .filter_map(|v| {
+                                      if let &LogCommand::CommitTo(ref pt) = v {
+                                          Some(*pt)
+                                      } else {
+                                          None
+                                      }
+                                  })
+                                  .max();
+        debug!("Expected commit: {:?}", expected_commit);
+        if expected_commit.is_none() {
+            warn!("Discard: {:?}", vals);
+            return TestResult::discard();
         }
-        quickcheck::quickcheck(thetest as fn(vals: Vec<LogCommand>) -> TestResult)
+
+
+        let (tx, rx) = channel();
+        let mut log = L::new(move |seq| {
+            info!("committed: {:?}", seq);
+            tx.send(seq).expect("send")
+        });
+        let mut seq = None;
+        let mut prepared = BTreeMap::new();
+        for cmd in vals {
+            warn!("Apply: {:?}", cmd);
+            match cmd {
+                LogCommand::PrepareNext(op) => {
+                    seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero));
+                    assert!(seq.is_some());
+                    if let Some(seq) = seq {
+                        assert_eq!(log.seqno(), seq);
+                        log.prepare(seq, &op);
+                        let _ = prepared.insert(seq, op);
+                    }
+                }
+                LogCommand::CommitTo(ref commit) => {
+                    let result = log.commit_to(*commit);
+                }
+                LogCommand::ReadAt(_) => (),
+            }
+        }
+        debug!("Stopping Log");
+        log.stop();
+        debug!("Stopped Log");
+
+        let mut observed = None;
+
+        debug!("Fetching commits");
+        while let Ok(c) = rx.recv() {
+            observed = Some(c)
+        }
+        debug!("observed: {:?}; expect: {:?}", observed, expected_commit);
+        assert_eq!(observed, expected_commit);
+
+        TestResult::passed()
+    }
+
+    mod rocksdb {
+        use rand;
+        use data::{Operation, Seqno};
+        use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
+        use std::io::Write;
+        use std::sync::mpsc::channel;
+        use super::super::RocksdbLog;
+        use super::{test_can_commit_prepared_values_prop, test_can_read_prepared_values_prop,
+                    LogCommand};
+        use replica::Log;
+        use env_logger;
+        use std::collections::BTreeMap;
+
+        #[test]
+        fn test_can_read_prepared_values() {
+            env_logger::init().unwrap_or(());
+            quickcheck::quickcheck(test_can_read_prepared_values_prop::<RocksdbLog>
+                    as fn(vals: Vec<LogCommand>) -> TestResult)
+        }
+
+        #[test]
+        fn test_can_commit_prepared_values() {
+            env_logger::init().unwrap_or(());
+            quickcheck::quickcheck(test_can_commit_prepared_values_prop::<RocksdbLog> as fn(vals: Vec<LogCommand>) -> TestResult)
+        }
     }
 }
