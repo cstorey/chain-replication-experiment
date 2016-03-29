@@ -46,6 +46,14 @@ impl Seqno {
     pub fn fromkey(key: &[u8]) -> Seqno {
         Seqno(BigEndian::read_u64(&key))
     }
+
+    pub fn new(seq: u64) -> Seqno {
+        Seqno(seq)
+    }
+    pub fn offset(&self) -> u64 {
+        self.0 as u64
+    }
+
 }
 
 

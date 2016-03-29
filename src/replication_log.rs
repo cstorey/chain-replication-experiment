@@ -198,7 +198,7 @@ impl Log for RocksdbLog {
     }
 
     fn read_committed(&self) -> Option<Seqno> {
-        self.read_seqno(META_PREPARED)
+        self.read_seqno(META_COMMITTED)
     }
 
     fn read(&self, seqno: Seqno) -> Option<Operation> {
@@ -256,12 +256,43 @@ impl Log for RocksdbLog {
     }
 }
 
+pub struct VecLog {
+    log: Vec<Operation>,
+    on_committed: Box<Fn(Seqno)>,
+    commit_point: Option<Seqno>,
+}
+
+impl Log for VecLog {
+    fn seqno(&self) -> Seqno {
+        Seqno::new(self.log.len() as u64)
+    }
+    fn read_prepared(&self) -> Option<Seqno> {
+        self.log.iter().enumerate().rev().map(|(i, _)| Seqno::new(i as u64)).next()
+    }
+
+    fn read_committed(&self) -> Option<Seqno> { None }
+    fn read(&self, pos: Seqno) -> Option<Operation> {
+        self.log.get(pos.offset() as usize).map(|o| o.clone())
+    }
+    fn prepare(&mut self, pos: Seqno, op: &Operation) {
+        assert_eq!(pos, self.seqno());
+        self.log.push(op.clone())
+    }
+    fn commit_to(&mut self, pos: Seqno) -> bool {
+        if Some(pos) > self.commit_point {
+            (self.on_committed)(pos);
+            self.commit_point = Some(pos);
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 mod test {
     use data::{Operation, Seqno};
     use quickcheck::{Arbitrary, Gen, TestResult};
     use std::sync::mpsc::channel;
-    use super::RocksdbLog;
+    use super::{VecLog,RocksdbLog};
     use replica::Log;
     use std::collections::BTreeMap;
 
@@ -288,6 +319,16 @@ mod test {
             RocksdbLog::stop(self)
         }
     }
+
+    impl TestLog for VecLog {
+        fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self {
+            VecLog { log: Vec::new(), on_committed: Box::new(committed), commit_point: None }
+        }
+        fn stop(self) {
+        }
+    }
+
+
 
     #[derive(Debug,PartialEq,Eq,Clone)]
     enum LogCommand {
@@ -333,15 +374,18 @@ mod test {
         }
 
 
-        debug!("commands: {:?}", vals);
         let mut log = L::new(move |_seq| ());
         let mut seq = None;
         let mut prepared = BTreeMap::new();
         for cmd in vals {
+            debug!("apply: {:?}", cmd);
             match cmd {
                 LogCommand::PrepareNext(op) => {
+                    assert_eq!(seq, log.read_prepared());
+
                     seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero));
                     assert!(seq.is_some());
+                    debug!("seqs: saw: {:?}, expected: {:?}", log.seqno(), seq);
                     if let Some(seq) = seq {
                         assert_eq!(log.seqno(), seq);
                         log.prepare(seq, &op);
@@ -398,7 +442,7 @@ mod test {
                                   .max();
         debug!("Expected commit: {:?}", expected_commit);
         if expected_commit.is_none() {
-            warn!("Discard: {:?}", vals);
+            debug!("Discard: {:?}", vals);
             return TestResult::discard();
         }
 
@@ -411,7 +455,7 @@ mod test {
         let mut seq = None;
         let mut prepared = BTreeMap::new();
         for cmd in vals {
-            warn!("Apply: {:?}", cmd);
+            debug!("Apply: {:?}", cmd);
             match cmd {
                 LogCommand::PrepareNext(op) => {
                     seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero));
@@ -429,6 +473,8 @@ mod test {
             }
         }
         debug!("Stopping Log");
+        let read_commit = log.read_committed();
+        let read_prepared = log.read_prepared();
         log.stop();
         debug!("Stopped Log");
 
@@ -440,6 +486,10 @@ mod test {
         }
         debug!("observed: {:?}; expect: {:?}", observed, expected_commit);
         assert_eq!(observed, expected_commit);
+        debug!("read_commit: {:?}; read_prepared:{:?}, expect: {:?}",
+            read_commit, read_prepared, expected_commit);
+        assert!(read_commit <= read_prepared);
+        assert!(read_commit <= expected_commit);
 
         TestResult::passed()
     }
@@ -462,6 +512,33 @@ mod test {
         fn test_can_commit_prepared_values() {
             env_logger::init().unwrap_or(());
             quickcheck::quickcheck(test_can_commit_prepared_values_prop::<RocksdbLog> as fn(vals: Vec<LogCommand>) -> TestResult)
+        }
+    }
+
+    mod vec {
+        use rand;
+        use data::{Operation, Seqno};
+        use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
+        use std::io::Write;
+        use std::sync::mpsc::channel;
+        use super::super::VecLog;
+        use super::{test_can_commit_prepared_values_prop, test_can_read_prepared_values_prop,
+                    LogCommand};
+        use replica::Log;
+        use env_logger;
+        use std::collections::BTreeMap;
+
+        #[test]
+        fn test_can_read_prepared_values() {
+            env_logger::init().unwrap_or(());
+            quickcheck::quickcheck(test_can_read_prepared_values_prop::<VecLog>
+                    as fn(vals: Vec<LogCommand>) -> TestResult)
+        }
+
+        #[test]
+        fn test_can_commit_prepared_values() {
+            env_logger::init().unwrap_or(());
+            quickcheck::quickcheck(test_can_commit_prepared_values_prop::<VecLog> as fn(vals: Vec<LogCommand>) -> TestResult)
         }
     }
 }
