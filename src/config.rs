@@ -181,7 +181,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
             ::std::time::Duration::from_millis(t.num_milliseconds() as u64)
         }
 
-        let watch = DeathWatch::new(&self.lease_alive, || (*self.on_exit)());
+        let _watch = DeathWatch::new(&self.lease_alive, || (*self.on_exit)());
         let update_interval = self.lease_time / 2;
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
@@ -235,7 +235,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
     }
 
     fn run_watch(&self) {
-        let watch = DeathWatch::new(&self.watcher_alive, || (*self.on_exit)());
+        let _watch = DeathWatch::new(&self.watcher_alive, || (*self.on_exit)());
         info!("Starting etcd watcher");
         let lease_key = self.lease_key.as_ref().expect("Should have created lease node");
 
@@ -250,9 +250,7 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 
         let mut curr_members = BTreeMap::new();
         loop {
-            trace!("Awaiting for {} from etcd index {:?}",
-                   MEMBERS,
-                   last_observed_index);
+            trace!("Awaiting for {} from etcd index {:?}", MEMBERS, last_observed_index);
             let res = self.etcd.watch(MEMBERS, last_observed_index, true).expect("watch");
             trace!("Watch: {:?}", res);
             last_observed_index = res.node.modified_index.map(|x| x + 1);

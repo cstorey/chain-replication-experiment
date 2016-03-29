@@ -24,7 +24,7 @@ pub trait Reader<T> {
     fn new(mio::Token) -> Self;
 }
 
-trait Protocol : fmt::Debug{
+pub trait Protocol : fmt::Debug{
     type Send;
     type Recv;
 
@@ -104,10 +104,6 @@ impl<T, P> LineConn<T, P>
             codec: codec,
             proto: PhantomData,
         }
-    }
-
-    pub fn token(&self) -> mio::Token {
-        self.token
     }
 
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {

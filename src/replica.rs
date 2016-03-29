@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use mio;
 
 use data::{Operation, OpResp, PeerMsg, Seqno};
-use event_handler::EventHandler;
 use config::Epoch;
 
 #[derive(Debug)]
@@ -219,7 +218,7 @@ impl Terminus {
     }
 
     fn process_operation(&mut self,
-                         token: mio::Token,
+                         _token: mio::Token,
                          epoch: Epoch,
                          seqno: Seqno,
                          op: Operation)

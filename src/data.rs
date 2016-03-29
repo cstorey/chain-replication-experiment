@@ -46,10 +46,6 @@ impl Seqno {
     pub fn fromkey(key: &[u8]) -> Seqno {
         Seqno(BigEndian::read_u64(&key))
     }
-
-    pub fn new(n: u64) -> Seqno {
-        Seqno(n)
-    }
 }
 
 
@@ -59,7 +55,7 @@ mod tests {
     use super::Seqno;
     impl Arbitrary for Seqno {
         fn arbitrary<G: Gen>(g: &mut G) -> Self {
-            Seqno::new(Arbitrary::arbitrary(g))
+            Seqno(Arbitrary::arbitrary(g))
         }
         fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
             Box::new(self.0.shrink().map(Seqno))

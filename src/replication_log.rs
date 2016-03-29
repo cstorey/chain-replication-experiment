@@ -108,10 +108,9 @@ impl RocksdbLog {
 
     fn flush_thread_loop<F: Fn(Seqno)>(db: Arc<DB>, rx: mpsc::Receiver<Seqno>, committed: F) {
         let meta = db.cf_handle(META).expect("open meta cf").clone();
-        let data = db.cf_handle(DATA).expect("open data cf").clone();
         debug!("Awaiting flush");
         let mut prev_commit = None;
-        while let Ok(mut seqno) = rx.recv() {
+        while let Ok(seqno) = rx.recv() {
             debug!("Got commit: {:?}", seqno);
             if prev_commit.map(|p| p < seqno).unwrap_or(true) {
                 debug!("Flushing: {:?} -> {:?}", prev_commit, seqno);

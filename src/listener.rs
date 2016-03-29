@@ -26,10 +26,6 @@ impl Listener {
         }
     }
 
-    pub fn token(&self) -> mio::Token {
-        self.token
-    }
-
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
         event_loop.register(&self.listener, token).expect("Register listener");
     }

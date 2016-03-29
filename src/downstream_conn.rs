@@ -79,10 +79,6 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         });
     }
 
-    pub fn token(&self) -> mio::Token {
-        self.token
-    }
-
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
         if let Some(ref sock) = self.socket {
             debug!("Initialize!{:?}", self);

@@ -42,7 +42,7 @@ use downstream_conn::Downstream;
 use listener::Listener;
 use event_handler::EventHandler;
 
-use data::{Seqno, Operation, OpResp, PeerMsg, NodeViewConfig};
+use data::{Seqno,Operation,OpResp, PeerMsg, NodeViewConfig};
 use config::{ConfigurationView, Epoch};
 
 pub use config::ConfigClient;
@@ -52,7 +52,7 @@ pub use data::Role;
 
 
 #[derive(Debug)]
-enum ChainReplMsg {
+pub enum ChainReplMsg {
     Operation {
         source: mio::Token,
         epoch: Option<Epoch>,
