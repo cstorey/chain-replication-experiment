@@ -459,21 +459,46 @@ mod test {
         quickcheck::quickcheck(simulate_single_node_chain_prop::<VecLog> as fn(vals: Vec<ReplicaCommand>) -> TestResult)
     }
 
-    fn should_forward_all_requests_downstream_when_present_prop<L: TestLog>(vals: Vec<ReplicaCommand>) -> TestResult {
-        debug!("should_forward_all_requests_downstream_when_present_prop: {:?}", vals);
-        let log = L::new(move |seq| {
+    fn should_forward_all_requests_downstream_when_present_prop<L: TestLog>(
+        log_prefix: Vec<Operation>,
+        downstream_has: usize,
+        commands: Vec<ReplicaCommand>,
+        ) -> TestResult {
+        let downstream_has = if log_prefix.is_empty() {
+            0
+        } else {
+            downstream_has % log_prefix.len() as usize
+        };
+
+        debug!("should_forward_all_requests_downstream_when_present_prop:");
+        debug!("log_prefix: {:?}", log_prefix);
+        debug!("downstream_has: {:?}", downstream_has);
+        debug!("commands: {:?}", commands);
+        let mut log = L::new(move |seq| {
             info!("committed: {:?}", seq);
             // TODO: Verify me.
         });
+
+        for (n, it) in log_prefix.iter().enumerate() {
+            let seq = log.seqno();
+            log.prepare(seq, it)
+        }
 
         let mut replication = ReplModel::new(log);
         let mut observed_responses = VecDeque::new();
         let mut forwarded = VecDeque::new();
 
         replication.set_has_downstream(true);
-        replication.process_downstream_response(&OpResp::HelloIWant(Seqno::zero()));
+        replication.process_downstream_response(&OpResp::HelloIWant(Seqno::new(downstream_has as u64)));
 
-        for cmd in vals.iter() {
+        while replication.process_replication(|epoch, msg| {
+            debug!("Forward @{:?}: {:?}", epoch, msg);
+            forwarded.push_back(msg)
+        }) {
+            debug!("iterated replication");
+        }
+
+        for cmd in commands.iter() {
             debug!("apply: {:?}", cmd);
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
@@ -492,20 +517,21 @@ mod test {
                 debug!("iterated replication");
             }
         }
+
         debug!("Stopping Log");
         drop(replication);
         debug!("Stopped Log");
 
-        let prepares = forwarded.into_iter()
+        let prepares =  forwarded.into_iter()
             .filter_map(|op| match op {
                 PeerMsg::Prepare(seq, op) => Some((seq.offset() as usize, op)), _ => None
             })
             .collect::<Vec<_>>();
-        let expected = vals.into_iter()
+        let expected = log_prefix.into_iter().skip(downstream_has).chain(commands.into_iter()
             .filter_map(|c| match c {
                 ReplicaCommand::ClientOperation(_, op) => Some(op),
-            })
-            .enumerate()
+            }))
+            .zip(downstream_has..).map(|(x, i)| (i, x))
             .collect::<Vec<_>>();
         assert_eq!(prepares, expected);
         TestResult::from_bool(true)
@@ -514,6 +540,8 @@ mod test {
     #[test]
     fn should_forward_all_requests_downstream_when_present() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(should_forward_all_requests_downstream_when_present_prop::<VecLog> as fn(vals: Vec<ReplicaCommand>) -> TestResult)
+        quickcheck::quickcheck(
+            should_forward_all_requests_downstream_when_present_prop::<VecLog> as
+            fn(Vec<Operation>, usize, Vec<ReplicaCommand>) -> TestResult)
     }
 }
