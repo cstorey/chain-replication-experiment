@@ -51,7 +51,7 @@ impl Seqno {
 
 #[cfg(test)]
 mod tests {
-    use quickcheck::{Arbitrary, Gen, StdGen, TestResult, quickcheck};
+    use quickcheck::{Arbitrary, Gen};
     use super::Seqno;
     impl Arbitrary for Seqno {
         fn arbitrary<G: Gen>(g: &mut G) -> Self {

@@ -258,10 +258,8 @@ impl Log for RocksdbLog {
 
 #[cfg(test)]
 mod test {
-    use rand;
     use data::{Operation, Seqno};
-    use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
-    use std::io::Write;
+    use quickcheck::{Arbitrary, Gen, TestResult};
     use std::sync::mpsc::channel;
     use super::RocksdbLog;
     use replica::Log;
@@ -302,7 +300,7 @@ mod test {
         fn arbitrary<G: Gen>(g: &mut G) -> LogCommand {
             let case = u64::arbitrary(g) % 11;
             let res = match case {
-                n if 0 <= n && n < 5 => LogCommand::PrepareNext(Arbitrary::arbitrary(g)),
+                n if n < 5 => LogCommand::PrepareNext(Arbitrary::arbitrary(g)),
                 n if 5 <= n && n < 10 => LogCommand::ReadAt(Arbitrary::arbitrary(g)),
                 10 => LogCommand::CommitTo(Arbitrary::arbitrary(g)),
                 _ => unimplemented!(),
@@ -323,7 +321,7 @@ mod test {
     fn test_can_read_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> TestResult {
 
         {
-            let mut seq: Option<Seqno> = None;
+            let seq: Option<Seqno> = None;
             for cmd in vals.iter_mut() {
                 match (seq, cmd) {
                     (ref mut seq, &mut LogCommand::PrepareNext(_)) => {
@@ -336,7 +334,7 @@ mod test {
 
 
         debug!("commands: {:?}", vals);
-        let mut log = L::new(move |seq| ());
+        let mut log = L::new(move |_seq| ());
         let mut seq = None;
         let mut prepared = BTreeMap::new();
         for cmd in vals {
@@ -363,7 +361,7 @@ mod test {
         TestResult::passed()
     }
 
-    fn test_can_commit_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> TestResult {
+    fn test_can_commit_prepared_values_prop<L: TestLog>(vals: Vec<LogCommand>) -> TestResult {
 
         debug!("commands: {:?}", vals);
         let vals: Vec<LogCommand> = vals.into_iter()
@@ -425,7 +423,7 @@ mod test {
                     }
                 }
                 LogCommand::CommitTo(ref commit) => {
-                    let result = log.commit_to(*commit);
+                    let _ = log.commit_to(*commit);
                 }
                 LogCommand::ReadAt(_) => (),
             }
@@ -447,17 +445,11 @@ mod test {
     }
 
     mod rocksdb {
-        use rand;
-        use data::{Operation, Seqno};
-        use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
-        use std::io::Write;
-        use std::sync::mpsc::channel;
+        use quickcheck::{self, TestResult};
         use super::super::RocksdbLog;
         use super::{test_can_commit_prepared_values_prop, test_can_read_prepared_values_prop,
                     LogCommand};
-        use replica::Log;
         use env_logger;
-        use std::collections::BTreeMap;
 
         #[test]
         fn test_can_read_prepared_values() {

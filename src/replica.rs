@@ -344,16 +344,13 @@ impl<L: Log> ReplModel<L> {
 
 #[cfg(test)]
 mod test {
-    use rand;
-    use data::{Operation, Seqno, OpResp};
-    use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
+    use data::{Operation, OpResp};
+    use quickcheck::{self, Arbitrary, Gen, TestResult};
     use super::{ReplModel, Register};
-    use std::io::Write;
     use std::sync::mpsc::channel;
     use replication_log::RocksdbLog;
-    use replica::Log;
     use env_logger;
-    use std::collections::{VecDeque, BTreeMap};
+    use std::collections::{VecDeque};
     use mio::Token;
 
     // impl<L: Log> ReplModel<L>
@@ -409,9 +406,10 @@ mod test {
 
             debug!("commands: {:?}", vals);
             let (tx, rx) = channel();
-            let mut log = RocksdbLog::new(move |seq| {
+            let log = RocksdbLog::new(move |seq| {
                 info!("committed: {:?}", seq);
                 tx.send(seq).expect("send")
+                // TODO: Verify me.
             });
 
             let mut replication = ReplModel::new(log);

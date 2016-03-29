@@ -39,14 +39,8 @@ pub struct ReplicationMessage {
 
 #[cfg(test)]
 mod test {
-    use rand;
-    use data::{Operation, Seqno};
-    use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
-    use std::io::Write;
-    use std::sync::mpsc::channel;
-    use replica::Log;
-    use env_logger;
-    use std::collections::BTreeMap;
+    use data::Operation;
+    use quickcheck::{self, Arbitrary, Gen};
 
     impl Arbitrary for Operation {
         fn arbitrary<G: Gen>(g: &mut G) -> Operation {
