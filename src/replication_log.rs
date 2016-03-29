@@ -288,7 +288,7 @@ impl Log for VecLog {
 }
 
 #[cfg(test)]
-mod test {
+pub mod test {
     use data::{Operation, Seqno};
     use quickcheck::{Arbitrary, Gen, TestResult};
     use std::sync::mpsc::channel;
@@ -306,7 +306,7 @@ mod test {
     // }
     //
 
-    trait TestLog : Log {
+    pub trait TestLog : Log {
         fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self;
         fn stop(self);
     }

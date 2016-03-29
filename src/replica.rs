@@ -223,7 +223,7 @@ impl Terminus {
                          seqno: Seqno,
                          op: Operation)
                          -> Option<OpResp> {
-        info!("Terminus! {:?}/{:?}", seqno, op);
+        debug!("Terminus! {:?}/{:?}", seqno, op);
         let resp = self.app.apply(op);
         Some(OpResp::Ok(epoch, seqno, resp))
     }
@@ -344,11 +344,12 @@ impl<L: Log> ReplModel<L> {
 
 #[cfg(test)]
 mod test {
-    use data::{Operation, OpResp};
+    use data::{Operation, OpResp, PeerMsg, Seqno};
     use quickcheck::{self, Arbitrary, Gen, TestResult};
     use super::{ReplModel, Register};
     use std::sync::mpsc::channel;
-    use replication_log::RocksdbLog;
+    use replication_log::{VecLog};
+    use replication_log::test::TestLog;
     use env_logger;
     use std::collections::{VecDeque};
     use mio::Token;
@@ -399,61 +400,120 @@ mod test {
     // Simulate a single node in a Chain. We mostly just end up verifing that
     // results are as our trivial register model.
 
-    #[test]
-    fn simulate_single_node_chain() {
-        fn thetest(vals: Vec<ReplicaCommand>) -> TestResult {
-            env_logger::init().unwrap_or(());
+    fn simulate_single_node_chain_prop<L: TestLog>(vals: Vec<ReplicaCommand>) -> TestResult {
 
-            debug!("commands: {:?}", vals);
-            let (tx, rx) = channel();
-            let log = RocksdbLog::new(move |seq| {
-                info!("committed: {:?}", seq);
-                tx.send(seq).expect("send")
-                // TODO: Verify me.
-            });
+        debug!("commands: {:?}", vals);
+        let (tx, rx) = channel();
+        let log = L::new(move |seq| {
+            info!("committed: {:?}", seq);
+            tx.send(seq).expect("send")
+            // TODO: Verify me.
+        });
 
-            let mut replication = ReplModel::new(log);
-            let mut observed_responses = VecDeque::new();
+        let mut replication = ReplModel::new(log);
+        let mut observed_responses = VecDeque::new();
 
-            for cmd in vals.iter() {
-                match cmd {
-                    &ReplicaCommand::ClientOperation(ref token, ref op) => {
-                        if let Some(resp) = replication.process_operation(token.clone(),
-                                                                          None,
-                                                                          None,
-                                                                          op.clone()) {
-                            observed_responses.push_back(resp);
-                        }
+        for cmd in vals.iter() {
+            match cmd {
+                &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                    if let Some(resp) = replication.process_operation(token.clone(),
+                                                                      None,
+                                                                      None,
+                                                                      op.clone()) {
+                        observed_responses.push_back(resp);
                     }
                 }
             }
-            debug!("Stopping Log");
-            drop(replication);
-            debug!("Stopped Log");
-
-            let expected_responses = vals.iter()
-                                         .filter_map(|c| {
-                                             let &ReplicaCommand::ClientOperation(ref t, ref op) =
-                                                 c;
-                                             Some((t.clone(), op.clone()))
-                                         })
-                                         .scan(Register::new(),
-                                               |reg, (_tok, cmd)| Some(reg.apply(cmd)))
-                                         .collect::<Vec<_>>();
-            trace!("Expected: {:?}", expected_responses);
-            trace!("Observed: {:?}", observed_responses);
-            assert_eq!(expected_responses.len(), observed_responses.len());
-            let result = expected_responses.iter()
-                                           .zip(observed_responses.iter())
-                                           .all(|(exp, obs)| {
-                                               match obs {
-                                                   &OpResp::Ok(_, _, ref val) => val == exp,
-                                                   _ => false,
-                                               }
-                                           });
-
-            TestResult::from_bool(result)
         }
-        quickcheck::quickcheck(thetest as fn(vals: Vec<ReplicaCommand>) -> TestResult)
+        debug!("Stopping Log");
+        drop(replication);
+        debug!("Stopped Log");
+
+        let expected_responses = vals.iter()
+                                     .filter_map(|c| {
+                                         let &ReplicaCommand::ClientOperation(ref t, ref op) =
+                                             c;
+                                         Some((t.clone(), op.clone()))
+                                     })
+                                     .scan(Register::new(),
+                                           |reg, (_tok, cmd)| Some(reg.apply(cmd)))
+                                     .collect::<Vec<_>>();
+        trace!("Expected: {:?}", expected_responses);
+        trace!("Observed: {:?}", observed_responses);
+        assert_eq!(expected_responses.len(), observed_responses.len());
+        let result = expected_responses.iter()
+                                       .zip(observed_responses.iter())
+                                       .all(|(exp, obs)| {
+                                           match obs {
+                                               &OpResp::Ok(_, _, ref val) => val == exp,
+                                               _ => false,
+                                           }
+                                       });
+
+        TestResult::from_bool(result)
+    }
+
+    #[test]
+    fn simulate_single_node_chain_mem() {
+        env_logger::init().unwrap_or(());
+        quickcheck::quickcheck(simulate_single_node_chain_prop::<VecLog> as fn(vals: Vec<ReplicaCommand>) -> TestResult)
+    }
+
+    fn should_forward_all_requests_downstream_when_present_prop<L: TestLog>(vals: Vec<ReplicaCommand>) -> TestResult {
+        debug!("should_forward_all_requests_downstream_when_present_prop: {:?}", vals);
+        let log = L::new(move |seq| {
+            info!("committed: {:?}", seq);
+            // TODO: Verify me.
+        });
+
+        let mut replication = ReplModel::new(log);
+        let mut observed_responses = VecDeque::new();
+        let mut forwarded = VecDeque::new();
+
+        replication.set_has_downstream(true);
+        replication.process_downstream_response(&OpResp::HelloIWant(Seqno::zero()));
+
+        for cmd in vals.iter() {
+            debug!("apply: {:?}", cmd);
+            match cmd {
+                &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                    if let Some(resp) = replication.process_operation(token.clone(),
+                                                                      None,
+                                                                      None,
+                                                                      op.clone()) {
+                        observed_responses.push_back(resp);
+                    }
+                },
+            };
+            while replication.process_replication(|epoch, msg| {
+                debug!("Forward @{:?}: {:?}", epoch, msg);
+                forwarded.push_back(msg)
+            }) {
+                debug!("iterated replication");
+            }
+        }
+        debug!("Stopping Log");
+        drop(replication);
+        debug!("Stopped Log");
+
+        let prepares = forwarded.into_iter()
+            .filter_map(|op| match op {
+                PeerMsg::Prepare(seq, op) => Some((seq.offset() as usize, op)), _ => None
+            })
+            .collect::<Vec<_>>();
+        let expected = vals.into_iter()
+            .filter_map(|c| match c {
+                ReplicaCommand::ClientOperation(_, op) => Some(op),
+            })
+            .enumerate()
+            .collect::<Vec<_>>();
+        assert_eq!(prepares, expected);
+        TestResult::from_bool(true)
+    }
+
+    #[test]
+    fn should_forward_all_requests_downstream_when_present() {
+        env_logger::init().unwrap_or(());
+        quickcheck::quickcheck(should_forward_all_requests_downstream_when_present_prop::<VecLog> as fn(vals: Vec<ReplicaCommand>) -> TestResult)
     }
 }
