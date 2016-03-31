@@ -292,9 +292,11 @@ pub mod test {
     use data::{Operation, Seqno};
     use quickcheck::{Arbitrary, Gen, TestResult};
     use std::sync::mpsc::channel;
+    use std::sync::atomic::{AtomicUsize,Ordering};
     use super::{VecLog,RocksdbLog};
     use replica::Log;
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     // pub trait Log {
     // fn seqno(&self) -> Seqno;
@@ -328,8 +330,6 @@ pub mod test {
         }
     }
 
-
-
     #[derive(Debug,PartialEq,Eq,Clone)]
     enum LogCommand {
         PrepareNext(Operation),
@@ -358,6 +358,100 @@ pub mod test {
             }
         }
     }
+
+    #[derive(Debug,PartialEq,Eq,Clone)]
+    struct Commands(Vec<LogCommand>);
+
+    fn precondition(model: &VecLog, cmd: &LogCommand) -> bool {
+        true
+    }
+
+    fn next_state(model: &mut VecLog, cmd: &LogCommand) -> () {
+        match cmd {
+            &LogCommand::PrepareNext(ref op) => {
+                let seq = model.seqno();
+                model.prepare(seq, op)
+            },
+            &LogCommand::CommitTo(ref s) => { model.commit_to(s.clone()); },
+            &LogCommand::ReadAt(ref s) => (),
+        }
+    }
+
+    fn apply_cmd(model: &RocksdbLog, cmd: &LogCommand) -> () {
+    }
+
+    fn postcondition(model: &RocksdbLog, cmd: &LogCommand, ret: &()) -> bool {
+        true
+    }
+
+
+    impl Arbitrary for Commands {
+        fn arbitrary<G: Gen>(g: &mut G) -> Commands {
+            let model_committed = Arc::new(AtomicUsize::new(0));
+            let mut model_log = {
+                let model_committed = model_committed.clone();
+                VecLog::new(move |seq| model_committed.store(seq.offset() as usize, Ordering::SeqCst))
+            };
+            let slots : Vec<()> = Arbitrary::arbitrary(g);
+            let mut commands : Vec<LogCommand> = Vec::new();
+
+            for _ in slots {
+                let cmd = (0..).map(|_| { let cmd : LogCommand = Arbitrary::arbitrary(g); cmd })
+                    .skip_while(|cmd| !precondition(&model_log, cmd))
+                    .next().expect("Some valid command");
+
+                next_state(&mut model_log, &cmd);
+                commands.push(cmd);
+            };
+            Commands(commands)
+        }
+        /* fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
+            match self {
+                &LogCommand::PrepareNext(ref op) => {
+                    Box::new(op.shrink().map(LogCommand::PrepareNext))
+                }
+                &LogCommand::CommitTo(ref s) => Box::new(s.shrink().map(LogCommand::CommitTo)),
+                &LogCommand::ReadAt(ref s) => Box::new(s.shrink().map(LogCommand::ReadAt)),
+            }
+        }*/
+    }
+
+    fn should_be_correct_prop(cmds: Commands) -> bool {
+        let Commands(cmds) = cmds;
+        debug!("Command sequence: {:?}", cmds);
+
+        let model_committed = Arc::new(AtomicUsize::new(0));
+        let mut model_log = {
+            let model_committed = model_committed.clone();
+            VecLog::new(move |seq| model_committed.store(seq.offset() as usize, Ordering::SeqCst))
+        };
+
+        let actual_committed = Arc::new(AtomicUsize::new(0));
+        let mut actual_log = {
+            let actual_committed = actual_committed.clone();
+            RocksdbLog::new(move |seq| actual_committed.store(seq.offset() as usize, Ordering::SeqCst))
+        };
+
+        for cmd in cmds {
+            // This really should pass.
+            assert!(precondition(&model_log, &cmd));
+            let ret = apply_cmd(&mut actual_log, &cmd);
+            debug!("Apply: {:?} => {:?}", cmd, ret);
+            assert!(postcondition(&actual_log, &cmd, &ret));
+
+        }
+        true
+    }
+    #[test]
+    fn should_be_correct() {
+        use quickcheck;
+        use env_logger;
+
+        env_logger::init().unwrap_or(());
+
+        quickcheck::quickcheck(should_be_correct_prop as fn(Commands) -> bool)
+    }
+
 
     fn test_can_read_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> TestResult {
 
