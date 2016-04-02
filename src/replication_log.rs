@@ -208,14 +208,14 @@ impl Log for RocksdbLog {
             Ok(None) => None,
             Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
         };
-        debug!("Read: {:?} => {:?}", seqno, ret);
+        trace!("Read: {:?} => {:?}", seqno, ret);
         ret
     }
 
 
     fn prepare(&mut self, seqno: Seqno, op: &Operation) {
         let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-        debug!("Prepare {:?}", seqno);
+        trace!("Prepare {:?}", seqno);
         let key = Seqno::tokey(&seqno);
 
         let current = self.seqno();
@@ -236,21 +236,21 @@ impl Log for RocksdbLog {
              .expect("Persist prepare point");
         self.db.write(batch).expect("Write batch");
         let t1 = PreciseTime::now();
-        debug!("Prepare: {}", t0.to(t1));
+        trace!("Prepare: {}", t0.to(t1));
         trace!("Watermarks: prepared: {:?}; committed: {:?}",
                self.read_seqno(META_PREPARED),
                self.read_seqno(META_COMMITTED));
     }
 
     fn commit_to(&mut self, seqno: Seqno) -> bool {
-        debug!("Request commit upto: {:?}", seqno);
+        trace!("Request commit upto: {:?}", seqno);
         let committed = self.read_seqno(META_COMMITTED);
         if committed.map(|c| c < seqno).unwrap_or(true) {
-            debug!("Request to commit {:?} -> {:?}", committed, seqno);
+            trace!("Request to commit {:?} -> {:?}", committed, seqno);
             self.flush_tx.send(seqno).expect("Send to flusher");
             true
         } else {
-            debug!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
+            trace!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
             false
         }
     }
@@ -361,9 +361,18 @@ pub mod test {
 
     #[derive(Debug,PartialEq,Eq,Clone)]
     struct Commands(Vec<LogCommand>);
+    #[derive(Debug,PartialEq,Eq,Clone)]
+    enum CommandReturn {
+        Done,
+        Read(Option<Operation>),
+    }
 
     fn precondition(model: &VecLog, cmd: &LogCommand) -> bool {
-        true
+        match cmd {
+            &LogCommand::CommitTo(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
+            &LogCommand::ReadAt(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
+            _ => true,
+        }
     }
 
     fn next_state(model: &mut VecLog, cmd: &LogCommand) -> () {
@@ -377,11 +386,40 @@ pub mod test {
         }
     }
 
-    fn apply_cmd(model: &RocksdbLog, cmd: &LogCommand) -> () {
+    fn apply_cmd(actual: &mut RocksdbLog, cmd: &LogCommand) -> CommandReturn {
+        match cmd {
+            &LogCommand::PrepareNext(ref op) => {
+                let seq = actual.seqno();
+                actual.prepare(seq, op);
+                CommandReturn::Done
+            },
+            &LogCommand::CommitTo(ref s) => {
+                actual.commit_to(s.clone());
+                CommandReturn::Done
+            },
+            &LogCommand::ReadAt(ref s) => CommandReturn::Read(actual.read(s.clone())),
+        }
     }
 
-    fn postcondition(model: &RocksdbLog, cmd: &LogCommand, ret: &()) -> bool {
-        true
+    fn postcondition(model: &RocksdbLog, cmd: &LogCommand, ret: &CommandReturn) -> bool {
+        trace!("Check postcondition: {:?} -> {:?}", cmd, ret);
+        match (cmd, ret) {
+            (&LogCommand::PrepareNext(_), &CommandReturn::Done) => {
+                // Assert that seqno has advanced
+                true
+            },
+            (&LogCommand::CommitTo(_), &CommandReturn::Done) => {
+                // Well, this happens at some time in the future.
+                true
+            },
+            (&LogCommand::ReadAt(ref seq), &CommandReturn::Read(ref val)) => {
+                &model.read(seq.clone()) == val
+            },
+            (cmd, ret) => {
+                warn!("Unexpected command / return combination: {:?} -> {:?}", cmd, ret);
+                false
+            }
+        }
     }
 
 
@@ -405,18 +443,27 @@ pub mod test {
             };
             Commands(commands)
         }
-        /* fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
-            match self {
-                &LogCommand::PrepareNext(ref op) => {
-                    Box::new(op.shrink().map(LogCommand::PrepareNext))
-                }
-                &LogCommand::CommitTo(ref s) => Box::new(s.shrink().map(LogCommand::CommitTo)),
-                &LogCommand::ReadAt(ref s) => Box::new(s.shrink().map(LogCommand::ReadAt)),
-            }
-        }*/
+        fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
+            // TODO: Filter out invalid sequences.
+            let ret = Arbitrary::shrink(&self.0).map(Commands).filter(validate_commands);
+            Box::new(ret)
+        }
+    }
+    fn validate_commands(cmds: &Commands) -> bool {
+            let model_committed = Arc::new(AtomicUsize::new(0));
+            let mut model_log = {
+                let model_committed = model_committed.clone();
+                VecLog::new(move |seq| model_committed.store(seq.offset() as usize, Ordering::SeqCst))
+            };
+
+            cmds.0.iter().scan(model_log, |model_log, cmd| {
+                let ret = precondition(&model_log, cmd);
+                next_state(model_log, &cmd);
+                Some(ret)
+            }).all(|p| p)
     }
 
-    fn should_be_correct_prop(cmds: Commands) -> bool {
+    fn should_be_correct_prop(cmds: Commands) -> TestResult {
         let Commands(cmds) = cmds;
         debug!("Command sequence: {:?}", cmds);
 
@@ -433,14 +480,16 @@ pub mod test {
         };
 
         for cmd in cmds {
-            // This really should pass.
-            assert!(precondition(&model_log, &cmd));
+            if !precondition(&model_log, &cmd) {
+                // we have produced an invalid sequence.
+                return TestResult::discard();
+            }
             let ret = apply_cmd(&mut actual_log, &cmd);
-            debug!("Apply: {:?} => {:?}", cmd, ret);
+            trace!("Apply: {:?} => {:?}", cmd, ret);
             assert!(postcondition(&actual_log, &cmd, &ret));
-
         }
-        true
+
+        TestResult::passed()
     }
     #[test]
     fn should_be_correct() {
@@ -449,7 +498,7 @@ pub mod test {
 
         env_logger::init().unwrap_or(());
 
-        quickcheck::quickcheck(should_be_correct_prop as fn(Commands) -> bool)
+        quickcheck::quickcheck(should_be_correct_prop as fn(Commands) -> TestResult)
     }
 
 
@@ -472,7 +521,7 @@ pub mod test {
         let mut seq = None;
         let mut prepared = BTreeMap::new();
         for cmd in vals {
-            debug!("apply: {:?}", cmd);
+            trace!("apply: {:?}", cmd);
             match cmd {
                 LogCommand::PrepareNext(op) => {
                     assert_eq!(seq, log.read_prepared());
