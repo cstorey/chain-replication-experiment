@@ -52,6 +52,7 @@ rand = "0.3.14"
 [features]
 default = ["syntex", "serde_codegen/default", "etcd/default"]
 nightly = ["serde_macros", "serde_codegen/nightly", "etcd/nightly"]
+benches = []
 
 [profile]
 

@@ -1,5 +1,6 @@
 #![cfg_attr(feature = "serde_macros", feature(custom_derive, plugin))]
 #![cfg_attr(feature = "serde_macros", plugin(serde_macros))]
+#![cfg_attr(feature = "benches", feature(test))]
 
 extern crate mio;
 extern crate bytes;
@@ -21,6 +22,9 @@ extern crate rand;
 extern crate quickcheck;
 #[cfg(test)]
 extern crate env_logger;
+
+#[cfg(feature = "benches")]
+extern crate test;
 
 use mio::tcp::*;
 use mio::EventLoop;

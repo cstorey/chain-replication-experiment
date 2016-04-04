@@ -297,6 +297,8 @@ pub mod test {
     use replica::Log;
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    #[cfg(feature = "benches")]
+    use test::Bencher;
 
     // pub trait Log {
     // fn seqno(&self) -> Seqno;
@@ -637,12 +639,24 @@ pub mod test {
         TestResult::passed()
     }
 
+    #[cfg(feature = "benches")]
+    fn bench_prepare<L: TestLog>(b: &mut Bencher) {
+        let mut l = L::new(|_| ());
+        let op = Operation::Set("foobar!".to_string());
+        b.iter(|| {
+            let seq = l.seqno();
+            l.prepare(seq, &op)
+        });
+    }
+
     mod rocksdb {
         use quickcheck::{self, TestResult};
         use super::super::RocksdbLog;
         use super::{test_can_commit_prepared_values_prop, test_can_read_prepared_values_prop,
                     LogCommand};
         use env_logger;
+        #[cfg(feature = "benches")]
+        use test::Bencher;
 
         #[test]
         fn test_can_read_prepared_values() {
@@ -655,6 +669,12 @@ pub mod test {
         fn test_can_commit_prepared_values() {
             env_logger::init().unwrap_or(());
             quickcheck::quickcheck(test_can_commit_prepared_values_prop::<RocksdbLog> as fn(vals: Vec<LogCommand>) -> TestResult)
+        }
+
+        #[cfg(feature = "benches")]
+        #[bench]
+        fn bench_prepare(b: &mut Bencher) {
+            super::bench_prepare::<RocksdbLog>(b)
         }
     }
 
@@ -670,6 +690,8 @@ pub mod test {
         use replica::Log;
         use env_logger;
         use std::collections::BTreeMap;
+        #[cfg(feature = "benches")]
+        use test::Bencher;
 
         #[test]
         fn test_can_read_prepared_values() {
@@ -683,5 +705,18 @@ pub mod test {
             env_logger::init().unwrap_or(());
             quickcheck::quickcheck(test_can_commit_prepared_values_prop::<VecLog> as fn(vals: Vec<LogCommand>) -> TestResult)
         }
+
+        #[cfg(feature = "benches")]
+        #[bench]
+        fn bench_prepare(b: &mut Bencher) {
+            super::bench_prepare::<VecLog>(b)
+        }
     }
+}
+
+#[cfg(feature = "benches")]
+mod bench_is_enabled {
+}
+#[cfg(test)]
+mod test_is_enabled {
 }
