@@ -5,6 +5,7 @@ use mio;
 
 use data::{Operation, OpResp, PeerMsg, Seqno};
 use config::Epoch;
+use spki_sexp;
 
 #[derive(Debug)]
 struct Forwarder {
@@ -33,8 +34,8 @@ pub trait Log {
     fn seqno(&self) -> Seqno;
     fn read_prepared(&self) -> Option<Seqno>;
     fn read_committed(&self) -> Option<Seqno>;
-    fn read(&self, Seqno) -> Option<Operation>;
-    fn prepare(&mut self, Seqno, &Operation);
+    fn read(&self, Seqno) -> Option<Vec<u8>>;
+    fn prepare(&mut self, Seqno, &[u8]);
     fn commit_to(&mut self, Seqno) -> bool;
 }
 
@@ -52,7 +53,7 @@ impl ReplRole {
                          token: mio::Token,
                          epoch: Epoch,
                          seqno: Seqno,
-                         op: Operation)
+                         op: &[u8])
                          -> Option<OpResp> {
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_operation(token, epoch, seqno, op),
@@ -101,7 +102,7 @@ impl Forwarder {
                          token: mio::Token,
                          _epoch: Epoch,
                          seqno: Seqno,
-                         _op: Operation)
+                         _op: &[u8])
                          -> Option<OpResp> {
         self.pending_operations.insert(seqno, token);
         None
@@ -221,8 +222,9 @@ impl Terminus {
                          _token: mio::Token,
                          epoch: Epoch,
                          seqno: Seqno,
-                         op: Operation)
+                         op: &[u8])
                          -> Option<OpResp> {
+        let op = spki_sexp::from_bytes(&op).expect("decode operation");
         debug!("Terminus! {:?}/{:?}", seqno, op);
         let resp = self.app.apply(op);
         Some(OpResp::Ok(epoch, seqno, resp))
@@ -252,7 +254,7 @@ impl<L: Log> ReplModel<L> {
                              token: mio::Token,
                              seqno: Option<Seqno>,
                              epoch: Option<Epoch>,
-                             op: Operation)
+                             op: &[u8])
                              -> Option<OpResp> {
         let seqno = seqno.unwrap_or_else(|| self.next_seqno());
         let epoch = epoch.unwrap_or_else(|| self.current_epoch);
@@ -271,7 +273,7 @@ impl<L: Log> ReplModel<L> {
 
         self.log.prepare(seqno, &op);
 
-        self.next.process_operation(token, epoch, seqno, op)
+        self.next.process_operation(token, epoch, seqno, &op)
     }
 
     pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
@@ -351,6 +353,7 @@ mod test {
     use replication_log::{VecLog};
     use replication_log::test::TestLog;
     use env_logger;
+    use spki_sexp;
     use std::collections::{VecDeque};
     use mio::Token;
 
@@ -416,10 +419,11 @@ mod test {
         for cmd in vals.iter() {
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                    let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
                     if let Some(resp) = replication.process_operation(token.clone(),
                                                                       None,
                                                                       None,
-                                                                      op.clone()) {
+                                                                      &data_bytes) {
                         observed_responses.push_back(resp);
                     }
                 }
@@ -481,7 +485,8 @@ mod test {
 
         for (n, it) in log_prefix.iter().enumerate() {
             let seq = log.seqno();
-            log.prepare(seq, it)
+            let data_bytes = spki_sexp::as_bytes(it).expect("encode operation");
+            log.prepare(seq, &data_bytes)
         }
 
         let mut replication = ReplModel::new(log);
@@ -502,10 +507,11 @@ mod test {
             debug!("apply: {:?}", cmd);
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                    let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
                     if let Some(resp) = replication.process_operation(token.clone(),
                                                                       None,
                                                                       None,
-                                                                      op.clone()) {
+                                                                      &data_bytes) {
                         observed_responses.push_back(resp);
                     }
                 },
@@ -527,9 +533,12 @@ mod test {
                 PeerMsg::Prepare(seq, op) => Some((seq.offset() as usize, op)), _ => None
             })
             .collect::<Vec<_>>();
-        let expected = log_prefix.into_iter().skip(downstream_has).chain(commands.into_iter()
+        let expected = log_prefix.into_iter()
+            .map(|op| spki_sexp::as_bytes(&op).expect("encode operation"))
+            .skip(downstream_has)
+            .chain(commands.into_iter()
             .filter_map(|c| match c {
-                ReplicaCommand::ClientOperation(_, op) => Some(op),
+                ReplicaCommand::ClientOperation(_, op) => Some(spki_sexp::as_bytes(&op).expect("encode operation")),
             }))
             .zip(downstream_has..).map(|(x, i)| (i, x))
             .collect::<Vec<_>>();

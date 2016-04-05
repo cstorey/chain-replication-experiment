@@ -61,7 +61,7 @@ pub enum ChainReplMsg {
         source: mio::Token,
         epoch: Option<Epoch>,
         seqno: Option<Seqno>,
-        op: Operation,
+        op: Vec<u8>,
     },
     Commit {
         source: mio::Token,
@@ -141,7 +141,7 @@ impl ChainRepl {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
-                if let Some(resp) = self.model.process_operation(source, seqno, epoch, op) {
+                if let Some(resp) = self.model.process_operation(source, seqno, epoch, &op) {
                     self.connections[source].response(resp);
                 }
             }

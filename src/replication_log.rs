@@ -205,11 +205,10 @@ impl Log for RocksdbLog {
         self.read_seqno(META_COMMITTED)
     }
 
-    fn read(&self, seqno: Seqno) -> Option<Operation> {
+    fn read(&self, seqno: Seqno) -> Option<Vec<u8>> {
         let key = Seqno::tokey(&seqno);
         let ret = match self.db.get_cf(self.data, &key.as_ref()) {
-            Ok(Some(val)) => Some(spki_sexp::from_bytes(&val).expect("decode operation")),
-            Ok(None) => None,
+            Ok(ret) => ret.map(|v| v.to_vec()),
             Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
         };
         trace!("Read: {:?} => {:?}", seqno, ret);
@@ -217,8 +216,7 @@ impl Log for RocksdbLog {
     }
 
 
-    fn prepare(&mut self, seqno: Seqno, op: &Operation) {
-        let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
+    fn prepare(&mut self, seqno: Seqno, data_bytes: &[u8]) {
         trace!("Prepare {:?}", seqno);
         let key = Seqno::tokey(&seqno);
 
@@ -263,7 +261,7 @@ impl Log for RocksdbLog {
 }
 
 pub struct VecLog {
-    log: Vec<Operation>,
+    log: Vec<Vec<u8>>,
     on_committed: Box<Fn(Seqno)>,
     commit_point: Option<Seqno>,
 }
@@ -277,12 +275,14 @@ impl Log for VecLog {
     }
 
     fn read_committed(&self) -> Option<Seqno> { None }
-    fn read(&self, pos: Seqno) -> Option<Operation> {
+
+    fn read(&self, pos: Seqno) -> Option<Vec<u8>> {
         self.log.get(pos.offset() as usize).map(|o| o.clone())
     }
-    fn prepare(&mut self, pos: Seqno, op: &Operation) {
+
+    fn prepare(&mut self, pos: Seqno, op: &[u8]) {
         assert_eq!(pos, self.seqno());
-        self.log.push(op.clone())
+        self.log.push(op.to_vec())
     }
     fn commit_to(&mut self, pos: Seqno) -> bool {
         if Some(pos) > self.commit_point {
@@ -340,7 +340,7 @@ pub mod test {
 
     #[derive(Debug,PartialEq,Eq,Clone)]
     enum LogCommand {
-        PrepareNext(Operation),
+        PrepareNext(Vec<u8>),
         CommitTo(Seqno),
         ReadAt(Seqno),
     }
@@ -372,7 +372,7 @@ pub mod test {
     #[derive(Debug,PartialEq,Eq,Clone)]
     enum CommandReturn {
         Done,
-        Read(Option<Operation>),
+        Read(Option<Vec<u8>>),
     }
 
     fn precondition(model: &VecLog, cmd: &LogCommand) -> bool {
@@ -648,10 +648,10 @@ pub mod test {
     #[cfg(feature = "benches")]
     fn bench_prepare<L: TestLog>(b: &mut Bencher) {
         let mut l = L::new(|_| ());
-        let op = Operation::Set("foobar!".to_string());
+        let op = b"foobar!";
         b.iter(|| {
             let seq = l.seqno();
-            l.prepare(seq, &op)
+            l.prepare(seq, &*op)
         });
     }
 

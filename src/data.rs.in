@@ -28,7 +28,7 @@ pub struct NodeViewConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMsg {
-    Prepare (Seqno, Operation),
+    Prepare (Seqno, Vec<u8>),
     CommitTo (Seqno),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

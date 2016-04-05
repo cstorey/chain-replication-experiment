@@ -62,12 +62,13 @@ pub struct ManualClientProto;
 impl Protocol for ManualClientProto {
     type Send = OpResp;
     type Recv = Operation;
-    fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg {
+    fn as_msg(token: mio::Token, op: Self::Recv) -> ChainReplMsg {
+        let data_bytes = sexp::as_bytes(&op).expect("encode operation");
         ChainReplMsg::Operation {
             source: token,
             epoch: None,
             seqno: None,
-            op: msg,
+            op: data_bytes,
         }
     }
 }
