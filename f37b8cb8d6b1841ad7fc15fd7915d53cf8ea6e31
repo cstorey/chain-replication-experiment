@@ -1,0 +1,21 @@
+   Compiling chain-repl-test v0.1.0 (file:///home/cez/projects/chain-replication-experiment)
+     Running target/release/chain_repl-272cae1a8416a582
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured
+
+     Running target/release/chain_repl_test-4dbfc07c30a4d8b8
+
+running 9 tests
+test replica::test::should_forward_all_requests_downstream_when_present ... ignored
+test replica::test::simulate_single_node_chain_mem ... ignored
+test replication_log::test::rocksdb::test_can_commit_prepared_values ... ignored
+test replication_log::test::rocksdb::test_can_read_prepared_values ... ignored
+test replication_log::test::should_be_correct ... ignored
+test replication_log::test::vec::test_can_commit_prepared_values ... ignored
+test replication_log::test::vec::test_can_read_prepared_values ... ignored
+test replication_log::test::rocksdb::bench_prepare ... bench:       2,643 ns/iter (+/- 75)
+test replication_log::test::vec::bench_prepare     ... bench:          35 ns/iter (+/- 7)
+
+test result: ok. 0 passed; 0 failed; 7 ignored; 2 measured
