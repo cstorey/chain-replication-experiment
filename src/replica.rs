@@ -202,13 +202,13 @@ impl Register {
     fn new() -> Register {
         Register { content: "".to_string() }
     }
-    fn apply(&mut self, op: Operation) -> Option<String> {
+    fn apply(&mut self, op: Operation) -> Option<Vec<u8>> {
         match op {
             Operation::Set(s) => {
                 self.content = s;
                 None
             }
-            Operation::Get => Some(self.content.clone()),
+            Operation::Get => Some(self.content.as_bytes().to_vec()),
         }
     }
 }
