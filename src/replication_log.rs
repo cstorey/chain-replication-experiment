@@ -64,6 +64,7 @@ pub struct RocksdbLog {
     db: Arc<DB>,
     meta: DBCFHandle,
     data: DBCFHandle,
+    seqno_prepared: Option<Seqno>,
     flush_tx: mpsc::SyncSender<Seqno>,
     flush_thread: thread::JoinHandle<()>,
 }
@@ -89,6 +90,7 @@ impl RocksdbLog {
         let db = Arc::new(db);
         let (flush_tx, flush_rx) = mpsc::sync_channel(42);
 
+
         let flusher = {
             let db = db.clone();
             thread::Builder::new()
@@ -96,11 +98,13 @@ impl RocksdbLog {
                 .spawn(move || Self::flush_thread_loop(db, flush_rx, committed))
                 .expect("spawn flush thread")
         };
+        let seqno_prepared = Self::do_read_seqno(&db, meta, META_PREPARED);
         RocksdbLog {
             dir: d,
             db: db,
             meta: meta,
             data: data,
+            seqno_prepared: seqno_prepared,
             flush_tx: flush_tx,
             flush_thread: flusher,
         }
@@ -194,7 +198,7 @@ impl Log for RocksdbLog {
     }
 
     fn read_prepared(&self) -> Option<Seqno> {
-        self.read_seqno(META_PREPARED)
+        self.seqno_prepared.clone()
     }
 
     fn read_committed(&self) -> Option<Seqno> {
@@ -237,6 +241,8 @@ impl Log for RocksdbLog {
         self.db.write(batch).expect("Write batch");
         let t1 = PreciseTime::now();
         trace!("Prepare: {}", t0.to(t1));
+        self.seqno_prepared = Some(seqno);
+
         trace!("Watermarks: prepared: {:?}; committed: {:?}",
                self.read_seqno(META_PREPARED),
                self.read_seqno(META_COMMITTED));
