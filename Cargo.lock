@@ -498,7 +498,7 @@ dependencies = [
 [[package]]
 name = "spki-sexp"
 version = "0.0.1"
-source = "git+https://github.com/cstorey/spki-sexp.rs.git#832da9821f5e288f82a35ff133ceea7a99c465cb"
+source = "git+https://github.com/cstorey/spki-sexp.rs.git#03206ce0ace03bccdb5007c4d49f9ab28d39e7c0"
 dependencies = [
  "quick-error 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",

@@ -1,5 +1,7 @@
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone,Copy,Default, Serialize, Deserialize)]
 pub struct Seqno(u64);
+#[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone)]
+pub struct Buf(ByteBuf);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Operation {
@@ -9,7 +11,7 @@ pub enum Operation {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum OpResp {
-    Ok(Epoch, Seqno, Option<Vec<u8>>),
+    Ok(Epoch, Seqno, Option<Buf>),
     HelloIWant(Seqno),
     Err(Epoch, Seqno, String),
 }
@@ -28,7 +30,7 @@ pub struct NodeViewConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMsg {
-    Prepare (Seqno, Vec<u8>),
+    Prepare (Seqno, Buf),
     CommitTo (Seqno),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

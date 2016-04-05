@@ -43,7 +43,7 @@ impl Protocol for PeerClientProto {
                     source: token,
                     epoch: Some(epoch),
                     seqno: Some(seqno),
-                    op: op,
+                    op: op.into(),
                 }
             }
             ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => {
@@ -278,7 +278,7 @@ impl Reader<ChainReplMsg> for SexpPeer {
                         source: self.token,
                         epoch: Some(epoch),
                         seqno: Some(seqno),
-                        op: op,
+                        op: op.into(),
                     }
                 }
                 ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => {

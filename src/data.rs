@@ -1,5 +1,7 @@
 use config::Epoch;
 use byteorder::{ByteOrder, BigEndian};
+use serde::bytes::ByteBuf;
+use serde::{de,ser};
 
 #[cfg(feature = "serde_macros")]
 include!("data.rs.in");
@@ -55,6 +57,35 @@ impl Seqno {
     }
 }
 
+
+impl Into<Vec<u8>> for Buf {
+    fn into(self) -> Vec<u8> {
+        self.0.into()
+    }
+}
+
+impl From<Vec<u8>> for Buf {
+    fn from(bytes: Vec<u8>) -> Self {
+        Buf(From::from(bytes))
+    }
+}
+
+impl ser::Serialize for Buf {
+    fn serialize<S>(&self, serializer: &mut S) -> Result<(), S::Error>
+        where S: ser::Serializer
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl de::Deserialize for Buf {
+    #[inline]
+    fn deserialize<D>(deserializer: &mut D) -> Result<Buf, D::Error>
+        where D: de::Deserializer
+    {
+        de::Deserialize::deserialize(deserializer).map(Buf)
+    }
+}
 
 #[cfg(test)]
 mod tests {

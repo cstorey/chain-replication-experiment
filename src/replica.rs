@@ -156,7 +156,7 @@ impl Forwarder {
                                i,
                                op,
                                self.last_prepared_downstream);
-                        forward(PeerMsg::Prepare(i, op));
+                        forward(PeerMsg::Prepare(i, op.into()));
                         self.last_prepared_downstream = Some(i.succ());
                         changed = true
                     } else {
@@ -227,7 +227,7 @@ impl Terminus {
         let op = spki_sexp::from_bytes(&op).expect("decode operation");
         debug!("Terminus! {:?}/{:?}", seqno, op);
         let resp = self.app.apply(op);
-        Some(OpResp::Ok(epoch, seqno, resp))
+        Some(OpResp::Ok(epoch, seqno, resp.map(From::from)))
     }
 }
 
@@ -346,7 +346,7 @@ impl<L: Log> ReplModel<L> {
 
 #[cfg(test)]
 mod test {
-    use data::{Operation, OpResp, PeerMsg, Seqno};
+    use data::{Operation, OpResp, PeerMsg, Seqno, Buf};
     use quickcheck::{self, Arbitrary, Gen, TestResult};
     use super::{ReplModel, Register};
     use std::sync::mpsc::channel;
@@ -440,8 +440,8 @@ mod test {
                                          Some((t.clone(), op.clone()))
                                      })
                                      .scan(Register::new(),
-                                           |reg, (_tok, cmd)| Some(reg.apply(cmd)))
-                                     .collect::<Vec<_>>();
+                                           |reg, (_tok, cmd)| Some(reg.apply(cmd).map(Into::into)))
+                                     .collect::<Vec<Option<Buf>>>();
         trace!("Expected: {:?}", expected_responses);
         trace!("Observed: {:?}", observed_responses);
         assert_eq!(expected_responses.len(), observed_responses.len());
@@ -540,6 +540,7 @@ mod test {
             .filter_map(|c| match c {
                 ReplicaCommand::ClientOperation(_, op) => Some(spki_sexp::as_bytes(&op).expect("encode operation")),
             }))
+            .map(Into::into)
             .zip(downstream_has..).map(|(x, i)| (i, x))
             .collect::<Vec<_>>();
         assert_eq!(prepares, expected);
