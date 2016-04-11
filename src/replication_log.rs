@@ -497,6 +497,8 @@ pub mod test {
             assert!(postcondition(&actual_log, &cmd, &ret));
         }
 
+        actual_log.stop();
+
         TestResult::passed()
     }
     #[test]
@@ -653,6 +655,7 @@ pub mod test {
             let seq = l.seqno();
             l.prepare(seq, &*op)
         });
+        l.stop();
     }
 
     mod rocksdb {
