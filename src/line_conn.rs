@@ -41,8 +41,8 @@ impl Protocol for PeerClientProto {
             ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => {
                 ChainReplMsg::Operation {
                     source: token,
-                    epoch: Some(epoch),
-                    seqno: Some(seqno),
+                    epoch: epoch,
+                    seqno: seqno,
                     op: op.into(),
                 }
             }
@@ -64,10 +64,8 @@ impl Protocol for ManualClientProto {
     type Recv = Operation;
     fn as_msg(token: mio::Token, op: Self::Recv) -> ChainReplMsg {
         let data_bytes = sexp::as_bytes(&op).expect("encode operation");
-        ChainReplMsg::Operation {
+        ChainReplMsg::ClientOperation {
             source: token,
-            epoch: None,
-            seqno: None,
             op: data_bytes,
         }
     }
@@ -276,8 +274,8 @@ impl Reader<ChainReplMsg> for SexpPeer {
                 ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => {
                     ChainReplMsg::Operation {
                         source: self.token,
-                        epoch: Some(epoch),
-                        seqno: Some(seqno),
+                        epoch: epoch,
+                        seqno: seqno,
                         op: op.into(),
                     }
                 }

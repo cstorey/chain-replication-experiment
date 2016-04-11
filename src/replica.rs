@@ -250,14 +250,20 @@ impl<L: Log> ReplModel<L> {
         self.log.seqno()
     }
 
+    // If we can avoid coupling the ingest clock to the replicator; we can
+    // factor this out into the client proxy handler.
+    pub fn process_client(&mut self, token: mio::Token, op: &[u8]) -> Option<OpResp> {
+        let seqno = self.next_seqno();
+        let epoch = self.current_epoch;
+        self.process_operation(token, seqno, epoch, op)
+    }
+
     pub fn process_operation(&mut self,
                              token: mio::Token,
-                             seqno: Option<Seqno>,
-                             epoch: Option<Epoch>,
+                             seqno: Seqno,
+                             epoch: Epoch,
                              op: &[u8])
                              -> Option<OpResp> {
-        let seqno = seqno.unwrap_or_else(|| self.next_seqno());
-        let epoch = epoch.unwrap_or_else(|| self.current_epoch);
 
         if epoch != self.current_epoch {
             warn!("Operation epoch ({:?}) differers from our last observed configuration: ({:?})",
@@ -315,7 +321,7 @@ impl<L: Log> ReplModel<L> {
                    self.upstream_commited);
         }
         if let Some(seqno) = self.upstream_commited {
-            info!("Generate downstream commit message for {:?}", seqno);
+            trace!("Commit for {:?}", seqno);
             self.log.commit_to(seqno)
         } else {
             false
@@ -420,10 +426,8 @@ mod test {
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-                    if let Some(resp) = replication.process_operation(token.clone(),
-                                                                      None,
-                                                                      None,
-                                                                      &data_bytes) {
+                    if let Some(resp) = replication.process_client(token.clone(),
+                                                                   &data_bytes) {
                         observed_responses.push_back(resp);
                     }
                 }
@@ -508,9 +512,7 @@ mod test {
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-                    if let Some(resp) = replication.process_operation(token.clone(),
-                                                                      None,
-                                                                      None,
+                    if let Some(resp) = replication.process_client(token.clone(),
                                                                       &data_bytes) {
                         observed_responses.push_back(resp);
                     }

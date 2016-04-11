@@ -59,8 +59,12 @@ pub use data::Role;
 pub enum ChainReplMsg {
     Operation {
         source: mio::Token,
-        epoch: Option<Epoch>,
-        seqno: Option<Seqno>,
+        epoch: Epoch,
+        seqno: Seqno,
+        op: Vec<u8>,
+    },
+    ClientOperation {
+        source: mio::Token,
         op: Vec<u8>,
     },
     Commit {
@@ -142,6 +146,11 @@ impl ChainRepl {
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
                 if let Some(resp) = self.model.process_operation(source, seqno, epoch, &op) {
+                    self.connections[source].response(resp);
+                }
+            }
+            ChainReplMsg::ClientOperation { source, op } => {
+                if let Some(resp) = self.model.process_client(source, &op) {
                     self.connections[source].response(resp);
                 }
             }
