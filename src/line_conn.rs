@@ -148,7 +148,7 @@ impl<T, P> LineConn<T, P>
             self.sock_status.remove(mio::EventSet::writable());
         }
 
-        if !self.is_closed() {
+        if !self.should_close() {
             self.reinitialize(event_loop)
         }
         changed
@@ -222,7 +222,7 @@ impl<T, P> LineConn<T, P>
 
 
 
-    pub fn is_closed(&self) -> bool {
+    pub fn should_close(&self) -> bool {
         trace!("Closed? failed: {:?}; read_eof:{:?}; write_empty: {:?}",
                self.failed,
                self.read_eof,

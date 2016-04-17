@@ -151,7 +151,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         }
 
 
-        if !self.is_closed() {
+        if !self.should_close() {
             self.reinitialize(event_loop)
         }
         changed
@@ -252,7 +252,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         changed
     }
 
-    pub fn is_closed(&self) -> bool {
+    pub fn should_close(&self) -> bool {
         self.peer.is_none()
     }
 

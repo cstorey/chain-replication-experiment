@@ -75,7 +75,7 @@ impl Listener {
         changed
     }
 
-    pub fn is_closed(&self) -> bool {
+    pub fn should_close(&self) -> bool {
         false
     }
 

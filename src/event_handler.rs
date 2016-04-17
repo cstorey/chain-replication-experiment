@@ -54,12 +54,12 @@ impl EventHandler {
         }
     }
 
-    pub fn is_closed(&self) -> bool {
+    pub fn should_close(&self) -> bool {
         match self {
-            &EventHandler::Conn(ref conn) => conn.is_closed(),
-            &EventHandler::Upstream(ref conn) => conn.is_closed(),
-            &EventHandler::Downstream(ref conn) => conn.is_closed(),
-            &EventHandler::Listener(ref listener) => listener.is_closed(),
+            &EventHandler::Conn(ref conn) => conn.should_close(),
+            &EventHandler::Upstream(ref conn) => conn.should_close(),
+            &EventHandler::Downstream(ref conn) => conn.should_close(),
+            &EventHandler::Listener(ref listener) => listener.should_close(),
         }
     }
 

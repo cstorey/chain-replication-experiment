@@ -325,7 +325,7 @@ impl ChainRepl {
 
     fn io_ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
         self.converge_state(event_loop);
-        if self.connections[token].is_closed() && self.model.has_pending(token) {
+        if self.connections[token].should_close() && self.model.has_pending(token) {
             debug!("Close candidate: {:?}", token);
             let it = self.connections.remove(token);
             debug!("Removing; {:?}; {:?}", token, it);
