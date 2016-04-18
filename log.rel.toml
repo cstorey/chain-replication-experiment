@@ -12,14 +12,11 @@ level = "info"
 appenders = ["stdout"]
 
 # and *not* the normal appenders installed at the root
-[[logger]]
-name = "chain_repl_test"
+[loggers."chain_repl_test"]
 level = "warn"
 
-[[logger]]
-name = "chain_repl_test::replication_log"
+[loggers."chain_repl_test::replication_log"]
 level = "warn"
 
-[[logger]]
-name = "chain_repl_test::config"
+[loggers."chain_repl_test::config"]
 level = "warn"
