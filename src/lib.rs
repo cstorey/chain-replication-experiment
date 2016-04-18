@@ -186,6 +186,8 @@ impl ChainRepl {
                                socket: TcpStream) {
         let peer = socket.peer_addr().expect("peer address");
         let seqno = self.model.seqno();
+        debug!("process_new_client_conn: {:?}@{:?}", role, peer);
+
         let token = self.connections
                         .insert_with(|token| {
                             match role {
@@ -236,12 +238,14 @@ impl ChainRepl {
         let listen_for_clients = view.should_listen_for_clients();
         info!("Listen for clients: {:?}", listen_for_clients);
         for p in self.listeners(Role::Client) {
+            trace!("Active: {:?} -> {:?}", p, listen_for_clients);
             p.set_active(listen_for_clients);
         }
 
         let listen_for_upstreamp = view.should_listen_for_upstream();
         info!("Listen for upstreams: {:?}", listen_for_upstreamp);
         for p in self.listeners(Role::Upstream) {
+            trace!("Active: {:?} -> {:?}", p, listen_for_clients);
             p.set_active(listen_for_upstreamp);
         }
 

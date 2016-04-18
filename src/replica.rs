@@ -1,5 +1,6 @@
 use std::cmp;
 use std::mem;
+use std::fmt;
 use std::collections::BTreeMap;
 use mio;
 
@@ -55,12 +56,14 @@ impl ReplRole {
                          seqno: Seqno,
                          op: &[u8])
                          -> Option<OpResp> {
+        trace!("role: process_operation: {:?}/{:?}", epoch, seqno);
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_operation(token, epoch, seqno, op),
             &mut ReplRole::Terminus(ref mut t) => t.process_operation(token, epoch, seqno, op),
         }
     }
     pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
+        trace!("ReplRole: process_downstream_response: {:?}", reply);
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_downstream_response(reply),
             _ => None,
@@ -68,9 +71,10 @@ impl ReplRole {
     }
 
     pub fn process_replication<L: Log, F: FnMut(PeerMsg)>(&mut self, log: &L, forward: F) -> bool {
+        trace!("ReplRole: process_replication");
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_replication(log, forward),
-            _ => false,
+            _ => { debug!("process_replication no-op"); false },
         }
     }
 
@@ -104,11 +108,14 @@ impl Forwarder {
                          seqno: Seqno,
                          _op: &[u8])
                          -> Option<OpResp> {
+        trace!("Forwarder: process_operation: {:?}/{:?}", _epoch, seqno);
         self.pending_operations.insert(seqno, token);
         None
     }
 
     fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
+        trace!("Forwarder: {:?}", self);
+        trace!("Forwarder: process_downstream_response: {:?}", reply);
         match reply {
             &OpResp::Ok(_epoch, seqno, _) | &OpResp::Err(_epoch, seqno, _) => {
                 self.last_acked_downstream = Some(seqno);
@@ -231,7 +238,7 @@ impl Terminus {
     }
 }
 
-impl<L: Log> ReplModel<L> {
+impl<L: Log + fmt::Debug> ReplModel<L> {
     pub fn new(log: L) -> ReplModel<L> {
         ReplModel {
             log: log,
@@ -264,6 +271,7 @@ impl<L: Log> ReplModel<L> {
                              epoch: Epoch,
                              op: &[u8])
                              -> Option<OpResp> {
+        debug!("process_operation: {:?}/{:?}", epoch, seqno);
 
         if epoch != self.current_epoch {
             warn!("Operation epoch ({:?}) differers from our last observed configuration: ({:?})",
@@ -283,10 +291,12 @@ impl<L: Log> ReplModel<L> {
     }
 
     pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
+        trace!("ReplRole: process_downstream_response: {:?}", reply);
         self.next.process_downstream_response(reply)
     }
 
     pub fn process_replication<F: FnMut(Epoch, PeerMsg)>(&mut self, mut forward: F) -> bool {
+        debug!("process_replication: {:?}", self);
         let epoch = self.current_epoch;
         self.next.process_replication(&self.log, |msg| forward(epoch, msg))
     }
@@ -344,6 +354,7 @@ impl<L: Log> ReplModel<L> {
                 info!("No change of config");
             }
         }
+        debug!("Next: {:?}", self.next);
     }
 
     fn set_should_auto_commit(&mut self, auto_commits: bool) {
@@ -351,9 +362,11 @@ impl<L: Log> ReplModel<L> {
     }
 
     pub fn reconfigure(&mut self, view: &ConfigurationView<NodeViewConfig>) {
+        info!("Reconfiguring from: {:?}", view);
         self.set_should_auto_commit(view.is_head());
         self.set_has_downstream(view.should_connect_downstream().is_some());
         self.epoch_changed(view.epoch);
+        info!("Reconfigured from: {:?}", view);
     }
 
 }

@@ -48,9 +48,11 @@ impl Listener {
 
         let mut changed = false;
         if self.sock_status.is_readable() {
-            trace!("the listener socket is ready to accept a connection");
+            trace!("the listener socket is ready to accept a connection: role:{:?}; active:{:?}",
+                    self.role, self.active);
             match self.listener.accept() {
                 Ok(Some(socket)) => {
+                    trace!("New connection: {:?}", socket);
                     let cmd = ChainReplMsg::NewClientConn(self.role.clone(), socket);
                     if self.active {
                         to_parent(cmd);
