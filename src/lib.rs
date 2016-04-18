@@ -212,16 +212,17 @@ impl ChainRepl {
                                              mut action: F)
                                              -> bool {
         let mut changed = false;
+
+        if let Some(view) = self.new_view.take() {
+            self.reconfigure(event_loop, view);
+            changed |= true;
+        }
+
         changed |= self.model.process_replication(|epoch, msg| {
             action(ChainReplMsg::ForwardDownstream(epoch, msg))
         });
 
         changed |= self.model.flush();
-
-        if let Some(view) = self.new_view.take() {
-            self.reconfigure(event_loop, view);
-            changed = true;
-        }
 
         changed
     }
@@ -253,6 +254,7 @@ impl ChainRepl {
             self.set_downstream(event_loop, None);
         }
 
+        info!("Reconfigure model: {:?}", view);
         self.model.reconfigure(&view)
     }
 
