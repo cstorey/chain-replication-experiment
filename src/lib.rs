@@ -244,25 +244,16 @@ impl ChainRepl {
             p.set_active(listen_for_upstreamp);
         }
 
-        self.model.set_should_auto_commit(view.is_head());
-
         if let Some(ds) = view.should_connect_downstream() {
             info!("Push to downstream on {:?}", ds);
-            if let Some(ref peer_addr) = ds.peer_addr {
-                self.set_downstream(event_loop, Some(peer_addr.parse().expect("peer address")));
-            } else {
-                panic!("Cannot reconnect to downstream with no peer listener: {:?}",
-                       ds);
-            }
-
-            self.model.set_has_downstream(true);
+            let peer_addr = ds.peer_addr.as_ref().expect("Cannot reconnect to downstream with no peer listener");
+            self.set_downstream(event_loop, Some(peer_addr.parse().expect("peer address")));
         } else {
             info!("Tail node!");
-            self.model.set_has_downstream(false);
             self.set_downstream(event_loop, None);
         }
 
-        self.model.epoch_changed(view.epoch);
+        self.model.reconfigure(&view)
     }
 
     fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {

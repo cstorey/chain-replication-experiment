@@ -3,8 +3,8 @@ use std::mem;
 use std::collections::BTreeMap;
 use mio;
 
-use data::{Operation, OpResp, PeerMsg, Seqno};
-use config::Epoch;
+use data::{Operation, OpResp, PeerMsg, Seqno, NodeViewConfig};
+use config::{ConfigurationView, Epoch};
 use spki_sexp;
 
 #[derive(Debug)]
@@ -291,10 +291,6 @@ impl<L: Log> ReplModel<L> {
         self.next.process_replication(&self.log, |msg| forward(epoch, msg))
     }
 
-    pub fn epoch_changed(&mut self, epoch: Epoch) {
-        self.current_epoch = epoch;
-    }
-
     pub fn has_pending(&self, token: mio::Token) -> bool {
         self.next.has_pending(token)
     }
@@ -328,7 +324,11 @@ impl<L: Log> ReplModel<L> {
         }
     }
 
-    pub fn set_has_downstream(&mut self, is_forwarder: bool) {
+    fn epoch_changed(&mut self, epoch: Epoch) {
+        self.current_epoch = epoch;
+    }
+
+    fn set_has_downstream(&mut self, is_forwarder: bool) {
         // XXX: Replays?
         match (is_forwarder, &mut self.next) {
             (true, role @ &mut ReplRole::Terminus(_)) => {
@@ -345,9 +345,17 @@ impl<L: Log> ReplModel<L> {
             }
         }
     }
-    pub fn set_should_auto_commit(&mut self, auto_commits: bool) {
+
+    fn set_should_auto_commit(&mut self, auto_commits: bool) {
         self.auto_commits = auto_commits;
     }
+
+    pub fn reconfigure(&mut self, view: &ConfigurationView<NodeViewConfig>) {
+        self.set_should_auto_commit(view.is_head());
+        self.set_has_downstream(view.should_connect_downstream().is_some());
+        self.epoch_changed(view.epoch);
+    }
+
 }
 
 #[cfg(test)]
