@@ -266,6 +266,15 @@ pub struct VecLog {
     commit_point: Option<Seqno>,
 }
 
+impl fmt::Debug for VecLog {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("VecLog")
+            .field("mark/prepared", &self.log.len())
+            .field("mark/committed", &self.commit_point)
+            .finish()
+    }
+}
+
 impl Log for VecLog {
     fn seqno(&self) -> Seqno {
         Seqno::new(self.log.len() as u64)

@@ -31,7 +31,7 @@ enum ReplRole {
     Terminus(Terminus),
 }
 
-pub trait Log {
+pub trait Log: fmt::Debug {
     fn seqno(&self) -> Seqno;
     fn read_prepared(&self) -> Option<Seqno>;
     fn read_committed(&self) -> Option<Seqno>;
@@ -238,7 +238,7 @@ impl Terminus {
     }
 }
 
-impl<L: Log + fmt::Debug> ReplModel<L> {
+impl<L: Log> ReplModel<L> {
     pub fn new(log: L) -> ReplModel<L> {
         ReplModel {
             log: log,
