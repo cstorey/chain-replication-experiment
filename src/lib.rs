@@ -172,7 +172,7 @@ impl ChainRepl {
 
 
     fn process_downstream_response(&mut self, reply: OpResp) {
-        debug!("Downstream response: {:?}", reply);
+        trace!("Downstream response: {:?}", reply);
         if let Some(waiter) = self.model.process_downstream_response(&reply) {
             if let Some(ref mut c) = self.connections.get_mut(waiter) {
                 c.response(reply)
@@ -186,7 +186,7 @@ impl ChainRepl {
                                socket: TcpStream) {
         let peer = socket.peer_addr().expect("peer address");
         let seqno = self.model.seqno();
-        debug!("process_new_client_conn: {:?}@{:?}", role, peer);
+        trace!("process_new_client_conn: {:?}@{:?}", role, peer);
 
         let token = self.connections
                         .insert_with(|token| {
@@ -202,7 +202,7 @@ impl ChainRepl {
                             }
                         })
                         .expect("token insert");
-        debug!("Client connection of {:?}/{:?} from {:?}",
+        trace!("Client connection of {:?}/{:?} from {:?}",
                role,
                token,
                peer);
@@ -290,7 +290,7 @@ impl ChainRepl {
         let mut parent_actions = VecDeque::new();
         let mut changed = true;
         let mut iterations = 0;
-        debug!("Converge begin");
+        trace!("Converge begin");
         while changed {
             trace!("Iter: {:?}", iterations);
             changed = false;
@@ -310,22 +310,22 @@ impl ChainRepl {
             }
             changed |= changedp;
 
-            debug!("Actions pending: {:?}", parent_actions.len());
+            trace!("Actions pending: {:?}", parent_actions.len());
             for action in parent_actions.drain(..) {
-                debug!("Action: {:?}", action);
+                trace!("Action: {:?}", action);
                 self.process_action(action, event_loop);
             }
             iterations += 1;
         }
-        debug!("Converged after {:?} iterations", iterations);
+        trace!("Converged after {:?} iterations", iterations);
     }
 
     fn io_ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
         self.converge_state(event_loop);
         if self.connections[token].should_close() && self.model.has_pending(token) {
-            debug!("Close candidate: {:?}", token);
+            trace!("Close candidate: {:?}", token);
             let it = self.connections.remove(token);
-            debug!("Removing; {:?}; {:?}", token, it);
+            trace!("Removing; {:?}; {:?}", token, it);
             if Some(token) == self.downstream_slot {
                 self.downstream_slot = None;
                 self.model.reset();
@@ -399,13 +399,13 @@ impl mio::Handler for ChainRepl {
     }
 
     fn timeout(&mut self, event_loop: &mut EventLoop<Self>, token: mio::Token) {
-        debug!("Timeout: {:?}", token);
+        trace!("Timeout: {:?}", token);
         self.connections[token].handle_timeout();
         self.io_ready(event_loop, token);
     }
 
     fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: Self::Message) {
-        debug!("Notified: {:?}", msg);
+        trace!("Notified: {:?}", msg);
         match msg {
             Notification::ViewChange(view) => self.handle_view_changed(view),
             Notification::CommittedTo(seqno) => self.committed_to(seqno),
