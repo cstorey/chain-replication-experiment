@@ -45,7 +45,8 @@ pub struct ReplModel<L> {
     next: ReplRole,
     log: L,
     current_epoch: Epoch,
-    upstream_commited: Option<Seqno>,
+    upstream_committed: Option<Seqno>,
+    commit_requested: Option<Seqno>,
     auto_commits: bool,
 }
 
@@ -244,7 +245,8 @@ impl<L: Log> ReplModel<L> {
             log: log,
             current_epoch: Default::default(),
             next: ReplRole::Terminus(Terminus::new()),
-            upstream_commited: None,
+            upstream_committed: None,
+            commit_requested: None,
             auto_commits: false,
         }
     }
@@ -312,25 +314,27 @@ impl<L: Log> ReplModel<L> {
     pub fn commit_observed(&mut self, seqno: Seqno) -> bool {
         debug!("Observed upstream commit point: {:?}; current: {:?}",
                seqno,
-               self.upstream_commited);
-        assert!(self.upstream_commited.map(|committed| committed <= seqno).unwrap_or(true));
-        self.upstream_commited = Some(seqno);
+               self.upstream_committed);
+        assert!(self.upstream_committed.map(|committed| committed <= seqno).unwrap_or(true));
+        self.upstream_committed = Some(seqno);
         true
     }
 
     pub fn flush(&mut self) -> bool {
         if self.auto_commits {
-            self.upstream_commited = self.log.read_prepared();
-            debug!("Auto committing to: {:?}", self.upstream_commited);
+            self.upstream_committed = self.log.read_prepared();
+            trace!("Auto committing to: {:?}", self.upstream_committed);
         } else {
-            debug!("Flush to upstream commit point: {:?}",
-                   self.upstream_commited);
+            trace!("Flush to upstream commit point: {:?}",
+                   self.upstream_committed);
         }
-        if let Some(seqno) = self.upstream_commited {
-            trace!("Commit for {:?}", seqno);
-            self.log.commit_to(seqno)
-        } else {
-            false
+        match self.upstream_committed {
+            Some(seqno) if self.commit_requested < self.upstream_committed => {
+                trace!("Commit for {:?}", seqno);
+                self.commit_requested = self.upstream_committed;
+                self.log.commit_to(seqno)
+            },
+            _ => false
         }
     }
 
