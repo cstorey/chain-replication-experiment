@@ -145,14 +145,14 @@ impl ChainRepl {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
-                if let Some(resp) = self.model.process_operation(source, seqno, epoch, &op) {
-                    self.connections[source].response(resp);
-                }
+                let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
+                let mut out = OutPorts(connections);
+                model.process_operation(&mut out, source, seqno, epoch, &op)
             }
             ChainReplMsg::ClientOperation { source, op } => {
-                if let Some(resp) = self.model.process_client(source, &op) {
-                    self.connections[source].response(resp);
-                }
+                let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
+                let mut out = OutPorts(connections);
+                model.process_client(&mut out, source, &op)
             }
 
             ChainReplMsg::Commit { seqno, .. } => {
@@ -382,6 +382,16 @@ impl Notifier {
     }
     pub fn committed_to(&self, seqno: Seqno) {
         self.notify(Notification::CommittedTo(seqno))
+    }
+}
+
+struct OutPorts<'a>(&'a mut Slab<event_handler::EventHandler>);
+
+impl<'a> replica::Outputs for OutPorts<'a> {
+    fn respond_to(&mut self, token: mio::Token, resp: OpResp) {
+        debug!("Output: {:?} -> {:?}", token, resp);
+        let &mut OutPorts(ref mut conns) = self;
+        conns[token].response(resp);
     }
 }
 

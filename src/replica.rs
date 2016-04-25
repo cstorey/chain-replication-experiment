@@ -40,6 +40,10 @@ pub trait Log: fmt::Debug {
     fn commit_to(&mut self, Seqno) -> bool;
 }
 
+pub trait Outputs {
+    fn respond_to(&mut self, mio::Token, OpResp);
+}
+
 #[derive(Debug)]
 pub struct ReplModel<L> {
     next: ReplRole,
@@ -51,16 +55,16 @@ pub struct ReplModel<L> {
 }
 
 impl ReplRole {
-    fn process_operation(&mut self,
+    fn process_operation<O: Outputs>(&mut self,
+                         output: &mut O,
                          token: mio::Token,
                          epoch: Epoch,
                          seqno: Seqno,
-                         op: &[u8])
-                         -> Option<OpResp> {
+                         op: &[u8]) {
         trace!("role: process_operation: {:?}/{:?}", epoch, seqno);
         match self {
-            &mut ReplRole::Forwarder(ref mut f) => f.process_operation(token, epoch, seqno, op),
-            &mut ReplRole::Terminus(ref mut t) => t.process_operation(token, epoch, seqno, op),
+            &mut ReplRole::Forwarder(ref mut f) => f.process_operation(output, token, epoch, seqno, op),
+            &mut ReplRole::Terminus(ref mut t) => t.process_operation(output, token, epoch, seqno, op),
         }
     }
     pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
@@ -103,15 +107,14 @@ impl Forwarder {
         }
     }
 
-    fn process_operation(&mut self,
+    fn process_operation<O: Outputs>(&mut self,
+                         output: &mut O,
                          token: mio::Token,
                          _epoch: Epoch,
                          seqno: Seqno,
-                         _op: &[u8])
-                         -> Option<OpResp> {
+                         _op: &[u8]) {
         trace!("Forwarder: process_operation: {:?}/{:?}", _epoch, seqno);
         self.pending_operations.insert(seqno, token);
-        None
     }
 
     fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
@@ -226,16 +229,18 @@ impl Terminus {
         Terminus { app: Register::new() }
     }
 
-    fn process_operation(&mut self,
-                         _token: mio::Token,
+    fn process_operation<O: Outputs>(&mut self,
+                         output: &mut O,
+                         token: mio::Token,
                          epoch: Epoch,
                          seqno: Seqno,
                          op: &[u8])
-                         -> Option<OpResp> {
+                         {
         let op = spki_sexp::from_bytes(&op).expect("decode operation");
         debug!("Terminus! {:?}/{:?}", seqno, op);
         let resp = self.app.apply(op);
-        Some(OpResp::Ok(epoch, seqno, resp.map(From::from)))
+
+        output.respond_to(token, OpResp::Ok(epoch, seqno, resp.map(From::from)))
     }
 }
 
@@ -261,18 +266,18 @@ impl<L: Log> ReplModel<L> {
 
     // If we can avoid coupling the ingest clock to the replicator; we can
     // factor this out into the client proxy handler.
-    pub fn process_client(&mut self, token: mio::Token, op: &[u8]) -> Option<OpResp> {
+    pub fn process_client<O: Outputs>(&mut self, output: &mut O, token: mio::Token, op: &[u8]) {
         let seqno = self.next_seqno();
         let epoch = self.current_epoch;
-        self.process_operation(token, seqno, epoch, op)
+        self.process_operation(output, token, seqno, epoch, op)
     }
 
-    pub fn process_operation(&mut self,
+    pub fn process_operation<O: Outputs>(&mut self,
+                             output: &mut O,
                              token: mio::Token,
                              seqno: Seqno,
                              epoch: Epoch,
-                             op: &[u8])
-                             -> Option<OpResp> {
+                             op: &[u8]) {
         debug!("process_operation: {:?}/{:?}", epoch, seqno);
 
         if epoch != self.current_epoch {
@@ -284,12 +289,12 @@ impl<L: Log> ReplModel<L> {
                                    format!("BadEpoch: {:?}; last seen config: {:?}",
                                            epoch,
                                            self.current_epoch));
-            return Some(resp);
+            return output.respond_to(token, resp);
         }
 
         self.log.prepare(seqno, &op);
 
-        self.next.process_operation(token, epoch, seqno, &op)
+        self.next.process_operation(output, token, epoch, seqno, &op)
     }
 
     pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
@@ -379,7 +384,7 @@ impl<L: Log> ReplModel<L> {
 mod test {
     use data::{Operation, OpResp, PeerMsg, Seqno, Buf};
     use quickcheck::{self, Arbitrary, Gen, TestResult};
-    use super::{ReplModel, Register};
+    use super::{ReplModel, Register, Outputs};
     use std::sync::mpsc::channel;
     use replication_log::{VecLog};
     use replication_log::test::TestLog;
@@ -402,6 +407,14 @@ mod test {
     // fn set_has_downstream(&mut self, is_forwarder: bool)
     // fn set_should_auto_commit(&mut self, auto_commits: bool)
     //
+
+    #[derive(Debug)]
+    struct Outs(VecDeque<OpResp>);
+    impl Outputs for Outs {
+        fn respond_to(&mut self, token: Token, resp: OpResp) {
+            self.0.push_back(resp)
+        }
+    }
 
     #[derive(Debug,PartialEq,Eq,Clone)]
     enum ReplicaCommand {
@@ -445,16 +458,14 @@ mod test {
         });
 
         let mut replication = ReplModel::new(log);
-        let mut observed_responses = VecDeque::new();
+        let mut observed_responses = Outs(VecDeque::new());
 
         for cmd in vals.iter() {
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-                    if let Some(resp) = replication.process_client(token.clone(),
-                                                                   &data_bytes) {
-                        observed_responses.push_back(resp);
-                    }
+                    replication.process_client(&mut observed_responses, token.clone(),
+                                                                   &data_bytes);
                 }
             }
         }
@@ -473,9 +484,9 @@ mod test {
                                      .collect::<Vec<Option<Buf>>>();
         trace!("Expected: {:?}", expected_responses);
         trace!("Observed: {:?}", observed_responses);
-        assert_eq!(expected_responses.len(), observed_responses.len());
+        assert_eq!(expected_responses.len(), observed_responses.0.len());
         let result = expected_responses.iter()
-                                       .zip(observed_responses.iter())
+                                       .zip(observed_responses.0.iter())
                                        .all(|(exp, obs)| {
                                            match obs {
                                                &OpResp::Ok(_, _, ref val) => val == exp,
@@ -519,7 +530,7 @@ mod test {
         }
 
         let mut replication = ReplModel::new(log);
-        let mut observed_responses = VecDeque::new();
+        let mut observed_responses = Outs(VecDeque::new());
         let mut forwarded = VecDeque::new();
 
         replication.set_has_downstream(true);
@@ -537,10 +548,7 @@ mod test {
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-                    if let Some(resp) = replication.process_client(token.clone(),
-                                                                      &data_bytes) {
-                        observed_responses.push_back(resp);
-                    }
+                    replication.process_client(&mut observed_responses, token.clone(), &data_bytes)
                 },
             };
             while replication.process_replication(|epoch, msg| {
