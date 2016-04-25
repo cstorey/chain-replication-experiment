@@ -12,18 +12,18 @@ name = "chain-repl"
 [build-dependencies.serde_codegen]
 default-features = false
 optional = true
-version = "0.7.1"
+version = "0.7.2"
 
 [build-dependencies.syntex]
 default-features = false
 optional = true
-version = "0.30.0"
+version = "0.31.0"
 
 [dependencies]
 byteorder = "0.4.2"
 bytes = "0.2.10"
 clap = "*"
-etcd = "0.5.0"
+etcd = { version = "0.5.0", default-features=false }
 log = "*"
 log4rs = { version = "*", features = ["toml"] }
 mio = "0.4.1"
@@ -38,7 +38,7 @@ optional = false
 
 [dependencies.serde_macros]
 optional = true
-version = "0.7.0"
+version = "0.7.2"
 
 [dependencies.spki-sexp]
 git = "https://github.com/cstorey/spki-sexp.rs.git"
@@ -51,7 +51,7 @@ rand = "0.3.14"
 
 [features]
 default = ["syntex", "serde_codegen/default", "etcd/default"]
-nightly = ["serde_macros", "serde_codegen/nightly", "etcd/nightly"]
+nightly = ["serde_macros", "etcd/nightly"]
 benches = []
 
 [profile]
