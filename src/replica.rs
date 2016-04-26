@@ -69,11 +69,11 @@ impl ReplRole {
             &mut ReplRole::Terminus(ref mut t) => t.process_operation(output, token, epoch, seqno, op),
         }
     }
-    pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
+    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: OpResp) {
         trace!("ReplRole: process_downstream_response: {:?}", reply);
         match self {
-            &mut ReplRole::Forwarder(ref mut f) => f.process_downstream_response(reply),
-            _ => None,
+            &mut ReplRole::Forwarder(ref mut f) => f.process_downstream_response(out, reply),
+            _ => (),
         }
     }
 
@@ -120,28 +120,26 @@ impl Forwarder {
         self.pending_operations.insert(seqno, token);
     }
 
-    fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
+    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: OpResp) {
         trace!("Forwarder: {:?}", self);
         trace!("Forwarder: process_downstream_response: {:?}", reply);
         match reply {
-            &OpResp::Ok(_epoch, seqno, _) | &OpResp::Err(_epoch, seqno, _) => {
+            OpResp::Ok(_epoch, seqno, _) | OpResp::Err(_epoch, seqno, _) => {
                 self.last_acked_downstream = Some(seqno);
                 if let Some(token) = self.pending_operations.remove(&seqno) {
                     trace!("Found in-flight op {:?} for client token {:?}",
                            seqno,
                            token);
-                    Some(token)
+                    out.respond_to(token, reply);
                 } else {
                     warn!("Unexpected response for seqno: {:?}", seqno);
-                    None
                 }
             }
-            &OpResp::HelloIWant(last_prepared_downstream) => {
+            OpResp::HelloIWant(last_prepared_downstream) => {
                 info!("Downstream has {:?}", last_prepared_downstream);
                 // assert!(last_prepared_downstream <= self.seqno());
                 self.last_acked_downstream = Some(last_prepared_downstream);
                 self.last_prepared_downstream = Some(last_prepared_downstream);
-                None
             }
         }
     }
@@ -300,9 +298,9 @@ impl<L: Log> ReplModel<L> {
         self.next.process_operation(output, token, epoch, seqno, &op)
     }
 
-    pub fn process_downstream_response(&mut self, reply: &OpResp) -> Option<mio::Token> {
+    pub fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: OpResp) {
         trace!("ReplRole: process_downstream_response: {:?}", reply);
-        self.next.process_downstream_response(reply)
+        self.next.process_downstream_response(out, reply)
     }
 
     pub fn process_replication<O: Outputs>(&mut self, out: &mut O) -> bool {
@@ -542,7 +540,7 @@ mod test {
         let mut observed = Outs(VecDeque::new());
 
         replication.configure_forwarding(Default::default(), true);
-        replication.process_downstream_response(&OpResp::HelloIWant(Seqno::new(downstream_has as u64)));
+        replication.process_downstream_response(&mut observed, OpResp::HelloIWant(Seqno::new(downstream_has as u64)));
 
         while replication.process_replication(&mut observed) {
             debug!("iterated replication");

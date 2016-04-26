@@ -169,11 +169,10 @@ impl ChainRepl {
 
     fn process_downstream_response(&mut self, reply: OpResp) {
         trace!("Downstream response: {:?}", reply);
-        if let Some(waiter) = self.model.process_downstream_response(&reply) {
-            if let Some(ref mut c) = self.connections.get_mut(waiter) {
-                c.response(reply)
-            }
-        }
+        let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
+        let mut out = OutPorts(self.downstream_slot, connections);
+
+        model.process_downstream_response(&mut out, reply)
     }
 
     fn process_new_client_conn(&mut self,
