@@ -14,7 +14,6 @@ struct Forwarder {
     last_committed_downstream: Option<Seqno>,
     last_acked_downstream: Option<Seqno>,
     pending_operations: BTreeMap<Seqno, mio::Token>,
-    epoch: Epoch,
 }
 #[derive(Debug)]
 struct Register {
@@ -77,10 +76,10 @@ impl ReplRole {
         }
     }
 
-    pub fn process_replication<L: Log, O: Outputs>(&mut self, log: &L, out: &mut O) -> bool {
+    fn process_replication<L: Log, O: Outputs>(&mut self, epoch: Epoch, log: &L, out: &mut O) -> bool {
         trace!("ReplRole: process_replication");
         match self {
-            &mut ReplRole::Forwarder(ref mut f) => f.process_replication(log, out),
+            &mut ReplRole::Forwarder(ref mut f) => f.process_replication(epoch, log, out),
             _ => { debug!("process_replication no-op"); false },
         }
     }
@@ -100,13 +99,12 @@ impl ReplRole {
 }
 
 impl Forwarder {
-    fn new(epoch: Epoch) -> Forwarder {
+    fn new() -> Forwarder {
         Forwarder {
             last_prepared_downstream: None,
             last_acked_downstream: None,
             last_committed_downstream: None,
             pending_operations: BTreeMap::new(),
-            epoch: epoch,
         }
     }
 
@@ -144,7 +142,8 @@ impl Forwarder {
         }
     }
 
-    pub fn process_replication<L: Log, O: Outputs>(&mut self,
+    fn process_replication<L: Log, O: Outputs>(&mut self,
+                                                          epoch: Epoch,
                                                           log: &L,
                                                           out: &mut O)
                                                           -> bool {
@@ -168,7 +167,7 @@ impl Forwarder {
                                i,
                                op,
                                self.last_prepared_downstream);
-                        out.forward_downstream(self.epoch, PeerMsg::Prepare(i, op.into()));
+                        out.forward_downstream(epoch, PeerMsg::Prepare(i, op.into()));
                         self.last_prepared_downstream = Some(i.succ());
                         changed = true
                     } else {
@@ -193,7 +192,7 @@ impl Forwarder {
                        max_to_commit_now,
                        our_committed);
 
-                out.forward_downstream(self.epoch, PeerMsg::CommitTo(max_to_commit_now));
+                out.forward_downstream(epoch, PeerMsg::CommitTo(max_to_commit_now));
                 self.last_committed_downstream = Some(max_to_commit_now);
                 changed = true
             }
@@ -306,7 +305,7 @@ impl<L: Log> ReplModel<L> {
 
     pub fn process_replication<O: Outputs>(&mut self, out: &mut O) -> bool {
         debug!("process_replication: {:?}", self);
-        self.next.process_replication(&self.log, out)
+        self.next.process_replication(self.current_epoch, &self.log, out)
     }
 
     pub fn has_pending(&self, token: mio::Token) -> bool {
@@ -344,12 +343,12 @@ impl<L: Log> ReplModel<L> {
         }
     }
 
-    fn configure_forwarding(&mut self, epoch: Epoch, is_forwarder: bool) {
+    fn configure_forwarding(&mut self, is_forwarder: bool) {
         // XXX: Replays?
         match (is_forwarder, &mut self.next) {
             (true, role @ &mut ReplRole::Terminus(_)) => {
                 info!("Switched to forwarding from {:?}", role);
-                *role = ReplRole::Forwarder(Forwarder::new(epoch));
+                *role = ReplRole::Forwarder(Forwarder::new());
             }
 
             (false, role @ &mut ReplRole::Forwarder(_)) => {
@@ -370,7 +369,7 @@ impl<L: Log> ReplModel<L> {
     pub fn reconfigure(&mut self, view: ConfigurationView<NodeViewConfig>) {
         info!("Reconfiguring from: {:?}", view);
         self.current_epoch = view.epoch;
-        self.configure_forwarding(view.epoch, view.should_connect_downstream().is_some());
+        self.configure_forwarding(view.should_connect_downstream().is_some());
         self.set_is_head(view.is_head());
         info!("Reconfigured from: {:?}", view);
     }
@@ -542,7 +541,7 @@ mod test {
         replication.set_is_head(true);
         let mut observed = Outs(VecDeque::new());
 
-        replication.configure_forwarding(Default::default(), true);
+        replication.configure_forwarding(true);
         replication.process_downstream_response(&mut observed, OpResp::HelloIWant(Seqno::new(downstream_has as u64)));
 
         while replication.process_replication(&mut observed) {

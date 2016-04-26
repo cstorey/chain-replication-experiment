@@ -115,6 +115,7 @@ impl ChainRepl {
                                        }
                                    }
 
+                                   trace!("Listener: {:?}", l);
                                    EventHandler::Listener(l)
                                })
                                .expect("insert listener");
@@ -296,6 +297,7 @@ impl ChainRepl {
                     changed |= conn.process_rules(event_loop,
                                                       &mut |item| parent_actions.push_back(item),
                                                       &mut events);
+                    trace!("changed:{:?}; conn: {:?}", changed, conn);
                 }
             }
 
