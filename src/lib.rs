@@ -41,7 +41,7 @@ mod data;
 mod replication_log;
 mod replica;
 
-use line_conn::{SexpPeer, LineConn};
+use line_conn::{SexpPeer, LineConn, LineConnEvents};
 use downstream_conn::Downstream;
 use listener::{Listener,ListenerEvents};
 use event_handler::EventHandler;
@@ -74,6 +74,26 @@ pub enum ChainReplMsg {
     },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
+}
+
+struct ChainReplEvents { changes: VecDeque<ChainReplMsg> }
+
+impl ListenerEvents for ChainReplEvents {
+    fn new_connection(&mut self, role: Role, socket: TcpStream) {
+        self.changes.push_back(ChainReplMsg::NewClientConn(role, socket))
+    }
+}
+
+impl LineConnEvents for ChainReplEvents {
+    fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Vec<u8>) {
+        self.changes.push_back(ChainReplMsg::Operation { source:source, epoch:epoch, seqno:seqno, op:op })
+    }
+    fn client_request(&mut self, source: mio::Token, op: Vec<u8>) {
+        self.changes.push_back(ChainReplMsg::ClientOperation { source: source, op: op })
+    }
+    fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno) {
+        self.changes.push_back(ChainReplMsg::Commit { source: source, epoch: epoch, seqno: seqno })
+    }
 }
 
 #[derive(Debug)]
@@ -275,13 +295,6 @@ impl ChainRepl {
     }
 
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>) {
-        struct ChainReplEvents { changes: VecDeque<ChainReplMsg> };
-        impl ListenerEvents for ChainReplEvents {
-            fn new_connection(&mut self, role: Role, socket: TcpStream) {
-                self.changes.push_back(ChainReplMsg::NewClientConn(role, socket))
-            }
-        }
-
         let mut parent_actions = VecDeque::new();
         let mut changed = true;
         let mut iterations = 0;
@@ -289,6 +302,7 @@ impl ChainRepl {
 
         while changed {
             trace!("Iter: {:?}", iterations);
+            let mut events = ChainReplEvents { changes: VecDeque::new() };
             changed = false;
             let mut events = ChainReplEvents { changes: VecDeque::new() };
             {
@@ -297,22 +311,25 @@ impl ChainRepl {
                     changed |= conn.process_rules(event_loop,
                                                       &mut |item| parent_actions.push_back(item),
                                                       &mut events);
-                    trace!("changed:{:?}; conn: {:?}", changed, conn);
+                    trace!("changed:{:?}; conn:{:?} ", changed, conn);
                 }
             }
 
             changed |= self.process_rules(event_loop);
+            trace!("changed:{:?}; self rules", changed);
 
             {
 
                 let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
                 let mut out = OutPorts(self.downstream_slot, connections);
                 changed |= model.process_replication(&mut out);
+                trace!("changed:{:?}; replicate", changed);
 
                 changed |= model.flush();
+                trace!("changed:{:?}; replicate flush", changed);
             }
 
-            trace!("Actions pending: {:?}+{:?}", parent_actions.len(), events.changes.len());
+            trace!("Changed:{:?}; actions:{:?}+{:?}", changed, parent_actions.len(), events.changes.len());
             for action in parent_actions.drain(..).chain(events.changes.drain(..)) {
                 trace!("Action: {:?}", action);
                 self.process_action(action, event_loop);

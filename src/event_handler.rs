@@ -3,7 +3,7 @@ use mio;
 use super::{ChainRepl, ChainReplMsg};
 use data::OpResp;
 
-use line_conn::{SexpPeer, PlainClient, LineConn, ManualClientProto, PeerClientProto};
+use line_conn::{SexpPeer, PlainClient, LineConn, ManualClientProto, PeerClientProto, LineConnEvents};
 use downstream_conn::Downstream;
 use listener::{Listener,ListenerEvents};
 
@@ -38,14 +38,15 @@ impl EventHandler {
         }
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg), E: ListenerEvents>(&mut self,
+    pub fn process_rules<F: FnMut(ChainReplMsg), E: ListenerEvents + LineConnEvents>(
+        &mut self,
                                                  event_loop: &mut mio::EventLoop<ChainRepl>,
                                                  to_parent: &mut F,
                                                  events: &mut E)
                                                  -> bool {
         match self {
-            &mut EventHandler::Conn(ref mut conn) => conn.process_rules(event_loop, to_parent),
-            &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, to_parent),
+            &mut EventHandler::Conn(ref mut conn) => conn.process_rules(event_loop, events),
+            &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, events),
             &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, to_parent),
             &mut EventHandler::Listener(ref mut listener) => {
                 listener.process_rules(event_loop, events)

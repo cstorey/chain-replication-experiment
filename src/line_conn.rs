@@ -8,8 +8,9 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::collections::VecDeque;
 
-use super::{ChainRepl, ChainReplMsg};
-use data::{OpResp, Operation, PeerMsg, ReplicationMessage};
+use super::{ChainRepl,ChainReplMsg};
+use data::{OpResp, Operation, PeerMsg, ReplicationMessage, Seqno};
+use config::Epoch;
 
 const NL: u8 = '\n' as u8;
 const DEFAULT_BUFSZ: usize = 1 << 12;
@@ -28,31 +29,25 @@ pub trait Protocol : fmt::Debug{
     type Send;
     type Recv;
 
-    fn as_msg(mio::Token, Self::Recv) -> ChainReplMsg;
+    fn event_observed<E: LineConnEvents>(&mut E, mio::Token, Self::Recv);
  }
+
+pub trait LineConnEvents {
+    fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Vec<u8>);
+    fn client_request(&mut self, source: mio::Token, op: Vec<u8>);
+    fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno);
+
+}
 
 #[derive(Debug)]
 pub struct PeerClientProto;
 impl Protocol for PeerClientProto {
     type Send = OpResp;
     type Recv = ReplicationMessage;
-    fn as_msg(token: mio::Token, msg: Self::Recv) -> ChainReplMsg {
+    fn event_observed<E: LineConnEvents>(events: &mut E, token: mio::Token, msg: Self::Recv) {
         match msg {
-            ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => {
-                ChainReplMsg::Operation {
-                    source: token,
-                    epoch: epoch,
-                    seqno: seqno,
-                    op: op.into(),
-                }
-            }
-            ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => {
-                ChainReplMsg::Commit {
-                    source: token,
-                    epoch: epoch,
-                    seqno: seqno,
-                }
-            }
+            ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
+            ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
         }
     }
 }
@@ -62,12 +57,9 @@ pub struct ManualClientProto;
 impl Protocol for ManualClientProto {
     type Send = OpResp;
     type Recv = Operation;
-    fn as_msg(token: mio::Token, op: Self::Recv) -> ChainReplMsg {
+    fn event_observed<E: LineConnEvents>(events: &mut E, token: mio::Token, op: Self::Recv) {
         let data_bytes = sexp::as_bytes(&op).expect("encode operation");
-        ChainReplMsg::ClientOperation {
-            source: token,
-            op: data_bytes,
-        }
+        events.client_request(token, data_bytes);
     }
 }
 
@@ -131,9 +123,9 @@ impl<T, P> LineConn<T, P>
     where P: Protocol,
           T: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug
 {
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
+    pub fn process_rules<E: LineConnEvents>(&mut self,
                                                  event_loop: &mut mio::EventLoop<ChainRepl>,
-                                                 to_parent: &mut F)
+                                                 events: &mut E)
                                                  -> bool {
 
         if self.sock_status.is_readable() {
@@ -141,7 +133,7 @@ impl<T, P> LineConn<T, P>
             self.sock_status.remove(mio::EventSet::readable());
         }
 
-        let changed = self.process_buffer(to_parent);
+        let changed = self.process_buffer(events);
 
         if self.sock_status.is_writable() {
             self.write();
@@ -154,11 +146,11 @@ impl<T, P> LineConn<T, P>
         changed
     }
 
-    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
+    fn process_buffer<E: LineConnEvents>(&mut self, events: &mut E) -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(cmd) = self.codec.take() {
-            to_parent(P::as_msg(self.token, cmd));
+            P::event_observed(events, self.token, cmd);
             changed = true;
         }
 
