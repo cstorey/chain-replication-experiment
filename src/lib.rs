@@ -234,7 +234,7 @@ impl ChainRepl {
         }
 
         info!("Reconfigure model: {:?}", view);
-        self.model.reconfigure(&view)
+        self.model.reconfigure(view)
     }
 
     fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {

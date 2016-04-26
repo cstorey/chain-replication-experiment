@@ -53,7 +53,7 @@ pub struct ReplModel<L> {
     current_epoch: Epoch,
     upstream_committed: Option<Seqno>,
     commit_requested: Option<Seqno>,
-    auto_commits: bool,
+    is_head: bool,
 }
 
 impl ReplRole {
@@ -253,7 +253,7 @@ impl<L: Log> ReplModel<L> {
             next: ReplRole::Terminus(Terminus::new()),
             upstream_committed: None,
             commit_requested: None,
-            auto_commits: false,
+            is_head: false,
         }
     }
 
@@ -270,6 +270,7 @@ impl<L: Log> ReplModel<L> {
     pub fn process_client<O: Outputs>(&mut self, output: &mut O, token: mio::Token, op: &[u8]) {
         let seqno = self.next_seqno();
         let epoch = self.current_epoch;
+        assert!(self.is_head);
         self.process_operation(output, token, seqno, epoch, op)
     }
 
@@ -326,7 +327,7 @@ impl<L: Log> ReplModel<L> {
     }
 
     pub fn flush(&mut self) -> bool {
-        if self.auto_commits {
+        if self.is_head {
             self.upstream_committed = self.log.read_prepared();
             trace!("Auto committing to: {:?}", self.upstream_committed);
         } else {
@@ -362,15 +363,15 @@ impl<L: Log> ReplModel<L> {
         debug!("Next: {:?}", self.next);
     }
 
-    fn set_should_auto_commit(&mut self, auto_commits: bool) {
-        self.auto_commits = auto_commits;
+    fn set_is_head(&mut self, is_head: bool) {
+        self.is_head = is_head;
     }
 
-    pub fn reconfigure(&mut self, view: &ConfigurationView<NodeViewConfig>) {
+    pub fn reconfigure(&mut self, view: ConfigurationView<NodeViewConfig>) {
         info!("Reconfiguring from: {:?}", view);
         self.current_epoch = view.epoch;
         self.configure_forwarding(view.epoch, view.should_connect_downstream().is_some());
-        self.set_should_auto_commit(view.is_head());
+        self.set_is_head(view.is_head());
         info!("Reconfigured from: {:?}", view);
     }
 
@@ -402,7 +403,7 @@ mod test {
     // fn commit_observed(&mut self, seqno: Seqno) -> bool
     // fn flush(&mut self) -> bool
     // fn set_has_downstream(&mut self, is_forwarder: bool)
-    // fn set_should_auto_commit(&mut self, auto_commits: bool)
+    // fn set_is_head(&mut self, is_head: bool)
     //
 
     #[derive(Debug)]
@@ -464,6 +465,7 @@ mod test {
         });
 
         let mut replication = ReplModel::new(log);
+        replication.set_is_head(true);
         let mut observed = Outs(VecDeque::new());
 
         for cmd in vals.iter() {
@@ -537,6 +539,7 @@ mod test {
         }
 
         let mut replication = ReplModel::new(log);
+        replication.set_is_head(true);
         let mut observed = Outs(VecDeque::new());
 
         replication.configure_forwarding(Default::default(), true);
