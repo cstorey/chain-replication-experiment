@@ -47,7 +47,7 @@ impl EventHandler {
         match self {
             &mut EventHandler::Conn(ref mut conn) => conn.process_rules(event_loop, events),
             &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, events),
-            &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, to_parent),
+            &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, events),
             &mut EventHandler::Listener(ref mut listener) => {
                 listener.process_rules(event_loop, events)
             }

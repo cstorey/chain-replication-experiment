@@ -7,10 +7,10 @@ use std::net::SocketAddr;
 use std::fmt;
 use std::io::ErrorKind;
 
-use super::{ChainRepl, ChainReplMsg};
+use super::ChainRepl;
 use data::{OpResp, PeerMsg, ReplicationMessage};
 use config::Epoch;
-use line_conn::{Encoder, Reader, SexpPeer};
+use line_conn::{Encoder, Reader, SexpPeer, Protocol, LineConnEvents};
 
 #[derive(Debug)]
 pub struct Downstream<T: fmt::Debug> {
@@ -27,6 +27,23 @@ pub struct Downstream<T: fmt::Debug> {
     timeout_triggered: bool,
     codec: T,
 }
+
+#[derive(Debug)]
+struct DownstreamProtocol;
+
+impl Protocol for DownstreamProtocol {
+    type Send = ReplicationMessage;
+    type Recv = OpResp;
+    fn event_observed<E: LineConnEvents>(events: &mut E, token: mio::Token, msg: Self::Recv) {
+        match msg {
+            OpResp::Ok(epoch, seqno, data) => events.okay(epoch, seqno, data),
+            OpResp::HelloIWant(seqno) => events.hello_i_want(seqno),
+            OpResp::Err(epoch, seqno, data) => events.error(epoch, seqno, data),
+        }
+    }
+}
+
+
 
 impl Downstream<SexpPeer> {
     pub fn new(target: Option<SocketAddr>, token: mio::Token) -> Self {
@@ -111,9 +128,9 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         self.timeout_triggered = true
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
+    pub fn process_rules<E: LineConnEvents>(&mut self,
                                                  event_loop: &mut mio::EventLoop<ChainRepl>,
-                                                 to_parent: &mut F)
+                                                 events: &mut E)
                                                  -> bool {
         trace!("the downstream socket is {:?}", self.sock_status);
 
@@ -122,7 +139,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
             self.sock_status.remove(mio::EventSet::readable());
         }
 
-        let changed = self.process_buffer(to_parent);
+        let changed = self.process_buffer(events);
 
         if self.sock_status.is_writable() {
             self.prep_write_buffer();
@@ -239,17 +256,8 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         }
     }
 
-    fn process_buffer<F: FnMut(ChainReplMsg)>(&mut self, to_parent: &mut F) -> bool {
-        let mut changed = false;
-        // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
-        while let Some(cmd) = self.codec.take() {
-            debug!("Read message {:?}", cmd);
-            to_parent(ChainReplMsg::DownstreamResponse(cmd));
-
-            changed = true;
-        }
-
-        changed
+    fn process_buffer<E: LineConnEvents>(&mut self, events: &mut E) -> bool {
+        self.codec.process::<DownstreamProtocol, E>(self.token, events)
     }
 
     pub fn should_close(&self) -> bool {

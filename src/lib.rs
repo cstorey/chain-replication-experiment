@@ -41,12 +41,12 @@ mod data;
 mod replication_log;
 mod replica;
 
-use line_conn::{SexpPeer, LineConn, LineConnEvents};
+use line_conn::{SexpPeer, LineConn, UpstreamEvents, DownstreamEvents, LineConnEvents};
 use downstream_conn::Downstream;
 use listener::{Listener,ListenerEvents};
 use event_handler::EventHandler;
 
-use data::{Seqno,Operation,OpResp, PeerMsg, NodeViewConfig};
+use data::{Seqno,Operation,OpResp, PeerMsg, NodeViewConfig, Buf};
 use config::{ConfigurationView, Epoch};
 
 pub use config::ConfigClient;
@@ -84,7 +84,7 @@ impl ListenerEvents for ChainReplEvents {
     }
 }
 
-impl LineConnEvents for ChainReplEvents {
+impl UpstreamEvents for ChainReplEvents {
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Vec<u8>) {
         self.changes.push_back(ChainReplMsg::Operation { source:source, epoch:epoch, seqno:seqno, op:op })
     }
@@ -95,6 +95,20 @@ impl LineConnEvents for ChainReplEvents {
         self.changes.push_back(ChainReplMsg::Commit { source: source, epoch: epoch, seqno: seqno })
     }
 }
+
+impl DownstreamEvents for ChainReplEvents {
+    fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>) {
+        self.changes.push_back(ChainReplMsg::DownstreamResponse(OpResp::Ok(epoch, seqno, data)))
+    }
+    fn hello_i_want(&mut self, seqno: Seqno) {
+        self.changes.push_back(ChainReplMsg::DownstreamResponse(OpResp::HelloIWant(seqno)))
+    }
+    fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String) {
+        self.changes.push_back(ChainReplMsg::DownstreamResponse(OpResp::Err(epoch, seqno, data)))
+    }
+}
+
+impl LineConnEvents for ChainReplEvents { }
 
 #[derive(Debug)]
 pub struct ChainRepl {
