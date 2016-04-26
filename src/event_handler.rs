@@ -38,10 +38,9 @@ impl EventHandler {
         }
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg), E: ListenerEvents + LineConnEvents>(
+    pub fn process_rules<E: ListenerEvents + LineConnEvents>(
         &mut self,
                                                  event_loop: &mut mio::EventLoop<ChainRepl>,
-                                                 to_parent: &mut F,
                                                  events: &mut E)
                                                  -> bool {
         match self {

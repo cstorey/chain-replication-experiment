@@ -322,9 +322,7 @@ impl ChainRepl {
             {
                 let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
                 for conn in connections.iter_mut() {
-                    changed |= conn.process_rules(event_loop,
-                                                      &mut |item| parent_actions.push_back(item),
-                                                      &mut events);
+                    changed |= conn.process_rules(event_loop, &mut events);
                     trace!("changed:{:?}; conn:{:?} ", changed, conn);
                 }
             }
