@@ -43,7 +43,7 @@ mod replica;
 
 use line_conn::{SexpPeer, LineConn};
 use downstream_conn::Downstream;
-use listener::Listener;
+use listener::{Listener,ListenerEvents};
 use event_handler::EventHandler;
 
 use data::{Seqno,Operation,OpResp, PeerMsg, NodeViewConfig};
@@ -273,7 +273,6 @@ impl ChainRepl {
         changed
     }
 
-
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>) {
         let mut parent_actions = VecDeque::new();
         let mut changed = true;
@@ -282,9 +281,20 @@ impl ChainRepl {
         while changed {
             trace!("Iter: {:?}", iterations);
             changed = false;
-            for conn in self.connections.iter_mut() {
-                changed |= conn.process_rules(event_loop,
-                                                  &mut |item| parent_actions.push_back(item));
+            {
+                let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
+                struct ChainReplEvents { changes: VecDeque<ChainReplMsg> };
+                impl ListenerEvents for ChainReplEvents {
+                    fn new_connection(&mut self, role: Role, socket: TcpStream) {
+                        self.changes.push_back(ChainReplMsg::NewClientConn(role, socket))
+                    }
+                }
+                let mut events = ChainReplEvents { changes: VecDeque::new() };
+                for conn in connections.iter_mut() {
+                    changed |= conn.process_rules(event_loop,
+                                                      &mut |item| parent_actions.push_back(item),
+                                                      &mut events);
+                }
             }
 
             changed |= self.process_rules(event_loop);

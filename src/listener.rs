@@ -2,8 +2,12 @@ use mio;
 use mio::tcp::*;
 use std::net::SocketAddr;
 
-use super::{ChainRepl, ChainReplMsg};
+use super::ChainRepl;
 use data::Role;
+
+pub trait ListenerEvents {
+    fn new_connection(&mut self, Role, TcpStream);
+}
 
 #[derive(Debug)]
 pub struct Listener {
@@ -41,9 +45,9 @@ impl Listener {
                self.sock_status);
     }
 
-    pub fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
+    pub fn process_rules<E: ListenerEvents>(&mut self,
                                                  event_loop: &mut mio::EventLoop<ChainRepl>,
-                                                 to_parent: &mut F)
+                                                 events: &mut E)
                                                  -> bool {
 
         let mut changed = false;
@@ -53,9 +57,8 @@ impl Listener {
             match self.listener.accept() {
                 Ok(Some(socket)) => {
                     trace!("New connection: {:?}", socket);
-                    let cmd = ChainReplMsg::NewClientConn(self.role.clone(), socket);
                     if self.active {
-                        to_parent(cmd);
+                        events.new_connection(self.role.clone(), socket);
                     } else {
                         debug!("Ignoring events on inactive listener: {:?}; {:?}",
                                self.listener.local_addr(),
