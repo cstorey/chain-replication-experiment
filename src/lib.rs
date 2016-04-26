@@ -74,7 +74,6 @@ pub enum ChainReplMsg {
     },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
-    ForwardDownstream(Epoch, PeerMsg),
 }
 
 #[derive(Debug)]
@@ -146,12 +145,12 @@ impl ChainRepl {
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
                 let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
-                let mut out = OutPorts(connections);
+                let mut out = OutPorts(self.downstream_slot, connections);
                 model.process_operation(&mut out, source, seqno, epoch, &op)
             }
             ChainReplMsg::ClientOperation { source, op } => {
                 let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
-                let mut out = OutPorts(connections);
+                let mut out = OutPorts(self.downstream_slot, connections);
                 model.process_client(&mut out, source, &op)
             }
 
@@ -163,9 +162,6 @@ impl ChainRepl {
 
             ChainReplMsg::NewClientConn(role, socket) => {
                 self.process_new_client_conn(event_loop, role, socket)
-            }
-            ChainReplMsg::ForwardDownstream(epoch, msg) => {
-                self.downstream().expect("Downstream").send_to_downstream(epoch, msg)
             }
         }
     }
@@ -207,26 +203,6 @@ impl ChainRepl {
                token,
                peer);
         &self.connections[token].initialize(event_loop, token);
-    }
-
-    fn process_rules<F: FnMut(ChainReplMsg)>(&mut self,
-                                             event_loop: &mut mio::EventLoop<Self>,
-                                             mut action: F)
-                                             -> bool {
-        let mut changed = false;
-
-        if let Some(view) = self.new_view.take() {
-            self.reconfigure(event_loop, view);
-            changed |= true;
-        }
-
-        changed |= self.model.process_replication(|epoch, msg| {
-            action(ChainReplMsg::ForwardDownstream(epoch, msg))
-        });
-
-        changed |= self.model.flush();
-
-        changed
     }
 
 
@@ -286,6 +262,19 @@ impl ChainRepl {
             .collect()
     }
 
+    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>)
+                                             -> bool {
+        let mut changed = false;
+
+        if let Some(view) = self.new_view.take() {
+            self.reconfigure(event_loop, view);
+            changed |= true;
+        }
+
+        changed
+    }
+
+
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>) {
         let mut parent_actions = VecDeque::new();
         let mut changed = true;
@@ -295,20 +284,20 @@ impl ChainRepl {
             trace!("Iter: {:?}", iterations);
             changed = false;
             for conn in self.connections.iter_mut() {
-                let changedp = conn.process_rules(event_loop,
+                changed |= conn.process_rules(event_loop,
                                                   &mut |item| parent_actions.push_back(item));
-                if changedp {
-                    trace!("Changed: {:?}", conn);
-                };
-                changed |= changedp;
             }
 
-            let changedp = self.process_rules(event_loop,
-                                              &mut |item| parent_actions.push_back(item));
-            if changedp {
-                trace!("Changed: {:?}", "Model");
+            changed |= self.process_rules(event_loop);
+
+            {
+
+                let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
+                let mut out = OutPorts(self.downstream_slot, connections);
+                changed |= model.process_replication(&mut out);
+
+                changed |= model.flush();
             }
-            changed |= changedp;
 
             trace!("Actions pending: {:?}", parent_actions.len());
             for action in parent_actions.drain(..) {
@@ -385,13 +374,28 @@ impl Notifier {
     }
 }
 
-struct OutPorts<'a>(&'a mut Slab<event_handler::EventHandler>);
+struct OutPorts<'a>(Option<mio::Token>, &'a mut Slab<event_handler::EventHandler>);
 
 impl<'a> replica::Outputs for OutPorts<'a> {
     fn respond_to(&mut self, token: mio::Token, resp: OpResp) {
-        debug!("Output: {:?} -> {:?}", token, resp);
-        let &mut OutPorts(ref mut conns) = self;
+        let &mut OutPorts(downstream, ref mut conns) = self;
+        trace!("respond_to: {:?} -> {:?}", token, resp);
         conns[token].response(resp);
+    }
+
+    fn forward_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
+        let &mut OutPorts(downstream, ref mut conns) = self;
+        trace!("forward_downstream: @{:?} -> {:?}", epoch, msg);
+
+        let slot = downstream.expect("downstream_slot");
+        let ds = match &mut conns[slot] {
+            &mut EventHandler::Downstream(ref mut d) => d,
+            other => {
+                panic!("Downstream slot not populated with a downstream instance: {:?}",
+                        other)
+            }
+        };
+        ds.send_to_downstream(epoch, msg)
     }
 }
 

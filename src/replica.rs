@@ -14,6 +14,7 @@ struct Forwarder {
     last_committed_downstream: Option<Seqno>,
     last_acked_downstream: Option<Seqno>,
     pending_operations: BTreeMap<Seqno, mio::Token>,
+    epoch: Epoch,
 }
 #[derive(Debug)]
 struct Register {
@@ -42,6 +43,7 @@ pub trait Log: fmt::Debug {
 
 pub trait Outputs {
     fn respond_to(&mut self, mio::Token, OpResp);
+    fn forward_downstream(&mut self, Epoch, PeerMsg);
 }
 
 #[derive(Debug)]
@@ -75,10 +77,10 @@ impl ReplRole {
         }
     }
 
-    pub fn process_replication<L: Log, F: FnMut(PeerMsg)>(&mut self, log: &L, forward: F) -> bool {
+    pub fn process_replication<L: Log, O: Outputs>(&mut self, log: &L, out: &mut O) -> bool {
         trace!("ReplRole: process_replication");
         match self {
-            &mut ReplRole::Forwarder(ref mut f) => f.process_replication(log, forward),
+            &mut ReplRole::Forwarder(ref mut f) => f.process_replication(log, out),
             _ => { debug!("process_replication no-op"); false },
         }
     }
@@ -98,17 +100,18 @@ impl ReplRole {
 }
 
 impl Forwarder {
-    fn new() -> Forwarder {
+    fn new(epoch: Epoch) -> Forwarder {
         Forwarder {
             last_prepared_downstream: None,
             last_acked_downstream: None,
             last_committed_downstream: None,
             pending_operations: BTreeMap::new(),
+            epoch: epoch,
         }
     }
 
     fn process_operation<O: Outputs>(&mut self,
-                         output: &mut O,
+                         _output: &mut O,
                          token: mio::Token,
                          _epoch: Epoch,
                          seqno: Seqno,
@@ -143,9 +146,9 @@ impl Forwarder {
         }
     }
 
-    pub fn process_replication<L: Log, F: FnMut(PeerMsg)>(&mut self,
+    pub fn process_replication<L: Log, O: Outputs>(&mut self,
                                                           log: &L,
-                                                          mut forward: F)
+                                                          out: &mut O)
                                                           -> bool {
         debug!("pre  Repl: Ours: {:?}; downstream prepared: {:?}; committed: {:?}; acked: {:?}",
                log.seqno(),
@@ -167,7 +170,7 @@ impl Forwarder {
                                i,
                                op,
                                self.last_prepared_downstream);
-                        forward(PeerMsg::Prepare(i, op.into()));
+                        out.forward_downstream(self.epoch, PeerMsg::Prepare(i, op.into()));
                         self.last_prepared_downstream = Some(i.succ());
                         changed = true
                     } else {
@@ -192,7 +195,7 @@ impl Forwarder {
                        max_to_commit_now,
                        our_committed);
 
-                forward(PeerMsg::CommitTo(max_to_commit_now));
+                out.forward_downstream(self.epoch, PeerMsg::CommitTo(max_to_commit_now));
                 self.last_committed_downstream = Some(max_to_commit_now);
                 changed = true
             }
@@ -302,10 +305,9 @@ impl<L: Log> ReplModel<L> {
         self.next.process_downstream_response(reply)
     }
 
-    pub fn process_replication<F: FnMut(Epoch, PeerMsg)>(&mut self, mut forward: F) -> bool {
+    pub fn process_replication<O: Outputs>(&mut self, out: &mut O) -> bool {
         debug!("process_replication: {:?}", self);
-        let epoch = self.current_epoch;
-        self.next.process_replication(&self.log, |msg| forward(epoch, msg))
+        self.next.process_replication(&self.log, out)
     }
 
     pub fn has_pending(&self, token: mio::Token) -> bool {
@@ -343,21 +345,17 @@ impl<L: Log> ReplModel<L> {
         }
     }
 
-    fn epoch_changed(&mut self, epoch: Epoch) {
-        self.current_epoch = epoch;
-    }
-
-    fn set_has_downstream(&mut self, is_forwarder: bool) {
+    fn configure_forwarding(&mut self, epoch: Epoch, is_forwarder: bool) {
         // XXX: Replays?
         match (is_forwarder, &mut self.next) {
             (true, role @ &mut ReplRole::Terminus(_)) => {
-                let prev = mem::replace(role, ReplRole::Forwarder(Forwarder::new()));
-                info!("Switched to forwarding from {:?}", prev);
+                info!("Switched to forwarding from {:?}", role);
+                *role = ReplRole::Forwarder(Forwarder::new(epoch));
             }
 
             (false, role @ &mut ReplRole::Forwarder(_)) => {
-                let prev = mem::replace(role, ReplRole::Terminus(Terminus::new()));
-                info!("Switched to terminating from {:?}", prev);
+                info!("Switched to terminating from {:?}", role);
+                *role = ReplRole::Terminus(Terminus::new());
             }
             _ => {
                 info!("No change of config");
@@ -372,9 +370,9 @@ impl<L: Log> ReplModel<L> {
 
     pub fn reconfigure(&mut self, view: &ConfigurationView<NodeViewConfig>) {
         info!("Reconfiguring from: {:?}", view);
+        self.current_epoch = view.epoch;
+        self.configure_forwarding(view.epoch, view.should_connect_downstream().is_some());
         self.set_should_auto_commit(view.is_head());
-        self.set_has_downstream(view.should_connect_downstream().is_some());
-        self.epoch_changed(view.epoch);
         info!("Reconfigured from: {:?}", view);
     }
 
@@ -383,6 +381,7 @@ impl<L: Log> ReplModel<L> {
 #[cfg(test)]
 mod test {
     use data::{Operation, OpResp, PeerMsg, Seqno, Buf};
+    use config::Epoch;
     use quickcheck::{self, Arbitrary, Gen, TestResult};
     use super::{ReplModel, Register, Outputs};
     use std::sync::mpsc::channel;
@@ -409,10 +408,19 @@ mod test {
     //
 
     #[derive(Debug)]
-    struct Outs(VecDeque<OpResp>);
+    enum OutMessage {
+        Response(OpResp),
+        Forward(PeerMsg)
+    }
+
+    #[derive(Debug)]
+    struct Outs(VecDeque<OutMessage>);
     impl Outputs for Outs {
         fn respond_to(&mut self, token: Token, resp: OpResp) {
-            self.0.push_back(resp)
+            self.0.push_back(OutMessage::Response(resp))
+        }
+        fn forward_downstream(&mut self, token: Epoch, msg: PeerMsg) {
+            self.0.push_back(OutMessage::Forward(msg))
         }
     }
 
@@ -458,13 +466,13 @@ mod test {
         });
 
         let mut replication = ReplModel::new(log);
-        let mut observed_responses = Outs(VecDeque::new());
+        let mut observed = Outs(VecDeque::new());
 
         for cmd in vals.iter() {
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-                    replication.process_client(&mut observed_responses, token.clone(),
+                    replication.process_client(&mut observed, token.clone(),
                                                                    &data_bytes);
                 }
             }
@@ -483,11 +491,12 @@ mod test {
                                            |reg, (_tok, cmd)| Some(reg.apply(cmd).map(Into::into)))
                                      .collect::<Vec<Option<Buf>>>();
         trace!("Expected: {:?}", expected_responses);
-        trace!("Observed: {:?}", observed_responses);
-        assert_eq!(expected_responses.len(), observed_responses.0.len());
-        let result = expected_responses.iter()
-                                       .zip(observed_responses.0.iter())
-                                       .all(|(exp, obs)| {
+        trace!("Observed: {:?}", observed);
+        assert_eq!(expected_responses.len(), observed.0.len());
+        let result = observed.0.iter()
+            .filter_map(|m| match m { &OutMessage::Response(ref r) => Some(r), _ => None })
+                                       .zip(expected_responses.iter())
+                                       .all(|(obs, exp)| {
                                            match obs {
                                                &OpResp::Ok(_, _, ref val) => val == exp,
                                                _ => false,
@@ -530,16 +539,12 @@ mod test {
         }
 
         let mut replication = ReplModel::new(log);
-        let mut observed_responses = Outs(VecDeque::new());
-        let mut forwarded = VecDeque::new();
+        let mut observed = Outs(VecDeque::new());
 
-        replication.set_has_downstream(true);
+        replication.configure_forwarding(Default::default(), true);
         replication.process_downstream_response(&OpResp::HelloIWant(Seqno::new(downstream_has as u64)));
 
-        while replication.process_replication(|epoch, msg| {
-            debug!("Forward @{:?}: {:?}", epoch, msg);
-            forwarded.push_back(msg)
-        }) {
+        while replication.process_replication(&mut observed) {
             debug!("iterated replication");
         }
 
@@ -548,13 +553,10 @@ mod test {
             match cmd {
                 &ReplicaCommand::ClientOperation(ref token, ref op) => {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-                    replication.process_client(&mut observed_responses, token.clone(), &data_bytes)
+                    replication.process_client(&mut observed, token.clone(), &data_bytes)
                 },
             };
-            while replication.process_replication(|epoch, msg| {
-                debug!("Forward @{:?}: {:?}", epoch, msg);
-                forwarded.push_back(msg)
-            }) {
+            while replication.process_replication(&mut observed) {
                 debug!("iterated replication");
             }
         }
@@ -563,9 +565,10 @@ mod test {
         drop(replication);
         debug!("Stopped Log");
 
-        let prepares =  forwarded.into_iter()
+        let prepares =  observed.0.into_iter()
             .filter_map(|op| match op {
-                PeerMsg::Prepare(seq, op) => Some((seq.offset() as usize, op)), _ => None
+                    OutMessage::Forward(PeerMsg::Prepare(seq, op)) => Some((seq.offset() as usize, op)),
+                    _ => None
             })
             .collect::<Vec<_>>();
         let expected = log_prefix.into_iter()
