@@ -185,8 +185,8 @@ impl Forwarder {
                (self.last_prepared_downstream,
                 self.last_committed_downstream,
                 log.read_committed()) {
-            if ds_committed.map(|c| c < our_committed).unwrap_or(true) {
-                let max_to_commit_now = cmp::min(ds_prepared, our_committed);
+            let max_to_commit_now = cmp::min(ds_prepared, our_committed);
+            if ds_committed.map(|c| c < max_to_commit_now).unwrap_or(true) {
                 debug!("Window commit {:?} - {:?}; committed locally: {:?}",
                        ds_committed,
                        max_to_commit_now,
