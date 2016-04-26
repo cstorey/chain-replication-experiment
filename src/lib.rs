@@ -274,22 +274,24 @@ impl ChainRepl {
     }
 
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>) {
+        struct ChainReplEvents { changes: VecDeque<ChainReplMsg> };
+        impl ListenerEvents for ChainReplEvents {
+            fn new_connection(&mut self, role: Role, socket: TcpStream) {
+                self.changes.push_back(ChainReplMsg::NewClientConn(role, socket))
+            }
+        }
+
         let mut parent_actions = VecDeque::new();
         let mut changed = true;
         let mut iterations = 0;
         trace!("Converge begin");
+
         while changed {
             trace!("Iter: {:?}", iterations);
             changed = false;
+            let mut events = ChainReplEvents { changes: VecDeque::new() };
             {
                 let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
-                struct ChainReplEvents { changes: VecDeque<ChainReplMsg> };
-                impl ListenerEvents for ChainReplEvents {
-                    fn new_connection(&mut self, role: Role, socket: TcpStream) {
-                        self.changes.push_back(ChainReplMsg::NewClientConn(role, socket))
-                    }
-                }
-                let mut events = ChainReplEvents { changes: VecDeque::new() };
                 for conn in connections.iter_mut() {
                     changed |= conn.process_rules(event_loop,
                                                       &mut |item| parent_actions.push_back(item),
@@ -308,8 +310,8 @@ impl ChainRepl {
                 changed |= model.flush();
             }
 
-            trace!("Actions pending: {:?}", parent_actions.len());
-            for action in parent_actions.drain(..) {
+            trace!("Actions pending: {:?}+{:?}", parent_actions.len(), events.changes.len());
+            for action in parent_actions.drain(..).chain(events.changes.drain(..)) {
                 trace!("Action: {:?}", action);
                 self.process_action(action, event_loop);
             }
