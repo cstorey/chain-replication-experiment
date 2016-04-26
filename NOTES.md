@@ -9,6 +9,10 @@ Seems like we should be able to tease out a modicum of routing; at the moment, t
  * Move the client request tracking logic into a ClientProxy object
  * Replace use of `mio::Token` in the `Replica` with a logical description of it's relationship, eg: `Upstream`, `Downstream`. Or at least...
 
+ * The replica has to process client inputs differently from replica messages because each message has a sequence number attached; and currently, the replica knows that.
+ * We could have an "upstream" port(slot) that is either a ClientProxy, or an upstream peer connection.
+ * Similarly, we could shift ReplRole logic out of the replica, and consider the downstream as either a downstream peer or a terminating app model.
+
 Express interfaces in terms of messages; tell-don't-ask style. So:
 
  * Define a trait for Upstream/downstream messages
