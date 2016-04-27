@@ -221,14 +221,11 @@ impl ChainRepl {
             p.set_active(should_listen);
         }
 
-        if let Some(ds) = view.should_connect_downstream() {
-            info!("Push to downstream on {:?}", ds);
-            let peer_addr = ds.peer_addr.as_ref().expect("Cannot reconnect to downstream with no peer listener");
-            self.set_downstream(event_loop, view.epoch, Some(peer_addr.parse().expect("peer address")));
-        } else {
-            info!("Tail node!");
-            self.set_downstream(event_loop, view.epoch, None);
-        }
+        let ds = view.should_connect_downstream().map(|ds| ds.peer_addr
+                    .as_ref().expect("Cannot reconnect to downstream with no peer listener")
+                    .parse().expect("peer address"));
+        info!("Push to downstream on {:?}", ds);
+        self.set_downstream(event_loop, view.epoch, ds);
 
         info!("Reconfigure model: {:?}", view);
         self.model.send(ReplCommand::NewConfiguration(view)).expect("model send")

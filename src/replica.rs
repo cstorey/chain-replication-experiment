@@ -96,12 +96,6 @@ impl ReplRole {
         }
     }
 
-    fn has_pending(&self, token: mio::Token) -> bool {
-        match self {
-            &ReplRole::Forwarder(ref f) => f.has_pending(token),
-            _ => false,
-        }
-    }
     fn reset(&mut self) {
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.reset(),
@@ -210,10 +204,6 @@ impl Forwarder {
             }
         }
         changed
-    }
-
-    fn has_pending(&self, token: mio::Token) -> bool {
-        self.pending_operations.values().all(|tok| tok != &token)
     }
 
     fn reset(&mut self) {
@@ -341,10 +331,6 @@ impl<L: Log> ReplModel<L> {
     pub fn process_replication<O: Outputs>(&mut self, out: &mut O) -> bool {
         debug!("process_replication: {:?}", self);
         self.next.process_replication(self.current_epoch, &self.log, out)
-    }
-
-    pub fn has_pending(&self, token: mio::Token) -> bool {
-        self.next.has_pending(token)
     }
 
     pub fn reset(&mut self) {
