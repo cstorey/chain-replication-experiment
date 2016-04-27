@@ -60,24 +60,7 @@ pub use data::Role;
 
 #[derive(Debug)]
 pub enum ChainReplMsg {
-    Operation {
-        source: mio::Token,
-        epoch: Epoch,
-        seqno: Seqno,
-        op: Vec<u8>,
-    },
-    ClientOperation {
-        source: mio::Token,
-        op: Vec<u8>,
-    },
-    Commit {
-        source: mio::Token,
-        epoch: Epoch,
-        seqno: Seqno,
-    },
-    DownstreamResponse(OpResp),
-    NewClientConn(Role, TcpStream),
-    HelloDownstream(mio::Token, Epoch),
+   NewClientConn(Role, TcpStream),
 }
 
 struct ChainReplEvents<'a> {
@@ -198,26 +181,8 @@ impl ChainRepl {
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
-            ChainReplMsg::Operation { source, seqno, epoch, op } => {
-                self.model.send(ReplCommand::Operation(source, epoch, seqno, op)).expect("model send");
-            }
-            ChainReplMsg::ClientOperation { source, op } => {
-                self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
-            }
-
-            ChainReplMsg::Commit { epoch, seqno, .. } => {
-                self.model.send(ReplCommand::CommitObserved(epoch, seqno)).expect("model send");
-            }
-
-            ChainReplMsg::DownstreamResponse(reply) => {
-                trace!("Downstream response: {:?}", reply);
-                self.model.send(ReplCommand::ResponseObserved(reply)).expect("model send");
-            },
             ChainReplMsg::NewClientConn(role, socket) => {
                 self.process_new_client_conn(event_loop, role, socket)
-            }
-            ChainReplMsg::HelloDownstream (source, epoch) => {
-                self.model.send(ReplCommand::HelloDownstream(source, epoch)).expect("model send")
             }
         }
     }
