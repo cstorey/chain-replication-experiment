@@ -25,6 +25,7 @@ pub struct Downstream<T: fmt::Debug> {
     read_buf: Vec<u8>,
     should_disconnect: bool,
     timeout_triggered: bool,
+    epoch: Epoch,
     codec: T,
 }
 
@@ -46,13 +47,13 @@ impl Protocol for DownstreamProtocol {
 
 
 impl Downstream<SexpPeer> {
-    pub fn new(target: Option<SocketAddr>, token: mio::Token) -> Self {
-        Self::with_codec(target, token, SexpPeer::fresh(token))
+    pub fn new(target: Option<SocketAddr>, token: mio::Token, epoch: Epoch) -> Self {
+        Self::with_codec(target, token, epoch, SexpPeer::fresh(token))
     }
 }
 
 impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T> {
-    pub fn with_codec(target: Option<SocketAddr>, token: mio::Token, codec: T) -> Self {
+    pub fn with_codec(target: Option<SocketAddr>, token: mio::Token, epoch: Epoch, codec: T) -> Self {
         debug!("Connecting to {:?}", target);
         let conn = Downstream {
             token: token,
@@ -65,11 +66,14 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
             should_disconnect: false,
             timeout_triggered: true,
             codec: codec,
+            epoch: epoch,
         };
         conn
     }
 
-    pub fn reconnect_to(&mut self, target: SocketAddr) {
+    pub fn reconnect_to(&mut self, target: SocketAddr, epoch: Epoch) {
+        self.epoch = epoch;
+
         if self.peer != Some(target) {
             info!("New downstream: {:?}", target);
             self.peer = Some(target);
@@ -98,7 +102,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
 
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
         if let Some(ref sock) = self.socket {
-            debug!("Initialize!{:?}", self);
+            debug!("Initialize! {:?}", self);
             match event_loop.register_opt(sock,
                                           token,
                                           mio::EventSet::readable(),
@@ -118,7 +122,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
                         _event_loop: &mut mio::EventLoop<ChainRepl>,
                         events: mio::EventSet) {
         self.sock_status.insert(events);
-        trace!("Listener::handle_event: {:?}; this time: {:?}; now: {:?}",
+        trace!("Downstream::handle_event: {:?}; this time: {:?}; now: {:?}",
                self.socket.as_ref().map(|s| s.local_addr()),
                events,
                self.sock_status);
@@ -177,7 +181,8 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
     fn reset(&mut self) {
         let peer = self.peer.clone();
         let token = self.token.clone();
-        let _ = ::std::mem::replace(self, Self::with_codec(peer, token, T::new(token)));
+        let epoch = self.epoch;
+        let _ = ::std::mem::replace(self, Self::with_codec(peer, token, epoch, T::new(token)));
     }
 
     fn attempt_connect(&mut self) {
@@ -195,6 +200,11 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         } else {
             warn!("Attempting to connect Downstream with no target set");
         }
+
+        self.pending.push_back(ReplicationMessage {
+            epoch: self.epoch,
+            msg: PeerMsg::HelloDownstream,
+        });
     }
 
 

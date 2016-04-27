@@ -34,6 +34,7 @@ pub trait Protocol : fmt::Debug{
  }
 
 pub trait UpstreamEvents {
+    fn hello_downstream(&mut self, source: mio::Token, epoch: Epoch);
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Vec<u8>);
     fn client_request(&mut self, source: mio::Token, op: Vec<u8>);
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno);
@@ -53,8 +54,9 @@ pub struct PeerClientProto;
 impl Protocol for PeerClientProto {
     type Send = OpResp;
     type Recv = ReplicationMessage;
-    fn event_observed<E: LineConnEvents>(events: &mut E, token: mio::Token, msg: Self::Recv) {
+    fn event_observed<E: UpstreamEvents>(events: &mut E, token: mio::Token, msg: Self::Recv) {
         match msg {
+            ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream } => events.hello_downstream(token, epoch),
             ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
             ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
         }
@@ -269,6 +271,9 @@ impl Reader<ChainReplMsg> for SexpPeer {
             let _: ReplicationMessage = msg;
             debug!("Decoding PeerMsg: {:?}", msg);
             let ret = match msg {
+                ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream } => {
+                    ChainReplMsg::HelloDownstream(token, epoch)
+                }
                 ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => {
                     ChainReplMsg::Operation {
                         source: self.token,

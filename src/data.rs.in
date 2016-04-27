@@ -30,6 +30,7 @@ pub struct NodeViewConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMsg {
+    HelloDownstream,
     Prepare (Seqno, Buf),
     CommitTo (Seqno),
 }

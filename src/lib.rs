@@ -74,6 +74,7 @@ pub enum ChainReplMsg {
     },
     DownstreamResponse(OpResp),
     NewClientConn(Role, TcpStream),
+    HelloDownstream(mio::Token, Epoch),
 }
 
 struct ChainReplEvents { changes: VecDeque<ChainReplMsg> }
@@ -85,6 +86,9 @@ impl ListenerEvents for ChainReplEvents {
 }
 
 impl UpstreamEvents for ChainReplEvents {
+    fn hello_downstream(&mut self, source: mio::Token, epoch: Epoch) {
+        self.changes.push_back(ChainReplMsg::HelloDownstream(source, epoch))
+    }
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Vec<u8>) {
         self.changes.push_back(ChainReplMsg::Operation { source:source, epoch:epoch, seqno:seqno, op:op })
     }
@@ -158,13 +162,14 @@ impl ChainRepl {
 
     pub fn set_downstream(&mut self,
                           event_loop: &mut mio::EventLoop<ChainRepl>,
+                          epoch: Epoch,
                           target: Option<SocketAddr>) {
         match (self.downstream_slot, target) {
-            (Some(_), Some(target)) => self.downstream().expect("downstream").reconnect_to(target),
+            (Some(_), Some(target)) => self.downstream().expect("downstream").reconnect_to(target, epoch),
             (None, Some(target)) => {
                 let token = self.connections
                                 .insert_with(|token| {
-                                    EventHandler::Downstream(Downstream::new(Some(target), token))
+                                    EventHandler::Downstream(Downstream::new(Some(target), token, epoch))
                                 })
                                 .expect("insert downstream");
                 &self.connections[token].initialize(event_loop, token);
@@ -206,6 +211,10 @@ impl ChainRepl {
             ChainReplMsg::NewClientConn(role, socket) => {
                 self.process_new_client_conn(event_loop, role, socket)
             }
+            ChainReplMsg::HelloDownstream (source, epoch) => {
+                let (model, mut out) = self.borrow_model_and_conns();
+                model.hello_downstream(&mut out, source, epoch)
+            }
         }
     }
 
@@ -214,20 +223,13 @@ impl ChainRepl {
                                role: Role,
                                socket: TcpStream) {
         let peer = socket.peer_addr().expect("peer address");
-        let seqno = self.model.seqno();
         trace!("process_new_client_conn: {:?}@{:?}", role, peer);
 
         let token = self.connections
                         .insert_with(|token| {
                             match role {
                                 Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
-                                Role::Upstream => {
-                                    let mut conn = LineConn::upstream(socket, token);
-                                    let msg = OpResp::HelloIWant(seqno);
-                                    info!("Inform upstream about our current version, {:?}!", msg);
-                                    conn.response(msg);
-                                    EventHandler::Upstream(conn)
-                                }
+                                Role::Upstream => EventHandler::Upstream(LineConn::upstream(socket, token))
                             }
                         })
                         .expect("token insert");
@@ -261,10 +263,10 @@ impl ChainRepl {
         if let Some(ds) = view.should_connect_downstream() {
             info!("Push to downstream on {:?}", ds);
             let peer_addr = ds.peer_addr.as_ref().expect("Cannot reconnect to downstream with no peer listener");
-            self.set_downstream(event_loop, Some(peer_addr.parse().expect("peer address")));
+            self.set_downstream(event_loop, view.epoch, Some(peer_addr.parse().expect("peer address")));
         } else {
             info!("Tail node!");
-            self.set_downstream(event_loop, None);
+            self.set_downstream(event_loop, view.epoch, None);
         }
 
         info!("Reconfigure model: {:?}", view);

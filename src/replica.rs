@@ -343,6 +343,13 @@ impl<L: Log> ReplModel<L> {
         }
     }
 
+    pub fn hello_downstream<O: Outputs>(&mut self, out: &mut O, token: mio::Token, epoch: Epoch) {
+        debug!("hello_downstream: {:?}; {:?}", token, epoch);
+        let msg = OpResp::HelloIWant(self.log.seqno());
+        info!("Inform upstream about our current version, {:?}!", msg);
+        out.respond_to(token, msg);
+    }
+
     fn configure_forwarding(&mut self, is_forwarder: bool) {
         // XXX: Replays?
         match (is_forwarder, &mut self.next) {

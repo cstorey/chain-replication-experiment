@@ -23,7 +23,6 @@ fn main() {
     let matches = App::new("chain-repl-test")
                       .arg(Arg::with_name("bind").short("l").takes_value(true))
                       .arg(Arg::with_name("peer").short("p").takes_value(true))
-                      .arg(Arg::with_name("next").short("n").takes_value(true))
                       .arg(Arg::with_name("etcd").short("e").takes_value(true))
                       .get_matches();
 
@@ -52,17 +51,6 @@ fn main() {
         for listen_addr in listen_addrs {
             service.listen(&mut event_loop, listen_addr, Role::Upstream);
         }
-    }
-
-    if let Some(next_addr) = matches.value_of("next") {
-        let next_addr = next_addr.to_socket_addrs()
-                                 .expect("address lookup")
-                                 .next()
-                                 .expect("parse next address");
-        info!("Forwarding to address {:?}", next_addr);
-        service.set_downstream(&mut event_loop, Some(next_addr));
-    } else {
-        service.set_downstream(&mut event_loop, None);
     }
 
     if let Some(etcd) = matches.value_of("etcd") {
