@@ -8,6 +8,7 @@ use time::{SteadyTime, Duration};
 use serde_json as json;
 use serde::ser::Serialize;
 use serde::de::Deserialize;
+use data::Role;
 
 #[cfg(feature = "serde_macros")]
 include!("config_data.rs.in");
@@ -350,11 +351,11 @@ impl<T: Clone> ConfigurationView<T> {
         self.ord == 0
     }
 
-    pub fn should_listen_for_clients(&self) -> bool {
-        self.is_head()
-    }
-    pub fn should_listen_for_upstream(&self) -> bool {
-        !self.is_head()
+    pub fn should_listen_for(&self, role: &Role) -> bool {
+        match role {
+            &Role::Client => self.is_head(),
+            &Role::Upstream => !self.is_head(),
+        }
     }
 
     pub fn should_connect_downstream<'a>(&'a self) -> Option<&'a T> {

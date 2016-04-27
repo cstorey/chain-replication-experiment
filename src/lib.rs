@@ -215,18 +215,10 @@ impl ChainRepl {
                    view: ConfigurationView<NodeViewConfig>) {
         info!("Reconfigure according to: {:?}", view);
 
-        let listen_for_clients = view.should_listen_for_clients();
-        info!("Listen for clients: {:?}", listen_for_clients);
-        for p in self.listeners(Role::Client) {
-            trace!("Active: {:?} -> {:?}", p, listen_for_clients);
-            p.set_active(listen_for_clients);
-        }
-
-        let listen_for_upstreamp = view.should_listen_for_upstream();
-        info!("Listen for upstreams: {:?}", listen_for_upstreamp);
-        for p in self.listeners(Role::Upstream) {
-            trace!("Active: {:?} -> {:?}", p, listen_for_clients);
-            p.set_active(listen_for_upstreamp);
+        for p in self.listeners() {
+            let should_listen = view.should_listen_for(&p.role);
+            trace!("Active: {:?} -> {:?}", p, should_listen);
+            p.set_active(should_listen);
         }
 
         if let Some(ds) = view.should_connect_downstream() {
@@ -254,12 +246,12 @@ impl ChainRepl {
         })
     }
 
-    fn listeners<'a>(&'a mut self, role: Role) -> Vec<&'a mut Listener> {
+    fn listeners<'a>(&'a mut self) -> Vec<&'a mut Listener> {
         self.connections
             .iter_mut()
             .filter_map(|it| {
                 match it {
-                    &mut EventHandler::Listener(ref mut l) if l.role == role => Some(l),
+                    &mut EventHandler::Listener(ref mut l) => Some(l),
                     _ => None,
                 }
             })
