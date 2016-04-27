@@ -175,17 +175,22 @@ impl ChainRepl {
         }
     }
 
+
+    fn borrow_model_and_conns<'a>(&'a mut self) -> (&'a mut replica::ReplModel<replication_log::RocksdbLog>, OutPorts) {
+        let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
+        let out = OutPorts(self.downstream_slot, connections);
+        (model, out)
+    }
+
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
-                let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
-                let mut out = OutPorts(self.downstream_slot, connections);
+                let (model, mut out) = self.borrow_model_and_conns();
                 model.process_operation(&mut out, source, seqno, epoch, &op)
             }
             ChainReplMsg::ClientOperation { source, op } => {
-                let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
-                let mut out = OutPorts(self.downstream_slot, connections);
+                let (model, mut out) = self.borrow_model_and_conns();
                 model.process_client(&mut out, source, &op)
             }
 
@@ -193,21 +198,15 @@ impl ChainRepl {
                 self.model.commit_observed(seqno);
             }
 
-            ChainReplMsg::DownstreamResponse(reply) => self.process_downstream_response(reply),
-
+            ChainReplMsg::DownstreamResponse(reply) => {
+                trace!("Downstream response: {:?}", reply);
+                let (model, mut out) = self.borrow_model_and_conns();
+                model.process_downstream_response(&mut out, reply)
+            },
             ChainReplMsg::NewClientConn(role, socket) => {
                 self.process_new_client_conn(event_loop, role, socket)
             }
         }
-    }
-
-
-    fn process_downstream_response(&mut self, reply: OpResp) {
-        trace!("Downstream response: {:?}", reply);
-        let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
-        let mut out = OutPorts(self.downstream_slot, connections);
-
-        model.process_downstream_response(&mut out, reply)
     }
 
     fn process_new_client_conn(&mut self,
@@ -332,8 +331,7 @@ impl ChainRepl {
 
             {
 
-                let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
-                let mut out = OutPorts(self.downstream_slot, connections);
+                let (model, mut out) = self.borrow_model_and_conns();
                 changed |= model.process_replication(&mut out);
                 trace!("changed:{:?}; replicate", changed);
 
