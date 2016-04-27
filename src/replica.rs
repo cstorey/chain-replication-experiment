@@ -329,7 +329,7 @@ impl<L: Log> ReplModel<L> {
     }
 
     pub fn process_replication<O: Outputs>(&mut self, out: &mut O) -> bool {
-        debug!("process_replication: {:?}", self);
+        trace!("process_replication: {:?}", self);
         self.next.process_replication(self.current_epoch, &self.log, out)
     }
 

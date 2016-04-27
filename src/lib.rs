@@ -362,7 +362,7 @@ impl Notifier {
                 Err(Full(it)) => it,
                 Err(e) => panic!("{:?}", e),
             };
-            info!("Backoff: {:?}", backoff);
+            trace!("Backoff: {:?}", backoff);
             std::thread::sleep(backoff);
             backoff = backoff * 2;
         }
