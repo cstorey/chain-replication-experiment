@@ -62,8 +62,6 @@ use std::sync::Arc;
 pub struct RocksdbLog {
     dir: TempDir,
     db: Arc<DB>,
-    meta: DBCFHandle,
-    data: DBCFHandle,
     seqno_prepared: Option<Seqno>,
     flush_tx: mpsc::SyncSender<Seqno>,
     flush_thread: thread::JoinHandle<()>,
@@ -98,20 +96,27 @@ impl RocksdbLog {
                 .spawn(move || Self::flush_thread_loop(db, flush_rx, committed))
                 .expect("spawn flush thread")
         };
-        let seqno_prepared = Self::do_read_seqno(&db, meta, META_PREPARED);
+        let seqno_prepared = Self::do_read_seqno(&db, META_PREPARED);
         RocksdbLog {
             dir: d,
             db: db,
-            meta: meta,
-            data: data,
             seqno_prepared: seqno_prepared,
             flush_tx: flush_tx,
             flush_thread: flusher,
         }
     }
 
+     fn meta(db: &DB) -> DBCFHandle {
+         db.cf_handle(META).expect("open meta cf").clone()
+     }
+
+     fn data(db: &DB) -> DBCFHandle {
+         db.cf_handle(DATA).expect("open meta cf").clone()
+     }
+
+
     fn flush_thread_loop<F: Fn(Seqno)>(db: Arc<DB>, rx: mpsc::Receiver<Seqno>, committed: F) {
-        let meta = db.cf_handle(META).expect("open meta cf").clone();
+        let meta = Self::meta(&db);
         debug!("Awaiting flush");
         let mut prev_commit = None;
         while let Ok(seqno) = rx.recv() {
@@ -129,8 +134,8 @@ impl RocksdbLog {
         debug!("Exiting flush thread");
     }
 
-    fn do_read_seqno(db: &DB, meta: DBCFHandle, name: &str) -> Option<Seqno> {
-        match db.get_cf(meta, name.as_bytes()) {
+    fn do_read_seqno(db: &DB, name: &str) -> Option<Seqno> {
+        match db.get_cf(Self::meta(&db), name.as_bytes()) {
             Ok(Some(val)) => Some(Seqno::fromkey(&val)),
             Ok(None) => None,
             Err(e) => panic!("Unexpected error getting commit point: {:?}", e),
@@ -138,15 +143,15 @@ impl RocksdbLog {
     }
 
     fn read_seqno(&self, name: &str) -> Option<Seqno> {
-        Self::do_read_seqno(&self.db, self.meta, name)
+        Self::do_read_seqno(&self.db, name)
     }
 
     fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, commit_seqno: Seqno) {
         debug!("Commit {:?}", commit_seqno);
         let key = Seqno::tokey(&commit_seqno);
 
-        let prepared = Self::do_read_seqno(&db, meta, META_PREPARED);
-        let committed = Self::do_read_seqno(&db, meta, META_COMMITTED);
+        let prepared = Self::do_read_seqno(&db, META_PREPARED);
+        let committed = Self::do_read_seqno(&db, META_COMMITTED);
 
         debug!("Committing: {:?}, committed, {:?}, prepared: {:?}",
                committed,
@@ -207,7 +212,8 @@ impl Log for RocksdbLog {
 
     fn read(&self, seqno: Seqno) -> Option<Vec<u8>> {
         let key = Seqno::tokey(&seqno);
-        let ret = match self.db.get_cf(self.data, &key.as_ref()) {
+        let datacf = Self::data(&self.db);
+        let ret = match self.db.get_cf(datacf, &key.as_ref()) {
             Ok(ret) => ret.map(|v| v.to_vec()),
             Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
         };
@@ -225,7 +231,7 @@ impl Log for RocksdbLog {
             panic!("Hole in history: saw {:?}; have: {:?}", seqno, current);
         }
 
-        // match self.db.get_cf(self.data, &key.as_ref()) {
+        // match self.db.get_cf(Self::data(&db), &key.as_ref()) {
         // Ok(None) => (),
         // Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
         // Ok(_) => panic!("Unexpected entry at seqno: {:?}", seqno),
@@ -233,8 +239,8 @@ impl Log for RocksdbLog {
 
         let t0 = PreciseTime::now();
         let batch = WriteBatch::new();
-        batch.put_cf(self.data, &key.as_ref(), &data_bytes).expect("Persist operation");
-        batch.put_cf(self.meta, META_PREPARED.as_bytes(), &key.as_ref())
+        batch.put_cf(Self::data(&self.db), &key.as_ref(), &data_bytes).expect("Persist operation");
+        batch.put_cf(Self::meta(&self.db), META_PREPARED.as_bytes(), &key.as_ref())
              .expect("Persist prepare point");
         self.db.write(batch).expect("Write batch");
         let t1 = PreciseTime::now();
