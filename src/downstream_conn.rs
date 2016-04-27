@@ -35,13 +35,6 @@ struct DownstreamProtocol;
 impl Protocol for DownstreamProtocol {
     type Send = ReplicationMessage;
     type Recv = OpResp;
-    fn event_observed<E: LineConnEvents>(events: &mut E, token: mio::Token, msg: Self::Recv) {
-        match msg {
-            OpResp::Ok(epoch, seqno, data) => events.okay(epoch, seqno, data),
-            OpResp::HelloIWant(seqno) => events.hello_i_want(seqno),
-            OpResp::Err(epoch, seqno, data) => events.error(epoch, seqno, data),
-        }
-    }
 }
 
 
