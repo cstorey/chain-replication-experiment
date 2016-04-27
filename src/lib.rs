@@ -31,6 +31,9 @@ use mio::EventLoop;
 use mio::util::Slab;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::sync::mpsc::{channel, Sender};
+use std::thread;
+use std::mem;
 
 mod line_conn;
 mod downstream_conn;
@@ -46,11 +49,11 @@ use downstream_conn::Downstream;
 use listener::{Listener,ListenerEvents};
 use event_handler::EventHandler;
 
-use data::{Seqno,Operation,OpResp, PeerMsg, NodeViewConfig, Buf};
+use data::{Seqno, OpResp, PeerMsg, NodeViewConfig, Buf};
 use config::{ConfigurationView, Epoch};
 
 pub use config::ConfigClient;
-pub use replica::ReplModel;
+pub use replica::{ReplModel,ReplCommand};
 pub use replication_log::RocksdbLog;
 pub use data::Role;
 
@@ -77,15 +80,15 @@ pub enum ChainReplMsg {
     HelloDownstream(mio::Token, Epoch),
 }
 
-struct ChainReplEvents { changes: VecDeque<ChainReplMsg> }
+struct ChainReplEvents<'a> { changes: &'a mut VecDeque<ChainReplMsg> }
 
-impl ListenerEvents for ChainReplEvents {
+impl<'a> ListenerEvents for ChainReplEvents<'a> {
     fn new_connection(&mut self, role: Role, socket: TcpStream) {
         self.changes.push_back(ChainReplMsg::NewClientConn(role, socket))
     }
 }
 
-impl UpstreamEvents for ChainReplEvents {
+impl<'a> UpstreamEvents for ChainReplEvents<'a> {
     fn hello_downstream(&mut self, source: mio::Token, epoch: Epoch) {
         self.changes.push_back(ChainReplMsg::HelloDownstream(source, epoch))
     }
@@ -100,7 +103,7 @@ impl UpstreamEvents for ChainReplEvents {
     }
 }
 
-impl DownstreamEvents for ChainReplEvents {
+impl<'a> DownstreamEvents for ChainReplEvents<'a> {
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>) {
         self.changes.push_back(ChainReplMsg::DownstreamResponse(OpResp::Ok(epoch, seqno, data)))
     }
@@ -112,25 +115,33 @@ impl DownstreamEvents for ChainReplEvents {
     }
 }
 
-impl LineConnEvents for ChainReplEvents { }
+impl<'a> LineConnEvents for ChainReplEvents<'a> { }
 
-#[derive(Debug)]
 pub struct ChainRepl {
     connections: Slab<EventHandler>,
     downstream_slot: Option<mio::Token>,
     node_config: NodeViewConfig,
     new_view: Option<ConfigurationView<NodeViewConfig>>,
-    model: ReplModel<RocksdbLog>,
+    queue: VecDeque<ChainReplMsg>,
+    model_thread: thread::JoinHandle<()>,
+    model: Sender<ReplCommand>,
 }
 
 impl ChainRepl {
-    pub fn new(model: ReplModel<RocksdbLog>) -> ChainRepl {
+    pub fn new(mut model: ReplModel<RocksdbLog>, event_loop: &mut EventLoop<ChainRepl>) -> ChainRepl {
+        let (tx, rx) = channel();
+        let notifications = Self::get_notifier(event_loop);
+        let model_thread = thread::Builder::new().name("replmodel".to_string()).spawn(move || {
+            model.run_from(rx, notifications);
+        }).expect("spawn model");
         ChainRepl {
             connections: Slab::new(1024),
             downstream_slot: None,
             node_config: Default::default(),
             new_view: None,
-            model: model,
+            queue: VecDeque::new(),
+            model_thread: model_thread,
+            model: tx,
         }
     }
 
@@ -181,39 +192,29 @@ impl ChainRepl {
     }
 
 
-    fn borrow_model_and_conns<'a>(&'a mut self) -> (&'a mut replica::ReplModel<replication_log::RocksdbLog>, OutPorts) {
-        let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
-        let out = OutPorts(self.downstream_slot, connections);
-        (model, out)
-    }
-
     fn process_action(&mut self, msg: ChainReplMsg, event_loop: &mut mio::EventLoop<ChainRepl>) {
         trace!("{:p}; got {:?}", self, msg);
         match msg {
             ChainReplMsg::Operation { source, seqno, epoch, op } => {
-                let (model, mut out) = self.borrow_model_and_conns();
-                model.process_operation(&mut out, source, seqno, epoch, &op)
+                self.model.send(ReplCommand::Operation(source, epoch, seqno, op)).expect("model send");
             }
             ChainReplMsg::ClientOperation { source, op } => {
-                let (model, mut out) = self.borrow_model_and_conns();
-                model.process_client(&mut out, source, &op)
+                self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
             }
 
-            ChainReplMsg::Commit { seqno, .. } => {
-                self.model.commit_observed(seqno);
+            ChainReplMsg::Commit { epoch, seqno, .. } => {
+                self.model.send(ReplCommand::CommitObserved(epoch, seqno)).expect("model send");
             }
 
             ChainReplMsg::DownstreamResponse(reply) => {
                 trace!("Downstream response: {:?}", reply);
-                let (model, mut out) = self.borrow_model_and_conns();
-                model.process_downstream_response(&mut out, reply)
+                self.model.send(ReplCommand::ResponseObserved(reply)).expect("model send");
             },
             ChainReplMsg::NewClientConn(role, socket) => {
                 self.process_new_client_conn(event_loop, role, socket)
             }
             ChainReplMsg::HelloDownstream (source, epoch) => {
-                let (model, mut out) = self.borrow_model_and_conns();
-                model.hello_downstream(&mut out, source, epoch)
+                self.model.send(ReplCommand::HelloDownstream(source, epoch)).expect("model send")
             }
         }
     }
@@ -270,7 +271,7 @@ impl ChainRepl {
         }
 
         info!("Reconfigure model: {:?}", view);
-        self.model.reconfigure(view)
+        self.model.send(ReplCommand::NewConfiguration(view)).expect("model send")
     }
 
     fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {
@@ -310,18 +311,16 @@ impl ChainRepl {
     }
 
     fn converge_state(&mut self, event_loop: &mut mio::EventLoop<Self>) {
-        let mut parent_actions = VecDeque::new();
         let mut changed = true;
         let mut iterations = 0;
         trace!("Converge begin");
 
         while changed {
             trace!("Iter: {:?}", iterations);
-            let mut events = ChainReplEvents { changes: VecDeque::new() };
             changed = false;
-            let mut events = ChainReplEvents { changes: VecDeque::new() };
             {
-                let &mut ChainRepl { ref mut model, ref mut connections, .. } = self;
+                let &mut ChainRepl { ref mut queue, ref mut connections, .. } = self;
+                let mut events = ChainReplEvents { changes: queue };
                 for conn in connections.iter_mut() {
                     changed |= conn.process_rules(event_loop, &mut events);
                     trace!("changed:{:?}; conn:{:?} ", changed, conn);
@@ -331,18 +330,8 @@ impl ChainRepl {
             changed |= self.process_rules(event_loop);
             trace!("changed:{:?}; self rules", changed);
 
-            {
-
-                let (model, mut out) = self.borrow_model_and_conns();
-                changed |= model.process_replication(&mut out);
-                trace!("changed:{:?}; replicate", changed);
-
-                changed |= model.flush();
-                trace!("changed:{:?}; replicate flush", changed);
-            }
-
-            trace!("Changed:{:?}; actions:{:?}+{:?}", changed, parent_actions.len(), events.changes.len());
-            for action in parent_actions.drain(..).chain(events.changes.drain(..)) {
+            trace!("Changed:{:?}; actions:{:?}", changed, self.queue.len());
+            for action in mem::replace(&mut self.queue, VecDeque::new()) {
                 trace!("Action: {:?}", action);
                 self.process_action(action, event_loop);
             }
@@ -353,13 +342,13 @@ impl ChainRepl {
 
     fn io_ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
         self.converge_state(event_loop);
-        if self.connections[token].should_close() && self.model.has_pending(token) {
+        if self.connections[token].should_close() {
             trace!("Close candidate: {:?}", token);
             let it = self.connections.remove(token);
             trace!("Removing; {:?}; {:?}", token, it);
             if Some(token) == self.downstream_slot {
                 self.downstream_slot = None;
-                self.model.reset();
+                self.model.send(ReplCommand::Reset).expect("model send");
             }
         }
     }
@@ -378,6 +367,21 @@ impl ChainRepl {
     pub fn node_config(&self) -> NodeViewConfig {
         self.node_config.clone()
     }
+
+    fn respond_to(&mut self, token: mio::Token, resp: OpResp) {
+        trace!("respond_to: {:?} -> {:?}", token, resp);
+        if let Some(conn) = self.connections.get_mut(token) {
+            conn.response(resp);
+        } else {
+            warn!("Response for disconnected client {:?}: {:?}", token, resp);
+        }
+    }
+
+    fn forward_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
+        trace!("forward_downstream: @{:?} -> {:?}", epoch, msg);
+
+        self.downstream().expect("downstream").send_to_downstream(epoch, msg)
+    }
 }
 
 #[derive(Debug)]
@@ -385,6 +389,8 @@ pub enum Notification {
     ViewChange(ConfigurationView<NodeViewConfig>),
     Shutdown,
     CommittedTo(Seqno),
+    RespondTo(mio::Token, OpResp),
+    Forward(Epoch, PeerMsg),
 }
 pub struct Notifier(mio::Sender<Notification>);
 
@@ -416,28 +422,15 @@ impl Notifier {
     }
 }
 
-struct OutPorts<'a>(Option<mio::Token>, &'a mut Slab<event_handler::EventHandler>);
-
-impl<'a> replica::Outputs for OutPorts<'a> {
+impl replica::Outputs for Notifier {
     fn respond_to(&mut self, token: mio::Token, resp: OpResp) {
-        let &mut OutPorts(downstream, ref mut conns) = self;
         trace!("respond_to: {:?} -> {:?}", token, resp);
-        conns[token].response(resp);
+        self.notify(Notification::RespondTo(token, resp))
     }
 
     fn forward_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
-        let &mut OutPorts(downstream, ref mut conns) = self;
         trace!("forward_downstream: @{:?} -> {:?}", epoch, msg);
-
-        let slot = downstream.expect("downstream_slot");
-        let ds = match &mut conns[slot] {
-            &mut EventHandler::Downstream(ref mut d) => d,
-            other => {
-                panic!("Downstream slot not populated with a downstream instance: {:?}",
-                        other)
-            }
-        };
-        ds.send_to_downstream(epoch, msg)
+        self.notify(Notification::Forward(epoch, msg))
     }
 }
 
@@ -468,7 +461,9 @@ impl mio::Handler for ChainRepl {
             Notification::Shutdown => {
                 info!("Shutting down");
                 event_loop.shutdown();
-            }
+            },
+            Notification::RespondTo(token, resp) => self.respond_to(token, resp),
+            Notification::Forward(epoch, msg) => self.forward_downstream(epoch, msg),
         }
         self.converge_state(event_loop);
     }

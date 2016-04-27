@@ -1,11 +1,12 @@
 use std::cmp;
-use std::mem;
 use std::fmt;
 use std::collections::BTreeMap;
+use std::sync::mpsc::{Receiver};
 use mio;
 
 use data::{Operation, OpResp, PeerMsg, Seqno, NodeViewConfig};
 use config::{ConfigurationView, Epoch};
+use {Notifier};
 use spki_sexp;
 
 #[derive(Debug)]
@@ -43,6 +44,17 @@ pub trait Log: fmt::Debug {
 pub trait Outputs {
     fn respond_to(&mut self, mio::Token, OpResp);
     fn forward_downstream(&mut self, Epoch, PeerMsg);
+}
+
+#[derive(Debug)]
+pub enum ReplCommand {
+    Operation (mio::Token, Epoch, Seqno, Vec<u8>),
+    ClientOperation (mio::Token, Vec<u8>),
+    CommitObserved (Epoch, Seqno),
+    ResponseObserved(OpResp),
+    NewConfiguration(ConfigurationView<NodeViewConfig>),
+    HelloDownstream (mio::Token, Epoch),
+    Reset,
 }
 
 #[derive(Debug)]
@@ -264,6 +276,29 @@ impl<L: Log> ReplModel<L> {
         self.log.seqno()
     }
 
+    pub fn run_from(&mut self, rx: Receiver<ReplCommand>, mut tx: Notifier) {
+        loop {
+            let cmd = rx.recv().expect("recv model command");
+            debug!("Command: {:?}", cmd);
+            match cmd {
+                ReplCommand::Operation (source, epoch, seqno, op) =>
+                    self.process_operation(&mut tx, source, seqno, epoch, &op),
+                ReplCommand::ClientOperation (source, op) =>
+                    self.process_client(&mut tx, source, &op),
+                ReplCommand::CommitObserved (epoch, seqno) =>
+                    self.commit_observed(seqno),
+                ReplCommand::ResponseObserved(resp) =>
+                    self.process_downstream_response(&mut tx, resp),
+                ReplCommand::NewConfiguration(view) =>
+                    self.reconfigure(view),
+                ReplCommand::HelloDownstream (token, epoch) =>
+                    self.hello_downstream(&mut tx, token, epoch),
+                ReplCommand::Reset => self.reset(),
+            }
+            while self.process_replication(&mut tx) {/* Nothing */}
+        }
+    }
+
     // If we can avoid coupling the ingest clock to the replicator; we can
     // factor this out into the client proxy handler.
     pub fn process_client<O: Outputs>(&mut self, output: &mut O, token: mio::Token, op: &[u8]) {
@@ -316,13 +351,12 @@ impl<L: Log> ReplModel<L> {
         self.next.reset()
     }
 
-    pub fn commit_observed(&mut self, seqno: Seqno) -> bool {
+    pub fn commit_observed(&mut self, seqno: Seqno) {
         debug!("Observed upstream commit point: {:?}; current: {:?}",
                seqno,
                self.upstream_committed);
         assert!(self.upstream_committed.map(|committed| committed <= seqno).unwrap_or(true));
         self.upstream_committed = Some(seqno);
-        true
     }
 
     pub fn flush(&mut self) -> bool {
@@ -347,7 +381,7 @@ impl<L: Log> ReplModel<L> {
         debug!("hello_downstream: {:?}; {:?}", token, epoch);
         let msg = OpResp::HelloIWant(self.log.seqno());
         info!("Inform upstream about our current version, {:?}!", msg);
-        out.respond_to(token, msg);
+        out.respond_to(token, msg)
     }
 
     fn configure_forwarding(&mut self, is_forwarder: bool) {
@@ -397,21 +431,6 @@ mod test {
     use std::collections::{VecDeque};
     use mio::Token;
 
-    // impl<L: Log> ReplModel<L>
-    // fn new(log: L) -> ReplModel<L>
-    // fn seqno(&self) -> Seqno
-    // fn process_operation(&mut self, token: Token, seqno: Option<Seqno>, epoch: Option<Epoch>, op: Operation) -> Option<OpResp>
-    // fn process_downstream_response(&mut self, reply: &OpResp) -> Option<Token>
-    // fn process_replication<F: FnMut(Epoch, PeerMsg)>(&mut self, forward: F) -> bool
-    // fn epoch_changed(&mut self, epoch: Epoch)
-    // fn has_pending(&self, token: Token) -> bool
-    // fn reset(&mut self)
-    // fn commit_observed(&mut self, seqno: Seqno) -> bool
-    // fn flush(&mut self) -> bool
-    // fn set_has_downstream(&mut self, is_forwarder: bool)
-    // fn set_is_head(&mut self, is_head: bool)
-    //
-
     #[derive(Debug)]
     enum OutMessage {
         Response(OpResp),
@@ -430,16 +449,16 @@ mod test {
     }
 
     #[derive(Debug,PartialEq,Eq,Clone)]
-    enum ReplicaCommand {
+    enum ReplCommand {
         ClientOperation(Token, Operation), // UpstreamOperation(Token, Seqno, Epoch, Operation),
     }
 
-    impl Arbitrary for ReplicaCommand {
-        fn arbitrary<G: Gen>(g: &mut G) -> ReplicaCommand {
+    impl Arbitrary for ReplCommand {
+        fn arbitrary<G: Gen>(g: &mut G) -> ReplCommand {
             let case = u64::arbitrary(g) % 1;
             let res = match case {
                 0 => {
-                    ReplicaCommand::ClientOperation(Token(Arbitrary::arbitrary(g)),
+                    ReplCommand::ClientOperation(Token(Arbitrary::arbitrary(g)),
                                                     Arbitrary::arbitrary(g))
                 }
                 _ => unimplemented!(),
@@ -448,10 +467,10 @@ mod test {
         }
         fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
             match self {
-                &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                &ReplCommand::ClientOperation(ref token, ref op) => {
                     Box::new((token.as_usize(), op.clone())
                                  .shrink()
-                                 .map(|(t, op)| ReplicaCommand::ClientOperation(Token(t), op)))
+                                 .map(|(t, op)| ReplCommand::ClientOperation(Token(t), op)))
                 }
             }
         }
@@ -460,7 +479,7 @@ mod test {
     // Simulate a single node in a Chain. We mostly just end up verifing that
     // results are as our trivial register model.
 
-    fn simulate_single_node_chain_prop<L: TestLog>(vals: Vec<ReplicaCommand>) -> TestResult {
+    fn simulate_single_node_chain_prop<L: TestLog>(vals: Vec<ReplCommand>) -> TestResult {
 
         debug!("commands: {:?}", vals);
         let (tx, rx) = channel();
@@ -476,7 +495,7 @@ mod test {
 
         for cmd in vals.iter() {
             match cmd {
-                &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                &ReplCommand::ClientOperation(ref token, ref op) => {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
                     replication.process_client(&mut observed, token.clone(),
                                                                    &data_bytes);
@@ -489,7 +508,7 @@ mod test {
 
         let expected_responses = vals.iter()
                                      .filter_map(|c| {
-                                         let &ReplicaCommand::ClientOperation(ref t, ref op) =
+                                         let &ReplCommand::ClientOperation(ref t, ref op) =
                                              c;
                                          Some((t.clone(), op.clone()))
                                      })
@@ -515,13 +534,13 @@ mod test {
     #[test]
     fn simulate_single_node_chain_mem() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(simulate_single_node_chain_prop::<VecLog> as fn(vals: Vec<ReplicaCommand>) -> TestResult)
+        quickcheck::quickcheck(simulate_single_node_chain_prop::<VecLog> as fn(vals: Vec<ReplCommand>) -> TestResult)
     }
 
     fn should_forward_all_requests_downstream_when_present_prop<L: TestLog>(
         log_prefix: Vec<Operation>,
         downstream_has: usize,
-        commands: Vec<ReplicaCommand>,
+        commands: Vec<ReplCommand>,
         ) -> TestResult {
         let downstream_has = if log_prefix.is_empty() {
             0
@@ -558,7 +577,7 @@ mod test {
         for cmd in commands.iter() {
             debug!("apply: {:?}", cmd);
             match cmd {
-                &ReplicaCommand::ClientOperation(ref token, ref op) => {
+                &ReplCommand::ClientOperation(ref token, ref op) => {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
                     replication.process_client(&mut observed, token.clone(), &data_bytes)
                 },
@@ -583,7 +602,7 @@ mod test {
             .skip(downstream_has)
             .chain(commands.into_iter()
             .filter_map(|c| match c {
-                ReplicaCommand::ClientOperation(_, op) => Some(spki_sexp::as_bytes(&op).expect("encode operation")),
+                ReplCommand::ClientOperation(_, op) => Some(spki_sexp::as_bytes(&op).expect("encode operation")),
             }))
             .map(Into::into)
             .zip(downstream_has..).map(|(x, i)| (i, x))
@@ -597,6 +616,6 @@ mod test {
         env_logger::init().unwrap_or(());
         quickcheck::quickcheck(
             should_forward_all_requests_downstream_when_present_prop::<VecLog> as
-            fn(Vec<Operation>, usize, Vec<ReplicaCommand>) -> TestResult)
+            fn(Vec<Operation>, usize, Vec<ReplCommand>) -> TestResult)
     }
 }
