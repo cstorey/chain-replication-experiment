@@ -80,7 +80,10 @@ pub enum ChainReplMsg {
     HelloDownstream(mio::Token, Epoch),
 }
 
-struct ChainReplEvents<'a> { changes: &'a mut VecDeque<ChainReplMsg> }
+struct ChainReplEvents<'a> {
+    changes: &'a mut VecDeque<ChainReplMsg>,
+    model: Sender<ReplCommand>,
+}
 
 impl<'a> ListenerEvents for ChainReplEvents<'a> {
     fn new_connection(&mut self, role: Role, socket: TcpStream) {
@@ -90,28 +93,28 @@ impl<'a> ListenerEvents for ChainReplEvents<'a> {
 
 impl<'a> UpstreamEvents for ChainReplEvents<'a> {
     fn hello_downstream(&mut self, source: mio::Token, epoch: Epoch) {
-        self.changes.push_back(ChainReplMsg::HelloDownstream(source, epoch))
+        self.model.send(ReplCommand::HelloDownstream(source, epoch)).expect("model send")
     }
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Vec<u8>) {
-        self.changes.push_back(ChainReplMsg::Operation { source:source, epoch:epoch, seqno:seqno, op:op })
+        self.model.send(ReplCommand::Operation(source, epoch, seqno, op)).expect("model send");
     }
     fn client_request(&mut self, source: mio::Token, op: Vec<u8>) {
-        self.changes.push_back(ChainReplMsg::ClientOperation { source: source, op: op })
+        self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
     }
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno) {
-        self.changes.push_back(ChainReplMsg::Commit { source: source, epoch: epoch, seqno: seqno })
+        self.model.send(ReplCommand::CommitObserved(epoch, seqno)).expect("model send");
     }
 }
 
 impl<'a> DownstreamEvents for ChainReplEvents<'a> {
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>) {
-        self.changes.push_back(ChainReplMsg::DownstreamResponse(OpResp::Ok(epoch, seqno, data)))
+        self.model.send(ReplCommand::ResponseObserved(OpResp::Ok(epoch, seqno, data))).expect("model send");
     }
     fn hello_i_want(&mut self, seqno: Seqno) {
-        self.changes.push_back(ChainReplMsg::DownstreamResponse(OpResp::HelloIWant(seqno)))
+        self.model.send(ReplCommand::ResponseObserved(OpResp::HelloIWant(seqno))).expect("model send");
     }
     fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String) {
-        self.changes.push_back(ChainReplMsg::DownstreamResponse(OpResp::Err(epoch, seqno, data)))
+        self.model.send(ReplCommand::ResponseObserved(OpResp::Err(epoch, seqno, data))).expect("model send");
     }
 }
 
@@ -320,7 +323,7 @@ impl ChainRepl {
             changed = false;
             {
                 let &mut ChainRepl { ref mut queue, ref mut connections, .. } = self;
-                let mut events = ChainReplEvents { changes: queue };
+                let mut events = ChainReplEvents { changes: queue, model: self.model.clone() };
                 for conn in connections.iter_mut() {
                     changed |= conn.process_rules(event_loop, &mut events);
                     trace!("changed:{:?}; conn:{:?} ", changed, conn);
