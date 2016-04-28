@@ -7,3 +7,18 @@ version = "0.1.0"
 clap = "2.3.0"
 gj = "0.2.0"
 gjio = "0.1.0"
+quick-error = "1.0.0"
+serde = "0.7.0"
+
+[dependencies.crexp_client_proto]
+default-features = false
+optional = false
+path = "../client-proto"
+
+[dependencies.spki-sexp]
+git = "https://github.com/cstorey/spki-sexp.rs.git"
+optional = false
+
+[features]
+default = ["crexp_client_proto/default"]
+nightly = ["crexp_client_proto/nightly"]

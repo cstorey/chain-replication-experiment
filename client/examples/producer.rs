@@ -23,7 +23,7 @@ fn main() {
     let messages = values_t_or_exit!(matches.values_of("messages"), String);
 
     let mut event_port = ::gjio::EventPort::new().expect("Event port");
-    EventLoop::top_level(|wait_scope| -> Result<(), ::std::io::Error> {
+    EventLoop::top_level(|wait_scope| -> Result<(), ::crexp_client::Error> {
             println!("Top level start");
             let done = Producer::new(head, &mut event_port)
             .then(move |mut producer| {

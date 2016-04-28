@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use super::{ChainRepl,ChainReplMsg};
 use data::{OpResp, Operation, PeerMsg, ReplicationMessage, Seqno, Buf};
 use config::Epoch;
+use crexp_client_proto::messages::{ClientReq,ClientResp};
 
 const NL: u8 = '\n' as u8;
 const DEFAULT_BUFSZ: usize = 1 << 12;
@@ -258,6 +259,30 @@ impl Reader<ReplicationMessage> for SexpPeer {
     }
 }
 
+impl Reader<Operation> for SexpPeer {
+    fn new(token: mio::Token) -> SexpPeer {
+        Self::fresh(token)
+    }
+    fn feed(&mut self, slice: &[u8]) {
+        self.packets.feed(slice)
+    }
+
+    fn process<P: Protocol<Recv=Operation>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
+        let mut changed = false;
+        // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
+        while let Some(msg) = self.packets.take().expect("Pull packet") {
+            match msg {
+                ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream } => events.hello_downstream(token, epoch),
+                ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
+                ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
+            }
+            changed = true;
+        }
+
+        changed
+    }
+}
+
 impl Reader<OpResp> for SexpPeer {
     fn new(token: mio::Token) -> SexpPeer {
         Self::fresh(token)
@@ -283,71 +308,21 @@ impl Reader<OpResp> for SexpPeer {
 }
 
 
-
-impl<P> LineConn<SexpPeer, P>
-    where P: Protocol,
-          SexpPeer: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug
-{
-    pub fn upstream(socket: TcpStream, token: mio::Token) -> LineConn<SexpPeer, P> {
-        Self::new(socket, token, SexpPeer::fresh(token))
-    }
-}
-
-#[derive(Debug)]
-pub struct PlainClient {
-    token: mio::Token,
-    buf: VecDeque<u8>,
-}
-
-impl<T: fmt::Debug> Encoder<T> for PlainClient {
-    fn encode(&self, s: T) -> Vec<u8> {
-        format!("{:?}\n", s).as_bytes().to_vec()
-    }
-}
-
-#[derive(Debug)]
-pub struct ManualClientProto;
-impl Protocol for ManualClientProto {
-    type Send = OpResp;
-    type Recv = Operation;
-}
-
-
-impl Reader<Operation> for PlainClient {
-    fn new(token: mio::Token) -> PlainClient {
-        PlainClient {
-            token: token,
-            buf: VecDeque::new(),
-        }
+impl Reader<ClientReq> for SexpPeer {
+    fn new(token: mio::Token) -> SexpPeer {
+        Self::fresh(token)
     }
     fn feed(&mut self, slice: &[u8]) {
-        self.buf.extend(slice);
+        self.packets.feed(slice)
     }
 
-    fn process<P: Protocol<Recv=Operation>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
+    fn process<P: Protocol<Recv=ClientReq>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
-        while let Some(idx) = self.buf
-                               .iter()
-                               .enumerate()
-                               .filter_map(|(i, &c)| {
-                                   if c == NL {
-                                       Some(i + 1)
-                                   } else {
-                                       None
-                                   }
-                               })
-                               .next() {
-            let slice = self.buf.drain(..idx).collect::<Vec<_>>();
-            let s = String::from_utf8_lossy(&slice);
-            let op = if s.trim().is_empty() {
-                Operation::Get
-            } else {
-                Operation::Set(s.trim().to_string())
-            };
-
-            let data_bytes = sexp::as_bytes(&op).expect("encode operation");
-            events.client_request(token, data_bytes);
+        while let Some(msg) = self.packets.take().expect("Pull packet") {
+            match msg {
+                ClientReq::Publish(data)  => events.client_request(token, data.into()),
+            }
             changed = true;
         }
 
@@ -355,11 +330,18 @@ impl Reader<Operation> for PlainClient {
     }
 }
 
-
-impl<P> LineConn<PlainClient, P>
+impl<P> LineConn<SexpPeer, P>
     where P: Protocol,
-          PlainClient: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug {
-    pub fn client(socket: TcpStream, token: mio::Token) -> LineConn<PlainClient, P> {
-        Self::new(socket, token, PlainClient::new(token))
+          SexpPeer: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug
+{
+    pub fn peer(socket: TcpStream, token: mio::Token) -> LineConn<SexpPeer, P> {
+        Self::new(socket, token, SexpPeer::fresh(token))
     }
+}
+
+#[derive(Debug)]
+pub struct ClientProto;
+impl Protocol for ClientProto {
+    type Send = ClientResp;
+    type Recv = ClientReq;
 }

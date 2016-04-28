@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod test {
-    #[test]
-    fn it_works() {
-    }
-}
+extern crate serde;
+
+pub mod messages;

@@ -1,3 +1,5 @@
+use crexp_client_proto::messages as client;
+
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone,Copy,Default, Serialize, Deserialize)]
 pub struct Seqno(u64);
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone)]
@@ -14,6 +16,28 @@ pub enum OpResp {
     Ok(Epoch, Seqno, Option<Buf>),
     HelloIWant(Seqno),
     Err(Epoch, Seqno, String),
+}
+
+impl Into<client::ClientResp> for OpResp {
+    fn into(self) -> client::ClientResp {
+        match self {
+	    OpResp::Ok(_, seqno, data) => client::ClientResp::Ok(seqno.into(), data.map(Into::into)),
+	    OpResp::HelloIWant(_) => unreachable!(),
+	    OpResp::Err(_, seqno, message) => client::ClientResp::Err(seqno.into(), message),
+	}
+    }
+}
+
+impl Into<client::Buf> for Buf {
+    fn into(self) -> client::Buf {
+	let vec : Vec<u8> = self.0.into();
+	vec.into()
+    }
+}
+impl Into<client::Seqno> for Seqno {
+    fn into(self) -> client::Seqno {
+	self.0.into()
+    }
 }
 
 #[derive(Eq,PartialEq, Clone, Debug, Serialize, Deserialize)]

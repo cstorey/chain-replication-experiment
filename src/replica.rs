@@ -238,11 +238,8 @@ impl Terminus {
                          seqno: Seqno,
                          op: &[u8])
                          {
-        let op = spki_sexp::from_bytes(&op).expect("decode operation");
-        debug!("Terminus! {:?}/{:?}", seqno, op);
-        let resp = self.app.apply(op);
-
-        output.respond_to(token, OpResp::Ok(epoch, seqno, resp.map(From::from)))
+        trace!("Terminus! {:?}/{:?}", seqno, op);
+        output.respond_to(token, OpResp::Ok(epoch, seqno, None))
     }
 }
 

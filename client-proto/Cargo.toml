@@ -1,6 +1,28 @@
 [package]
+authors = ["Ceri Storey <ceri@lshift.net>"]
 name = "crexp_client_proto"
 version = "0.1.0"
-authors = ["Ceri Storey <ceri@lshift.net>"]
+build = "build.rs"
 
 [dependencies]
+serde = "0.7.0"
+
+[build-dependencies]
+
+[build-dependencies.serde_codegen]
+default-features = false
+optional = true
+version = "0.7.2"
+
+[build-dependencies.syntex]
+default-features = false
+optional = true
+version = "0.31.0"
+[dependencies.serde_macros]
+optional = true
+version = "0.7.2"
+
+[features]
+benches = []
+default = ["syntex", "serde_codegen/default"]
+nightly = ["serde_macros"]

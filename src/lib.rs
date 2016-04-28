@@ -9,6 +9,7 @@ extern crate log;
 extern crate serde;
 extern crate serde_json;
 extern crate spki_sexp;
+extern crate crexp_client_proto;
 extern crate time;
 
 extern crate etcd;
@@ -197,8 +198,8 @@ impl ChainRepl {
         let token = self.connections
                         .insert_with(|token| {
                             match role {
-                                Role::Client => EventHandler::Conn(LineConn::client(socket, token)),
-                                Role::Upstream => EventHandler::Upstream(LineConn::upstream(socket, token))
+                                Role::Client => EventHandler::Client(LineConn::peer(socket, token)),
+                                Role::Upstream => EventHandler::Upstream(LineConn::peer(socket, token))
                             }
                         })
                         .expect("token insert");
