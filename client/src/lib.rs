@@ -20,6 +20,7 @@ use serde::{ser,de};
 
 use crexp_client_proto::messages::{ClientReq,ClientResp, Seqno};
 
+
 quick_error! {
     #[derive(Debug)]
     pub enum Error {
@@ -36,7 +37,6 @@ quick_error! {
         Server(seq: Seqno, desc: String) {
             description("server error")
         }
-
     }
 }
 
@@ -132,9 +132,10 @@ impl Producer {
                 let mut borr = chan.borrow_mut();
                 borr.recv()
             }).map(move |val| {
+                println!("Write returned {:?}", val);
                 match val {
-                    ClientResp::Ok(seq, _) => Ok(seq),
-                    ClientResp::Err(seq, msg) => Err(Error::Server(seq, msg)),
+                    ClientResp::Ok(seqno) => Ok(seqno),
+                    ClientResp::Err(seqno, message) => Err(Error::Server(seqno, message)),
                 }
             })
     }

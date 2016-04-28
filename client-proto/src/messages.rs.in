@@ -13,7 +13,7 @@ pub enum ClientReq {
 }
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
 pub enum ClientResp {
-    Ok(Seqno, Option<Buf>),
+    Ok(Seqno),
     Err(Seqno, String),
 }
 

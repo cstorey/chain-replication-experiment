@@ -23,7 +23,11 @@ pub enum OpResp {
 impl Into<client::ClientResp> for OpResp {
     fn into(self) -> client::ClientResp {
         match self {
-	    OpResp::Ok(_, seqno, data) => client::ClientResp::Ok(seqno.into(), data.map(Into::into)),
+	    OpResp::Ok(_, seqno, None) => client::ClientResp::Ok(seqno.into()),
+	    OpResp::Ok(_, seqno, Some(val)) => {
+		warn!("Ignored response val @{:?}: {:?}", seqno, val);
+		client::ClientResp::Ok(seqno.into())
+	    },
 	    OpResp::HelloIWant(_) => unreachable!(),
 	    OpResp::Err(_, seqno, message) => client::ClientResp::Err(seqno.into(), message),
 	}
