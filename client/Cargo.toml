@@ -1,0 +1,9 @@
+[package]
+authors = ["Ceri Storey <ceri@lshift.net>"]
+name = "crexp_client"
+version = "0.1.0"
+
+[dependencies]
+clap = "2.3.0"
+gj = "0.2.0"
+gjio = "0.1.0"
