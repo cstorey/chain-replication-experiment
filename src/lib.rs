@@ -16,6 +16,7 @@ extern crate etcd;
 extern crate tempdir;
 extern crate rocksdb;
 extern crate byteorder;
+extern crate hex_slice;
 
 #[cfg(test)]
 extern crate rand;
@@ -44,6 +45,7 @@ mod event_handler;
 mod data;
 mod replication_log;
 mod replica;
+
 
 use line_conn::{SexpPeer, LineConn, UpstreamEvents, DownstreamEvents, LineConnEvents};
 use downstream_conn::Downstream;

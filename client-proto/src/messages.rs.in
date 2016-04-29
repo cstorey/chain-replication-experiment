@@ -1,8 +1,10 @@
+use std::fmt;
 use serde::bytes::ByteBuf;
 use serde::{de,ser};
+
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone,Copy,Default, Serialize, Deserialize)]
 pub struct Seqno(u64);
-#[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone)]
+#[derive(PartialEq,Eq,PartialOrd,Ord,Hash,Clone)]
 pub struct Buf(ByteBuf);
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
@@ -55,3 +57,11 @@ impl From<u64> for Seqno {
         Seqno(From::from(bytes))
     }
 }
+
+impl fmt::Debug for Buf {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+	use hex_slice::AsHex;
+	write!(fmt, "{:x}", (&*self.0).as_hex())
+    }
+}
+

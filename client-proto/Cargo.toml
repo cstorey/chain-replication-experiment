@@ -1,11 +1,8 @@
 [package]
 authors = ["Ceri Storey <ceri@lshift.net>"]
+build = "build.rs"
 name = "crexp_client_proto"
 version = "0.1.0"
-build = "build.rs"
-
-[dependencies]
-serde = "0.7.0"
 
 [build-dependencies]
 
@@ -18,6 +15,14 @@ version = "0.7.2"
 default-features = false
 optional = true
 version = "0.31.0"
+
+[dependencies]
+serde = "0.7.0"
+
+[dependencies.hex-slice]
+optional = false
+git = "https://github.com/cstorey/hex-slice"
+
 [dependencies.serde_macros]
 optional = true
 version = "0.7.2"

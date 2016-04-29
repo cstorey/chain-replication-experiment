@@ -1,8 +1,10 @@
 use crexp_client_proto::messages as client;
+use std::fmt;
+use hex_slice::AsHex;
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone,Copy,Default, Serialize, Deserialize)]
 pub struct Seqno(u64);
-#[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone)]
+#[derive(PartialEq,Eq,PartialOrd,Ord,Hash,Clone)]
 pub struct Buf(ByteBuf);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,11 +36,19 @@ impl Into<client::Buf> for Buf {
 	vec.into()
     }
 }
+impl fmt::Debug for Buf {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+	write!(fmt, "{:x}", (&*self.0).as_hex())
+    }
+}
+
 impl Into<client::Seqno> for Seqno {
     fn into(self) -> client::Seqno {
 	self.0.into()
     }
 }
+
+
 
 #[derive(Eq,PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum Role {

@@ -38,6 +38,10 @@ path = "client-proto"
 default-features = false
 version = "0.5.0"
 
+[dependencies.hex-slice]
+optional = false
+git = "https://github.com/cstorey/hex-slice"
+
 [dependencies.log4rs]
 features = ["toml"]
 version = "*"
