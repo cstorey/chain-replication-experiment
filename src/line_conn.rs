@@ -34,8 +34,8 @@ pub trait Protocol : fmt::Debug{
 
 pub trait UpstreamEvents {
     fn hello_downstream(&mut self, source: mio::Token, epoch: Epoch);
-    fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Vec<u8>);
-    fn client_request(&mut self, source: mio::Token, op: Vec<u8>);
+    fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf);
+    fn client_request(&mut self, source: mio::Token, op: Buf);
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno);
 }
 
@@ -80,8 +80,8 @@ impl<T, P> LineConn<T, P>
             socket: socket,
             sock_status: mio::EventSet::none(),
             token: token,
-            write_buf: Vec::with_capacity(DEFAULT_BUFSZ),
-            read_buf: Vec::with_capacity(DEFAULT_BUFSZ),
+            write_buf: Vec::with_capacity(DEFAULT_BUFSZ).into(),
+            read_buf: Vec::with_capacity(DEFAULT_BUFSZ).into(),
             read_eof: false,
             failed: false,
             codec: codec,
@@ -171,7 +171,7 @@ impl<T, P> LineConn<T, P>
                        self.socket.peer_addr(),
                        n,
                        self.write_buf.len());
-                self.write_buf = self.write_buf[n..].to_vec();
+                self.write_buf = self.write_buf[n..].to_vec().into();
                 trace!("{:?}: Now {:?}b",
                        self.socket.peer_addr(),
                        self.write_buf.len());
@@ -231,7 +231,7 @@ impl SexpPeer {
 
 impl<T: Serialize> Encoder<T> for SexpPeer {
     fn encode(&self, s: T) -> Vec<u8> {
-        sexp::as_bytes(&s).expect("Encode json response")
+        sexp::as_bytes(&s).expect("Encode json response").into()
     }
 }
 

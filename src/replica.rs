@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver};
 use mio;
 
-use data::{Operation, OpResp, PeerMsg, Seqno, NodeViewConfig};
+use data::{Operation, OpResp, PeerMsg, Seqno, NodeViewConfig, Buf};
 use config::{ConfigurationView, Epoch};
 use {Notifier};
 use spki_sexp;
@@ -48,8 +48,8 @@ pub trait Outputs {
 
 #[derive(Debug)]
 pub enum ReplCommand {
-    Operation (mio::Token, Epoch, Seqno, Vec<u8>),
-    ClientOperation (mio::Token, Vec<u8>),
+    Operation (mio::Token, Epoch, Seqno, Buf),
+    ClientOperation (mio::Token, Buf),
     CommitObserved (Epoch, Seqno),
     ResponseObserved(OpResp),
     NewConfiguration(ConfigurationView<NodeViewConfig>),

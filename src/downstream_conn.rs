@@ -230,7 +230,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
                self.write_buf.len());
         while let Some(it) = self.pending.pop_front() {
             let out = self.codec.encode(it);
-            self.write_buf.extend(&out);
+            self.write_buf.extend(&*out);
         }
         debug!("Prepared to send downstream (qlen {}; bufsz {})",
                self.pending.len(),

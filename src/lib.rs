@@ -81,10 +81,10 @@ impl<'a> UpstreamEvents for ChainReplEvents<'a> {
     fn hello_downstream(&mut self, source: mio::Token, epoch: Epoch) {
         self.model.send(ReplCommand::HelloDownstream(source, epoch)).expect("model send")
     }
-    fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Vec<u8>) {
+    fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf) {
         self.model.send(ReplCommand::Operation(source, epoch, seqno, op)).expect("model send");
     }
-    fn client_request(&mut self, source: mio::Token, op: Vec<u8>) {
+    fn client_request(&mut self, source: mio::Token, op: Buf) {
         self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
     }
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno) {
