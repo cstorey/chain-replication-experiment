@@ -18,8 +18,7 @@ use std::fmt;
 
 use serde::{ser,de};
 
-use crexp_client_proto::messages::{ClientReq,ClientResp};
-
+use crexp_client_proto::messages::{ClientReq,ClientResp, Seqno};
 
 quick_error! {
     #[derive(Debug)]
@@ -34,6 +33,10 @@ quick_error! {
             description(err.description())
             cause(err)
         }
+        Server(seq: Seqno, desc: String) {
+            description("server error")
+        }
+
     }
 }
 
@@ -115,7 +118,7 @@ impl Producer {
         ).map_err(From::from)
     }
 
-    pub fn publish(&mut self, data: &str) -> Promise<(), Error> {
+    pub fn publish(&mut self, data: &str) -> Promise<Seqno, Error> {
         let chan = self.chan.clone();
         Promise::ok(ClientReq::Publish(data.as_bytes().to_vec().into()))
             .then(move |req| {
@@ -128,9 +131,11 @@ impl Producer {
             .then(move |chan| {
                 let mut borr = chan.borrow_mut();
                 borr.recv()
-            }).then(move |val| {
-                println!("Write returned {:?}", val);
-                Promise::ok(())
+            }).map(move |val| {
+                match val {
+                    ClientResp::Ok(seq, _) => Ok(seq),
+                    ClientResp::Err(seq, msg) => Err(Error::Server(seq, msg)),
+                }
             })
     }
 }
