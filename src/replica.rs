@@ -306,7 +306,9 @@ impl<L: Log> ReplModel<L> {
 
     pub fn process_replication<O: Outputs>(&mut self, out: &mut O) -> bool {
         trace!("process_replication: {:?}", self);
-        self.next.process_replication(self.current_epoch, &self.log, out)
+        let mut res = self.next.process_replication(self.current_epoch, &self.log, out);
+        res |= self.flush();
+        res
     }
 
     pub fn reset(&mut self) {
@@ -321,7 +323,7 @@ impl<L: Log> ReplModel<L> {
         self.upstream_committed = Some(seqno);
     }
 
-    pub fn flush(&mut self) -> bool {
+    fn flush(&mut self) -> bool {
         if self.is_head {
             self.upstream_committed = self.log.read_prepared();
             trace!("Auto committing to: {:?}", self.upstream_committed);
@@ -329,6 +331,7 @@ impl<L: Log> ReplModel<L> {
             trace!("Flush to upstream commit point: {:?}",
                    self.upstream_committed);
         }
+
         match self.upstream_committed {
             Some(seqno) if self.commit_requested < self.upstream_committed => {
                 trace!("Commit for {:?}", seqno);
@@ -400,7 +403,8 @@ mod test {
     #[derive(Debug)]
     enum OutMessage {
         Response(Token, OpResp),
-        Forward(ReplicationMessage)
+        Forward(ReplicationMessage),
+        LogCommitted(Seqno),
     }
 
     #[derive(Debug)]
@@ -433,6 +437,7 @@ mod test {
         committed: Option<Seqno>,
         responded: Option<Seqno>,
         outstanding: HashMap<Token, isize>,
+        log_committed: Option<Seqno>,
     }
 
     impl FakeReplica {
@@ -443,6 +448,7 @@ mod test {
                 committed: Default::default(),
                 responded: Default::default(),
                 outstanding: HashMap::new(),
+                log_committed: Default::default(),
             }
         }
     }
@@ -488,7 +494,7 @@ mod test {
                 &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) }) => {
                     assert_eq!(epoch, model.epoch);
                     assert!(Some(seqno) <= model.prepared);
-                    assert!(Some(seqno) > model.committed);
+                    assert!(Some(seqno) <= model.log_committed);
                 },
                 &OutMessage::Forward(ReplicationMessage { epoch, .. }) => {
                     assert_eq!(epoch, model.epoch);
@@ -501,7 +507,8 @@ mod test {
                 },
                 &OutMessage::Response(token, _) => {
                     assert!(model.outstanding.contains_key(&token));
-                }
+                },
+                &OutMessage::LogCommitted(seqno) => {},
             };
         }
 
@@ -542,6 +549,9 @@ mod test {
                     &OutMessage::Response(token, _) => {
                         *self.outstanding.entry(token).or_insert(0) -= 1;
                     },
+                    &OutMessage::LogCommitted(seqno) => {
+                        self.log_committed = Some(seqno);
+                    },
                 };
             }
         }
@@ -552,7 +562,8 @@ mod test {
             &ReplCommand::ClientOperation(ref token, ref op) => {
                 actual.process_client(outputs, *token, &op)
             },
-        }
+        };
+        actual.process_replication(outputs);
     }
 
     impl Arbitrary for Commands {
@@ -595,8 +606,8 @@ mod test {
 
         let mut model = FakeReplica::new();
 
+        let (tx, rx) = channel();
         let mut actual = {
-            let (tx, rx) = channel();
             let log = L::new(move |seq| {
                 info!("committed: {:?}", seq);
                 tx.send(seq).expect("send")
@@ -615,6 +626,9 @@ mod test {
                 return TestResult::discard();
             }
             let ret = apply_cmd(&mut actual, &cmd, &mut observed);
+            while let Ok(seq) = rx.try_recv() {
+                observed.0.push_back(OutMessage::LogCommitted(seq))
+            }
             trace!("Apply: {:?} => {:?}, {:?}", cmd, ret, observed);
             model.next_state(&cmd);
             assert!(postcondition(&actual, &model, &cmd, &observed));
@@ -628,7 +642,7 @@ mod test {
                 vec![]);
 
         assert_eq!(model.prepared, Default::default());
-        assert_eq!(model.committed, Default::default());
+        assert_eq!(model.log_committed, model.responded);
 
         TestResult::passed()
     }
