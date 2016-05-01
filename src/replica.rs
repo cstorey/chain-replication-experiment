@@ -1,6 +1,6 @@
 use std::cmp;
 use std::fmt;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver};
 use mio;
 
@@ -14,17 +14,11 @@ struct Forwarder {
     last_prepared_downstream: Option<Seqno>,
     last_committed_downstream: Option<Seqno>,
     last_acked_downstream: Option<Seqno>,
-    pending_operations: BTreeMap<Seqno, mio::Token>,
-}
-#[derive(Debug)]
-struct Register {
-    content: String,
+    pending_operations: HashMap<Seqno, mio::Token>,
 }
 
 #[derive(Debug)]
-struct Terminus {
-    app: Register,
-}
+struct Terminus;
 
 #[derive(Debug)]
 enum ReplRole {
@@ -110,7 +104,7 @@ impl Forwarder {
             last_prepared_downstream: None,
             last_acked_downstream: None,
             last_committed_downstream: None,
-            pending_operations: BTreeMap::new(),
+            pending_operations: HashMap::new(),
         }
     }
 
@@ -211,24 +205,9 @@ impl Forwarder {
     }
 }
 
-impl Register {
-    fn new() -> Register {
-        Register { content: "".to_string() }
-    }
-    fn apply(&mut self, op: Operation) -> Option<Vec<u8>> {
-        match op {
-            Operation::Set(s) => {
-                self.content = s;
-                None
-            }
-            Operation::Get => Some(self.content.as_bytes().to_vec()),
-        }
-    }
-}
-
 impl Terminus {
     fn new() -> Terminus {
-        Terminus { app: Register::new() }
+        Terminus
     }
 
     fn process_operation<O: Outputs>(&mut self,
@@ -390,9 +369,13 @@ impl<L: Log> ReplModel<L> {
         self.is_head = is_head;
     }
 
+    fn set_epoch(&mut self, epoch: Epoch) {
+        self.current_epoch = epoch;
+    }
+
     pub fn reconfigure(&mut self, view: ConfigurationView<NodeViewConfig>) {
         info!("Reconfiguring from: {:?}", view);
-        self.current_epoch = view.epoch;
+        self.set_epoch(view.epoch);
         self.configure_forwarding(view.should_connect_downstream().is_some());
         self.set_is_head(view.is_head());
         info!("Reconfigured from: {:?}", view);
@@ -402,38 +385,66 @@ impl<L: Log> ReplModel<L> {
 
 #[cfg(test)]
 mod test {
-    use data::{Operation, OpResp, PeerMsg, Seqno, Buf};
+    use data::{Operation, OpResp, PeerMsg, Seqno, Buf, ReplicationMessage};
     use config::Epoch;
     use quickcheck::{self, Arbitrary, Gen, TestResult};
-    use super::{ReplModel, Register, Outputs};
+    use super::{ReplModel, Outputs};
     use std::sync::mpsc::channel;
     use replication_log::{VecLog};
     use replication_log::test::TestLog;
     use env_logger;
     use spki_sexp;
-    use std::collections::{VecDeque};
+    use std::collections::{VecDeque, HashMap};
     use mio::Token;
 
     #[derive(Debug)]
     enum OutMessage {
-        Response(OpResp),
-        Forward(PeerMsg)
+        Response(Token, OpResp),
+        Forward(ReplicationMessage)
     }
 
     #[derive(Debug)]
     struct Outs(VecDeque<OutMessage>);
     impl Outputs for Outs {
         fn respond_to(&mut self, token: Token, resp: OpResp) {
-            self.0.push_back(OutMessage::Response(resp))
+            self.0.push_back(OutMessage::Response(token, resp))
         }
-        fn forward_downstream(&mut self, token: Epoch, msg: PeerMsg) {
-            self.0.push_back(OutMessage::Forward(msg))
+        fn forward_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
+            self.0.push_back(OutMessage::Forward(
+                ReplicationMessage {
+                    epoch: epoch,
+                    msg: msg,
+                }))
         }
     }
 
     #[derive(Debug,PartialEq,Eq,Clone)]
     enum ReplCommand {
-        ClientOperation(Token, Operation), // UpstreamOperation(Token, Seqno, Epoch, Operation),
+        ClientOperation(Token, Vec<u8>), // UpstreamOperation(Token, Seqno, Epoch, Operation),
+    }
+
+    #[derive(Debug,PartialEq,Eq,Clone)]
+    struct Commands(Vec<ReplCommand>);
+
+    #[derive(Debug,PartialEq,Eq,Clone)]
+    struct FakeReplica {
+        epoch: Epoch,
+        prepared: Option<Seqno>,
+        committed: Option<Seqno>,
+        responded: Option<Seqno>,
+        outstanding: HashMap<Token, isize>,
+    }
+
+    impl FakeReplica {
+        fn new() -> FakeReplica {
+            FakeReplica {
+                epoch: Default::default(),
+                prepared: Default::default(),
+                committed: Default::default(),
+                responded: Default::default(),
+                outstanding: HashMap::new(),
+            }
+        }
     }
 
     impl Arbitrary for ReplCommand {
@@ -459,65 +470,173 @@ mod test {
         }
     }
 
-    // Simulate a single node in a Chain. We mostly just end up verifing that
-    // results are as our trivial register model.
+    fn precondition(model: &FakeReplica, cmd: &ReplCommand) -> bool {
+        match cmd {
+            &ReplCommand::ClientOperation(ref token, ref s) => true,
+        }
+    }
 
-    fn simulate_single_node_chain_prop<L: TestLog>(vals: Vec<ReplCommand>) -> TestResult {
+    fn postcondition<L: TestLog>(actual: &ReplModel<L>, model: &FakeReplica,
+            cmd: &ReplCommand, observed: &Outs) -> bool {
+        debug!("observed: {:?}; model:{:?}", observed, model);
+        for msg in observed.0.iter() {
+            match msg {
+                &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _) }) => {
+                    assert_eq!(epoch, model.epoch);
+                    assert!(Some(seqno) > model.prepared);
+                },
+                &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) }) => {
+                    assert_eq!(epoch, model.epoch);
+                    assert!(Some(seqno) <= model.prepared);
+                    assert!(Some(seqno) > model.committed);
+                },
+                &OutMessage::Forward(ReplicationMessage { epoch, .. }) => {
+                    assert_eq!(epoch, model.epoch);
+                },
+                &OutMessage::Response(token, OpResp::Ok(epoch, seqno, _)) |
+                        &OutMessage::Response(token,  OpResp::Err(epoch, seqno, _)) => {
+                    assert!(model.outstanding.contains_key(&token));
+                    assert_eq!(epoch, model.epoch);
+                    assert!(model.responded < Some(seqno));
+                },
+                &OutMessage::Response(token, _) => {
+                    assert!(model.outstanding.contains_key(&token));
+                }
+            };
+        }
 
-        debug!("commands: {:?}", vals);
-        let (tx, rx) = channel();
-        let log = L::new(move |seq| {
-            info!("committed: {:?}", seq);
-            tx.send(seq).expect("send")
-            // TODO: Verify me.
-        });
+        match cmd {
+            &ReplCommand::ClientOperation(ref token, ref s) => true,
+        }
+    }
 
-        let mut replication = ReplModel::new(log);
-        replication.set_is_head(true);
-        let mut observed = Outs(VecDeque::new());
-
-        for cmd in vals.iter() {
+    impl FakeReplica {
+        fn next_state(&mut self, cmd: &ReplCommand) -> () {
             match cmd {
                 &ReplCommand::ClientOperation(ref token, ref op) => {
-                    let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-                    replication.process_client(&mut observed, token.clone(),
-                                                                   &data_bytes);
+                    *self.outstanding.entry(*token).or_insert(0) += 1;
                 }
             }
         }
-        debug!("Stopping Log");
-        drop(replication);
-        debug!("Stopped Log");
 
-        let expected_responses = vals.iter()
-                                     .filter_map(|c| {
-                                         let &ReplCommand::ClientOperation(ref t, ref op) =
-                                             c;
-                                         Some((t.clone(), op.clone()))
-                                     })
-                                     .scan(Register::new(),
-                                           |reg, (_tok, cmd)| Some(reg.apply(cmd).map(Into::into)))
-                                     .collect::<Vec<Option<Buf>>>();
-        trace!("Expected: {:?}", expected_responses);
-        trace!("Observed: {:?}", observed);
-        assert_eq!(expected_responses.len(), observed.0.len());
-        let result = observed.0.iter()
-            .filter_map(|m| match m { &OutMessage::Response(ref r) => Some(r), _ => None })
-                                       .zip(expected_responses.iter())
-                                       .all(|(obs, exp)| {
-                                           match obs {
-                                               &OpResp::Ok(_, _, ref val) => val == exp,
-                                               _ => false,
-                                           }
-                                       });
-
-        TestResult::from_bool(result)
+        fn update_from_outputs(&mut self, observed: &Outs) -> () {
+            for msg in observed.0.iter() {
+                match msg {
+                    &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _) }) => {
+                        self.epoch = epoch;
+                        self.prepared = Some(seqno);
+                    },
+                    &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) }) => {
+                        self.epoch = epoch;
+                        self.committed = Some(seqno);
+                    },
+                    &OutMessage::Forward(ReplicationMessage { epoch, msg: _ }) => {
+                        self.epoch = epoch;
+                    },
+                    &OutMessage::Response(token, OpResp::Ok(epoch, seqno, _)) |
+                            &OutMessage::Response(token,  OpResp::Err(epoch, seqno, _)) => {
+                        *self.outstanding.entry(token).or_insert(0) -= 1;
+                        self.epoch = epoch;
+                        self.responded = Some(seqno);
+                    },
+                    &OutMessage::Response(token, _) => {
+                        *self.outstanding.entry(token).or_insert(0) -= 1;
+                    },
+                };
+            }
+        }
     }
 
-    // #[test]
+    fn apply_cmd<L: TestLog>(actual: &mut ReplModel<L>, cmd: &ReplCommand, outputs: &mut Outs) -> () {
+        match cmd {
+            &ReplCommand::ClientOperation(ref token, ref op) => {
+                actual.process_client(outputs, *token, &op)
+            },
+        }
+    }
+
+    impl Arbitrary for Commands {
+        fn arbitrary<G: Gen>(g: &mut G) -> Commands {
+            let slots : Vec<()> = Arbitrary::arbitrary(g);
+            let mut commands : Vec<ReplCommand> = Vec::new();
+            let mut model = FakeReplica::new();
+
+            for _ in slots {
+                let cmd = (0..).map(|_| { let cmd : ReplCommand = Arbitrary::arbitrary(g); cmd })
+                    .skip_while(|cmd| !precondition(&model, cmd))
+                    .next()
+                    .expect("Some valid command");
+
+                model.next_state(&cmd);
+                commands.push(cmd);
+            };
+            Commands(commands)
+        }
+        fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
+            // TODO: Filter out invalid sequences.
+            let ret = Arbitrary::shrink(&self.0).map(Commands).filter(validate_commands);
+            Box::new(ret)
+        }
+    }
+    fn validate_commands(cmds: &Commands) -> bool {
+        let model = FakeReplica::new();
+
+        cmds.0.iter().scan(model, |model, cmd| {
+            let ret = precondition(&model, cmd);
+            model.next_state(&cmd);
+            Some(ret)
+        }).all(|p| p)
+    }
+
+    fn simulate_single_node_chain_prop<L: TestLog>(cmds: Commands) -> TestResult {
+        let Commands(cmds) = cmds;
+        debug!("Command sequence: {:?}", cmds);
+        let epoch : Epoch = From::from(42);
+
+        let mut model = FakeReplica::new();
+
+        let mut actual = {
+            let (tx, rx) = channel();
+            let log = L::new(move |seq| {
+                info!("committed: {:?}", seq);
+                tx.send(seq).expect("send")
+                // TODO: Verify me.
+            });
+            ReplModel::new(log)
+        };
+        actual.set_is_head(true);
+        actual.set_epoch(epoch);
+        model.epoch = epoch;
+
+        for cmd in cmds {
+            let mut observed = Outs(VecDeque::new());
+            if !precondition(&model, &cmd) {
+                // we have produced an invalid sequence.
+                return TestResult::discard();
+            }
+            let ret = apply_cmd(&mut actual, &cmd, &mut observed);
+            trace!("Apply: {:?} => {:?}, {:?}", cmd, ret, observed);
+            model.next_state(&cmd);
+            assert!(postcondition(&actual, &model, &cmd, &observed));
+            model.update_from_outputs(&observed);
+        }
+
+        debug!("Model state:{:?}", model);
+
+        assert_eq!(
+                model.outstanding.iter().filter(|&(k, v)| v != &0).collect::<Vec<_>>(),
+                vec![]);
+
+        assert_eq!(model.prepared, Default::default());
+        assert_eq!(model.committed, Default::default());
+
+        TestResult::passed()
+    }
+
+    #[test]
     fn simulate_single_node_chain_mem() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(simulate_single_node_chain_prop::<VecLog> as fn(vals: Vec<ReplCommand>) -> TestResult)
+        quickcheck::quickcheck(simulate_single_node_chain_prop::<VecLog> as fn(vals: Commands) -> TestResult)
     }
 
     fn should_forward_all_requests_downstream_when_present_prop<L: TestLog>(
@@ -576,7 +695,8 @@ mod test {
 
         let prepares =  observed.0.into_iter()
             .filter_map(|op| match op {
-                    OutMessage::Forward(PeerMsg::Prepare(seq, op)) => Some((seq.offset() as usize, op)),
+                    OutMessage::Forward(ReplicationMessage { msg: PeerMsg::Prepare(seq, op), .. }) =>
+                        Some((seq.offset() as usize, op)),
                     _ => None
             })
             .collect::<Vec<_>>();

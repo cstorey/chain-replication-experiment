@@ -55,6 +55,12 @@ impl Epoch {
     }
 }
 
+impl From<u64> for Epoch {
+    fn from(val:u64) -> Epoch {
+        Epoch(val)
+    }
+}
+
 struct DeathWatch<'a, F>(&'a AtomicBool, F) where F: Fn();
 
 
