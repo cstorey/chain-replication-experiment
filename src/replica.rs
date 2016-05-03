@@ -514,7 +514,7 @@ mod test {
         TestResult::from_bool(result)
     }
 
-    #[test]
+    // #[test]
     fn simulate_single_node_chain_mem() {
         env_logger::init().unwrap_or(());
         quickcheck::quickcheck(simulate_single_node_chain_prop::<VecLog> as fn(vals: Vec<ReplCommand>) -> TestResult)
