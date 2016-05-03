@@ -20,6 +20,15 @@ Express interfaces in terms of messages; tell-don't-ask style. So:
  * So, because replication messages are only valid for a particular configuration, we can assume that all peers logically reconnect for each epoch.
 * Also, probably best to have upstream ask downstream peer for water marks, rather than relying on implicit banner on connect. This means we do not need to retain any state across configurations, and more consistency in message patterns.
  
+
+## Tracing
+
+Use `hybrid-clocks` implementation to stamp each network event with a session + logical timestamp.
+
+## Merkle tree log validation
+
+Use a Riak-style merkle tree to allow validation of log-stores between peers. Assuming that we stick to using a fixed-length key in the DB (ie: sequence number for a record ), then it becomes comparatively easy to build a 2^N-ary trie, as we need to keep track of the longest-observed length in order to determine how far from the leaves the root should be. Whilst most systems (eg: Riak) use a hash function to derive a fixed-length key (and so path in the trie), we know that we only ever append to the log, and that updates will be comparatively dense, so we can minimise the amount of churn in the tree by batching updates.
+
 ## Configuration mechanism is weird
 
 A few models of Chain Replication (eg: CORFU) talk about rendering a replica immutable, where the optimisation would be to inherit an existing replica's data. At the moment, we get a struct from the coordinator (ie: the threads that poke `etcd`), which we then interpret on an ad-hoc basis, prodding the `Replica` as we go. It might be better to dispose of the existing replica object, and re-build it, factory-style, from the configuration.
