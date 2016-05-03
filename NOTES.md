@@ -27,7 +27,9 @@ Use `hybrid-clocks` implementation to stamp each network event with a session + 
 
 ## Merkle tree log validation
 
-Use a Riak-style merkle tree to allow validation of log-stores between peers. Assuming that we stick to using a fixed-length key in the DB (ie: sequence number for a record ), then it becomes comparatively easy to build a 2^N-ary trie, as we need to keep track of the longest-observed length in order to determine how far from the leaves the root should be. Whilst most systems (eg: Riak) use a hash function to derive a fixed-length key (and so path in the trie), we know that we only ever append to the log, and that updates will be comparatively dense, so we can minimise the amount of churn in the tree by batching updates.
+Use a Riak-style merkle tree to allow validation of log-stores between peers. Assuming that we stick to using a fixed-length key in the DB (ie: sequence number for a record ), then it becomes comparatively easy to build a 2^N-ary trie, as we need to keep track of the longest-observed length in order to determine how far from the leaves the root should be. Whilst most systems (eg: Riak) use a hash function to derive a fixed-length key (and so path in the trie), we know that we only ever append to the log, and that updates will be comparatively dense, so we can minimise the amount of churn in the tree by batching updates. This also makes it easier to identify which portion of the log is wrong, as each branch then identifies a contiguous range.
+
+In order to create a useful summary, we need to identify a causal cut across a partition (which is easy as we are using chain replication), and calculate the hash-tree across that partition.
 
 ## Configuration mechanism is weird
 
