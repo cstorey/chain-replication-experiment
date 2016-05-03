@@ -5,14 +5,14 @@ extern crate log4rs;
 extern crate log;
 #[macro_use]
 extern crate clap;
-extern crate chain_repl_test;
+extern crate vastatrix;
 
 use time::Duration;
 use std::net::ToSocketAddrs;
 use std::collections::HashSet;
 use clap::{Arg, App};
 
-use chain_repl_test::{ChainRepl, Role, ConfigClient, ReplModel, RocksdbLog};
+use vastatrix::{ChainRepl, Role, ConfigClient, ReplModel, RocksdbLog};
 
 const LOG_FILE: &'static str = "log.toml";
 
