@@ -12,11 +12,11 @@ level = "info"
 appenders = ["stdout"]
 
 # and *not* the normal appenders installed at the root
-[loggers."chain_repl_test"]
+[loggers."vastatrix"]
 level = "debug"
 
-[loggers."chain_repl_test::replication_log"]
+[loggers."vastatrix::replication_log"]
 level = "debug"
 
-[loggers."chain_repl_test::config"]
+[loggers."vastatrix::config"]
 level = "info"
