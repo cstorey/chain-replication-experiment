@@ -351,8 +351,9 @@ impl ChainRepl {
 
     fn forward_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
         trace!("forward_downstream: @{:?} -> {:?}", epoch, msg);
+        let now = self.clock.now();
 
-        self.downstream().expect("downstream").send_to_downstream(epoch, msg)
+        self.downstream().expect("downstream").send_to_downstream(now, epoch, msg)
     }
 }
 
@@ -400,7 +401,7 @@ impl replica::Outputs for Notifier {
         self.notify(Notification::RespondTo(token, resp))
     }
 
-    fn forward_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
+    fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
         trace!("forward_downstream: @{:?} -> {:?}", epoch, msg);
         self.notify(Notification::Forward(epoch, msg))
     }

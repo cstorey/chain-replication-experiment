@@ -38,7 +38,7 @@ pub trait Log: fmt::Debug {
 
 pub trait Outputs {
     fn respond_to(&mut self, mio::Token, OpResp);
-    fn forward_downstream(&mut self, Epoch, PeerMsg);
+    fn forward_downstream(&mut self, Timestamp<WallT>, Epoch, PeerMsg);
 }
 
 #[derive(Debug)]
@@ -56,6 +56,7 @@ pub enum ReplCommand {
 pub struct ReplModel<L> {
     next: ReplRole,
     log: L,
+    clock: Clock<Wall>,
     current_epoch: Epoch,
     upstream_committed: Option<Seqno>,
     commit_requested: Option<Seqno>,
@@ -83,10 +84,10 @@ impl ReplRole {
         }
     }
 
-    fn process_replication<L: Log, O: Outputs>(&mut self, epoch: Epoch, log: &L, out: &mut O) -> bool {
+    fn process_replication<L: Log, O: Outputs>(&mut self, clock: &mut Clock<Wall>, epoch: Epoch, log: &L, out: &mut O) -> bool {
         trace!("ReplRole: process_replication");
         match self {
-            &mut ReplRole::Forwarder(ref mut f) => f.process_replication(epoch, log, out),
+            &mut ReplRole::Forwarder(ref mut f) => f.process_replication(clock, epoch, log, out),
             _ => { debug!("process_replication no-op"); false },
         }
     }
@@ -144,6 +145,7 @@ impl Forwarder {
     }
 
     fn process_replication<L: Log, O: Outputs>(&mut self,
+                                                          clock: &mut Clock<Wall>,
                                                           epoch: Epoch,
                                                           log: &L,
                                                           out: &mut O)
@@ -168,7 +170,7 @@ impl Forwarder {
                                i,
                                op,
                                self.last_prepared_downstream);
-                        out.forward_downstream(epoch, PeerMsg::Prepare(i, op.into()));
+                        out.forward_downstream(clock.now(), epoch, PeerMsg::Prepare(i, op.into()));
                         self.last_prepared_downstream = Some(i.succ());
                         changed = true
                     } else {
@@ -193,7 +195,7 @@ impl Forwarder {
                        max_to_commit_now,
                        our_committed);
 
-                out.forward_downstream(epoch, PeerMsg::CommitTo(max_to_commit_now));
+                out.forward_downstream(clock.now(), epoch, PeerMsg::CommitTo(max_to_commit_now));
                 self.last_committed_downstream = Some(max_to_commit_now);
                 changed = true
             }
@@ -228,6 +230,7 @@ impl<L: Log> ReplModel<L> {
         ReplModel {
             log: log,
             current_epoch: Default::default(),
+            clock: Clock::wall(),
             next: ReplRole::Terminus(Terminus::new()),
             upstream_committed: None,
             commit_requested: None,
@@ -307,7 +310,7 @@ impl<L: Log> ReplModel<L> {
 
     pub fn process_replication<O: Outputs>(&mut self, out: &mut O) -> bool {
         trace!("process_replication: {:?}", self);
-        let mut res = self.next.process_replication(self.current_epoch, &self.log, out);
+        let mut res = self.next.process_replication(&mut self.clock, self.current_epoch, &self.log, out);
         res |= self.flush();
         res
     }
@@ -415,10 +418,11 @@ mod test {
         fn respond_to(&mut self, token: Token, resp: OpResp) {
             self.0.push_back(OutMessage::Response(token, resp))
         }
-        fn forward_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
+        fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
             self.0.push_back(OutMessage::Forward(
                 ReplicationMessage {
                     epoch: epoch,
+                    ts: now,
                     msg: msg,
                 }))
         }
@@ -489,11 +493,11 @@ mod test {
         debug!("observed: {:?}; model:{:?}", observed, model);
         for msg in observed.0.iter() {
             match msg {
-                &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _) }) => {
+                &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _), .. }) => {
                     assert_eq!(epoch, model.epoch);
                     assert!(Some(seqno) > model.prepared);
                 },
-                &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) }) => {
+                &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. }) => {
                     assert_eq!(epoch, model.epoch);
                     assert!(Some(seqno) <= model.prepared);
                     assert!(Some(seqno) <= model.log_committed);
@@ -531,15 +535,15 @@ mod test {
         fn update_from_outputs(&mut self, observed: &Outs) -> () {
             for msg in observed.0.iter() {
                 match msg {
-                    &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _) }) => {
+                    &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _), .. }) => {
                         self.epoch = epoch;
                         self.prepared = Some(seqno);
                     },
-                    &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) }) => {
+                    &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. }) => {
                         self.epoch = epoch;
                         self.committed = Some(seqno);
                     },
-                    &OutMessage::Forward(ReplicationMessage { epoch, msg: _ }) => {
+                    &OutMessage::Forward(ReplicationMessage { epoch, msg: _, .. }) => {
                         self.epoch = epoch;
                     },
                     &OutMessage::Response(token, OpResp::Ok(epoch, seqno, _)) |

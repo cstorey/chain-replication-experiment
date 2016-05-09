@@ -249,9 +249,9 @@ impl Reader<ReplicationMessage> for SexpPeer {
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream(ts) } => events.hello_downstream(token, ts, epoch),
-                ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
-                ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
+                ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream } => events.hello_downstream(token, ts, epoch),
+                ReplicationMessage { epoch, ts, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
+                ReplicationMessage { epoch, ts, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
             }
             changed = true;
         }
@@ -270,12 +270,12 @@ impl Reader<Operation> for SexpPeer {
 
     fn process<P: Protocol<Recv=Operation>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
         let mut changed = false;
-        // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
+            trace!("{:?}: Read buffer: {:?}", self.token, msg);
             match msg {
-                ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream(ts) } => events.hello_downstream(token, ts, epoch),
-                ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
-                ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
+                ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream } => events.hello_downstream(token, ts, epoch),
+                ReplicationMessage { epoch, ts, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
+                ReplicationMessage { epoch, ts, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
             }
             changed = true;
         }

@@ -83,13 +83,15 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         self.should_disconnect = true;
     }
 
-    pub fn send_to_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
-        debug!("Queuing for downstream (qlen: {}): {:?}: {:?}",
+    pub fn send_to_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
+        debug!("Queuing for downstream (qlen: {}) at {}: {:?}: {:?}",
                self.pending.len() + 1,
+               now,
                self.peer,
                msg);
         self.pending.push_back(ReplicationMessage {
             epoch: epoch,
+            ts: now,
             msg: msg,
         });
     }
@@ -198,7 +200,8 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
 
         self.pending.push_back(ReplicationMessage {
             epoch: self.epoch,
-            msg: PeerMsg::HelloDownstream(now),
+            ts: now,
+            msg: PeerMsg::HelloDownstream,
         });
     }
 

@@ -95,13 +95,14 @@ pub struct NodeViewConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerMsg {
-    HelloDownstream(Timestamp<WallT>),
+    HelloDownstream,
     Prepare (Seqno, Buf),
     CommitTo (Seqno),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicationMessage {
     pub epoch: Epoch,
+    pub ts: Timestamp<WallT>,
     pub msg: PeerMsg,
 }
 

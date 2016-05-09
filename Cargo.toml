@@ -23,7 +23,7 @@ version = "0.31.0"
 byteorder = "0.4.2"
 bytes = "0.2.10"
 clap = "2.3.0"
-hybrid-clocks = { version = "0.2.0", features=["serde"] }
+hybrid-clocks = { version = "0.2.1", features=["serde"] }
 log = "*"
 mio = "0.4.1"
 serde = "0.7.0"
