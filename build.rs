@@ -14,7 +14,7 @@ fn process() {
         let mut registry = syntex::Registry::new();
         serde_codegen::register(&mut registry);
 
-        let src = format!("src/{}.rs.in", m);
+        let src = format!("src/{}.in.rs", m);
         let dst = Path::new(&out_dir).join(format!("{}.rs", m));
         registry.expand("", Path::new(&src), &Path::new(&dst)).expect("expanding");
     }
