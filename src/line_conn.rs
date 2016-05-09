@@ -260,30 +260,6 @@ impl Reader<ReplicationMessage> for SexpPeer {
     }
 }
 
-impl Reader<Operation> for SexpPeer {
-    fn new(token: mio::Token) -> SexpPeer {
-        Self::fresh(token)
-    }
-    fn feed(&mut self, slice: &[u8]) {
-        self.packets.feed(slice)
-    }
-
-    fn process<P: Protocol<Recv=Operation>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
-        let mut changed = false;
-        while let Some(msg) = self.packets.take().expect("Pull packet") {
-            trace!("{:?}: Read buffer: {:?}", self.token, msg);
-            match msg {
-                ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream } => events.hello_downstream(token, ts, epoch),
-                ReplicationMessage { epoch, ts, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
-                ReplicationMessage { epoch, ts, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
-            }
-            changed = true;
-        }
-
-        changed
-    }
-}
-
 impl Reader<OpResp> for SexpPeer {
     fn new(token: mio::Token) -> SexpPeer {
         Self::fresh(token)
