@@ -8,6 +8,7 @@ use data::{Operation, OpResp, PeerMsg, Seqno, NodeViewConfig, Buf};
 use config::{ConfigurationView, Epoch};
 use {Notifier};
 use spki_sexp;
+use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 
 #[derive(Debug)]
 struct Forwarder {
@@ -47,7 +48,7 @@ pub enum ReplCommand {
     CommitObserved (Epoch, Seqno),
     ResponseObserved(OpResp),
     NewConfiguration(ConfigurationView<NodeViewConfig>),
-    HelloDownstream (mio::Token, Epoch),
+    HelloDownstream (mio::Token, Timestamp<WallT>, Epoch),
     Reset,
 }
 
@@ -133,8 +134,8 @@ impl Forwarder {
                     warn!("Unexpected response for seqno: {:?}", seqno);
                 }
             }
-            OpResp::HelloIWant(last_prepared_downstream) => {
-                info!("Downstream has {:?}", last_prepared_downstream);
+            OpResp::HelloIWant(ts, last_prepared_downstream) => {
+                info!("{}; Downstream has {:?}", ts, last_prepared_downstream);
                 // assert!(last_prepared_downstream <= self.seqno());
                 self.last_acked_downstream = Some(last_prepared_downstream);
                 self.last_prepared_downstream = Some(last_prepared_downstream);
@@ -257,8 +258,8 @@ impl<L: Log> ReplModel<L> {
                     self.process_downstream_response(&mut tx, resp),
                 ReplCommand::NewConfiguration(view) =>
                     self.reconfigure(view),
-                ReplCommand::HelloDownstream (token, epoch) =>
-                    self.hello_downstream(&mut tx, token, epoch),
+                ReplCommand::HelloDownstream (token, at, epoch) =>
+                    self.hello_downstream(&mut tx, token, at, epoch),
                 ReplCommand::Reset => self.reset(),
             }
             while self.process_replication(&mut tx) {/* Nothing */}
@@ -342,9 +343,9 @@ impl<L: Log> ReplModel<L> {
         }
     }
 
-    pub fn hello_downstream<O: Outputs>(&mut self, out: &mut O, token: mio::Token, epoch: Epoch) {
-        debug!("hello_downstream: {:?}; {:?}", token, epoch);
-        let msg = OpResp::HelloIWant(self.log.seqno());
+    pub fn hello_downstream<O: Outputs>(&mut self, out: &mut O, token: mio::Token, at: Timestamp<WallT>, epoch: Epoch) {
+        debug!("{}; hello_downstream: {:?}; {:?}", at, token, epoch);
+        let msg = OpResp::HelloIWant(at, self.log.seqno());
         info!("Inform upstream about our current version, {:?}!", msg);
         out.respond_to(token, msg)
     }

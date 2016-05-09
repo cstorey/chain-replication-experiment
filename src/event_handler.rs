@@ -6,6 +6,7 @@ use data::OpResp;
 use line_conn::{SexpPeer, LineConn, ClientProto, PeerClientProto, LineConnEvents};
 use downstream_conn::Downstream;
 use listener::{Listener,ListenerEvents};
+use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 
 #[derive(Debug)]
 pub enum EventHandler {
@@ -41,12 +42,13 @@ impl EventHandler {
     pub fn process_rules<E: ListenerEvents + LineConnEvents>(
         &mut self,
                                                  event_loop: &mut mio::EventLoop<ChainRepl>,
+                                                 now: &Timestamp<WallT>,
                                                  events: &mut E)
                                                  -> bool {
         match self {
             &mut EventHandler::Client(ref mut conn) => conn.process_rules(event_loop, events),
             &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, events),
-            &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, events),
+            &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, now, events),
             &mut EventHandler::Listener(ref mut listener) => {
                 listener.process_rules(event_loop, events)
             }

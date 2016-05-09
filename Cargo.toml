@@ -23,6 +23,7 @@ version = "0.31.0"
 byteorder = "0.4.2"
 bytes = "0.2.10"
 clap = "2.3.0"
+hybrid-clocks = { version = "0.2.0", features=["serde"] }
 log = "*"
 mio = "0.4.1"
 serde = "0.7.0"
@@ -39,8 +40,8 @@ default-features = false
 version = "0.5.0"
 
 [dependencies.hex-slice]
-optional = false
 git = "https://github.com/cstorey/hex-slice"
+optional = false
 
 [dependencies.log4rs]
 features = ["toml"]
@@ -60,7 +61,7 @@ optional = false
 
 [dev-dependencies]
 env_logger = "0.3.2"
-quickcheck = "=0.2.24"
+quickcheck = "0.2.24"
 rand = "0.3.14"
 
 [features]

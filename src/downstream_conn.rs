@@ -11,6 +11,7 @@ use super::ChainRepl;
 use data::{OpResp, PeerMsg, ReplicationMessage};
 use config::Epoch;
 use line_conn::{Encoder, Reader, SexpPeer, Protocol, LineConnEvents};
+use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 
 #[derive(Debug)]
 pub struct Downstream<T: fmt::Debug> {
@@ -127,6 +128,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
 
     pub fn process_rules<E: LineConnEvents>(&mut self,
                                                  event_loop: &mut mio::EventLoop<ChainRepl>,
+                                                 now: &Timestamp<WallT>,
                                                  events: &mut E)
                                                  -> bool {
         trace!("the downstream socket is {:?}", self.sock_status);
@@ -159,7 +161,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         }
 
         if self.socket.is_none() && self.timeout_triggered {
-            self.attempt_connect();
+            self.attempt_connect(now.clone());
             self.initialize(event_loop, self.token);
             self.timeout_triggered = false;
         }
@@ -178,9 +180,9 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
         let _ = ::std::mem::replace(self, Self::with_codec(peer, token, epoch, T::new(token)));
     }
 
-    fn attempt_connect(&mut self) {
+    fn attempt_connect(&mut self, now: Timestamp<WallT>) {
         assert!(self.socket.is_none());
-        debug!("Connecting: {:?}", self);
+        debug!("Connecting @{}: {:?}", now, self);
         if let &mut Downstream { peer: Some(ref peer), ref mut socket, ref mut sock_status, .. } =
                self {
             let conn = TcpStream::connect(peer).expect("Connect downstream");
@@ -196,7 +198,7 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
 
         self.pending.push_back(ReplicationMessage {
             epoch: self.epoch,
-            msg: PeerMsg::HelloDownstream,
+            msg: PeerMsg::HelloDownstream(now),
         });
     }
 

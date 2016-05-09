@@ -17,6 +17,7 @@ extern crate tempdir;
 extern crate rocksdb;
 extern crate byteorder;
 extern crate hex_slice;
+extern crate hybrid_clocks;
 
 #[cfg(test)]
 extern crate rand;
@@ -36,6 +37,7 @@ use std::net::SocketAddr;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
 use std::mem;
+use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 
 mod line_conn;
 mod downstream_conn;
@@ -68,6 +70,7 @@ pub enum ChainReplMsg {
 
 struct ChainReplEvents<'a> {
     changes: &'a mut VecDeque<ChainReplMsg>,
+    clock: &'a mut Clock<Wall>,
     model: Sender<ReplCommand>,
 }
 
@@ -78,8 +81,11 @@ impl<'a> ListenerEvents for ChainReplEvents<'a> {
 }
 
 impl<'a> UpstreamEvents for ChainReplEvents<'a> {
-    fn hello_downstream(&mut self, source: mio::Token, epoch: Epoch) {
-        self.model.send(ReplCommand::HelloDownstream(source, epoch)).expect("model send")
+    fn hello_downstream(&mut self, source: mio::Token, at: Timestamp<WallT>, epoch: Epoch) {
+        self.clock.observe(&at);
+        let now = self.clock.now();
+        debug!("hello_downstream: {} -> {}", at, now);
+        self.model.send(ReplCommand::HelloDownstream(source, now, epoch)).expect("model send")
     }
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf) {
         self.model.send(ReplCommand::Operation(source, epoch, seqno, op)).expect("model send");
@@ -96,8 +102,11 @@ impl<'a> DownstreamEvents for ChainReplEvents<'a> {
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>) {
         self.model.send(ReplCommand::ResponseObserved(OpResp::Ok(epoch, seqno, data))).expect("model send");
     }
-    fn hello_i_want(&mut self, seqno: Seqno) {
-        self.model.send(ReplCommand::ResponseObserved(OpResp::HelloIWant(seqno))).expect("model send");
+    fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno) {
+        self.clock.observe(&at);
+        let now = self.clock.now();
+        debug!("hello_i_want: {} -> {}", at, now);
+        self.model.send(ReplCommand::ResponseObserved(OpResp::HelloIWant(now, seqno))).expect("model send");
     }
     fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String) {
         self.model.send(ReplCommand::ResponseObserved(OpResp::Err(epoch, seqno, data))).expect("model send");
@@ -114,6 +123,7 @@ pub struct ChainRepl {
     queue: VecDeque<ChainReplMsg>,
     model_thread: thread::JoinHandle<()>,
     model: Sender<ReplCommand>,
+    clock: Clock<Wall>,
 }
 
 impl ChainRepl {
@@ -131,6 +141,7 @@ impl ChainRepl {
             queue: VecDeque::new(),
             model_thread: model_thread,
             model: tx,
+            clock: Clock::wall(),
         }
     }
 
@@ -279,10 +290,11 @@ impl ChainRepl {
             trace!("Iter: {:?}", iterations);
             changed = false;
             {
-                let &mut ChainRepl { ref mut queue, ref mut connections, .. } = self;
-                let mut events = ChainReplEvents { changes: queue, model: self.model.clone() };
+                let &mut ChainRepl { ref mut queue, ref mut clock, ref mut connections, .. } = self;
                 for conn in connections.iter_mut() {
-                    changed |= conn.process_rules(event_loop, &mut events);
+                    let now = clock.now();
+                    let mut events = ChainReplEvents { changes: queue, clock: clock, model: self.model.clone() };
+                    changed |= conn.process_rules(event_loop, &now, &mut events);
                     trace!("changed:{:?}; conn:{:?} ", changed, conn);
                 }
             }

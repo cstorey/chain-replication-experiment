@@ -2,6 +2,7 @@ use config::Epoch;
 use byteorder::{ByteOrder, BigEndian};
 use serde::bytes::ByteBuf;
 use serde::{de,ser};
+use hybrid_clocks::{Timestamp,WallT};
 
 #[cfg(feature = "serde_macros")]
 include!("data.rs.in");

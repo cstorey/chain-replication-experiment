@@ -12,6 +12,7 @@ use super::{ChainRepl,ChainReplMsg};
 use data::{OpResp, Operation, PeerMsg, ReplicationMessage, Seqno, Buf};
 use config::Epoch;
 use crexp_client_proto::messages::{ClientReq,ClientResp};
+use hybrid_clocks::{Timestamp, WallT};
 
 const NL: u8 = '\n' as u8;
 const DEFAULT_BUFSZ: usize = 1 << 12;
@@ -33,7 +34,7 @@ pub trait Protocol : fmt::Debug{
  }
 
 pub trait UpstreamEvents {
-    fn hello_downstream(&mut self, source: mio::Token, epoch: Epoch);
+    fn hello_downstream(&mut self, source: mio::Token, at: Timestamp<WallT>, epoch: Epoch);
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf);
     fn client_request(&mut self, source: mio::Token, op: Buf);
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno);
@@ -41,7 +42,7 @@ pub trait UpstreamEvents {
 
 pub trait DownstreamEvents {
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>);
-    fn hello_i_want(&mut self, seqno: Seqno);
+    fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno);
     fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String);
 }
 
@@ -248,7 +249,7 @@ impl Reader<ReplicationMessage> for SexpPeer {
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream } => events.hello_downstream(token, epoch),
+                ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream(ts) } => events.hello_downstream(token, ts, epoch),
                 ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
                 ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
             }
@@ -272,7 +273,7 @@ impl Reader<Operation> for SexpPeer {
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream } => events.hello_downstream(token, epoch),
+                ReplicationMessage { epoch, msg: PeerMsg::HelloDownstream(ts) } => events.hello_downstream(token, ts, epoch),
                 ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
                 ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
             }
@@ -297,7 +298,7 @@ impl Reader<OpResp> for SexpPeer {
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
                 OpResp::Ok(epoch, seqno, data) => events.okay(epoch, seqno, data),
-                OpResp::HelloIWant(seqno) => events.hello_i_want(seqno),
+                OpResp::HelloIWant(ts, seqno) => events.hello_i_want(ts, seqno),
                 OpResp::Err(epoch, seqno, data) => events.error(epoch, seqno, data),
             }
             changed = true;
