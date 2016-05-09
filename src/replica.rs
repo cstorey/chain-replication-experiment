@@ -400,6 +400,7 @@ mod test {
     use spki_sexp;
     use std::collections::{VecDeque, HashMap};
     use mio::Token;
+    use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 
     #[derive(Debug)]
     enum OutMessage {
@@ -665,6 +666,8 @@ mod test {
             downstream_has % log_prefix.len() as usize
         };
 
+        let mut clock = Clock::wall();
+
         debug!("should_forward_all_requests_downstream_when_present_prop:");
         debug!("log_prefix: {:?}", log_prefix);
         debug!("downstream_has: {:?}", downstream_has);
@@ -685,7 +688,7 @@ mod test {
         let mut observed = Outs(VecDeque::new());
 
         replication.configure_forwarding(true);
-        replication.process_downstream_response(&mut observed, OpResp::HelloIWant(Seqno::new(downstream_has as u64)));
+        replication.process_downstream_response(&mut observed, OpResp::HelloIWant(clock.now(), Seqno::new(downstream_has as u64)));
 
         while replication.process_replication(&mut observed) {
             debug!("iterated replication");
