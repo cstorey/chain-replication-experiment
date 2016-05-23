@@ -33,20 +33,15 @@ pub trait Protocol : fmt::Debug{
     type Recv;
  }
 
-pub trait UpstreamEvents {
+pub trait LineConnEvents {
     fn hello_downstream(&mut self, source: mio::Token, at: Timestamp<WallT>, epoch: Epoch);
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf);
     fn client_request(&mut self, source: mio::Token, op: Buf);
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno);
-}
 
-pub trait DownstreamEvents {
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>);
     fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno);
     fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String);
-}
-
-pub trait LineConnEvents : UpstreamEvents + DownstreamEvents {
 }
 
 #[derive(Debug)]

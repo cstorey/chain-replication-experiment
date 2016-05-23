@@ -49,7 +49,7 @@ mod replication_log;
 mod replica;
 
 
-use line_conn::{SexpPeer, LineConn, UpstreamEvents, DownstreamEvents, LineConnEvents};
+use line_conn::{SexpPeer, LineConn, LineConnEvents};
 use downstream_conn::Downstream;
 use listener::{Listener,ListenerEvents};
 use event_handler::EventHandler;
@@ -80,7 +80,7 @@ impl<'a> ListenerEvents for ChainReplEvents<'a> {
     }
 }
 
-impl<'a> UpstreamEvents for ChainReplEvents<'a> {
+impl<'a> LineConnEvents for ChainReplEvents<'a> {
     fn hello_downstream(&mut self, source: mio::Token, at: Timestamp<WallT>, epoch: Epoch) {
         self.clock.observe(&at);
         let now = self.clock.now();
@@ -96,9 +96,7 @@ impl<'a> UpstreamEvents for ChainReplEvents<'a> {
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno) {
         self.model.send(ReplCommand::CommitObserved(epoch, seqno)).expect("model send");
     }
-}
 
-impl<'a> DownstreamEvents for ChainReplEvents<'a> {
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>) {
         self.model.send(ReplCommand::ResponseObserved(OpResp::Ok(epoch, seqno, data))).expect("model send");
     }
@@ -112,8 +110,6 @@ impl<'a> DownstreamEvents for ChainReplEvents<'a> {
         self.model.send(ReplCommand::ResponseObserved(OpResp::Err(epoch, seqno, data))).expect("model send");
     }
 }
-
-impl<'a> LineConnEvents for ChainReplEvents<'a> { }
 
 pub struct ChainRepl {
     connections: Slab<EventHandler>,
