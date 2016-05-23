@@ -3,10 +3,12 @@ extern crate clap;
 extern crate crexp_client;
 extern crate time;
 extern crate env_logger;
+extern crate eventual;
 use std::net::SocketAddr;
 use std::io::{self, Read, BufReader, BufRead};
 use std::fs::File;
 use time::{Duration, PreciseTime};
+use eventual::Async;
 
 use clap::{Arg, App, SubCommand};
 
@@ -37,7 +39,7 @@ fn main() {
         let msg = msg.expect("input message");
         let start = PreciseTime::now();
         println!("Producing: {:?}", msg.trim());
-        let res = producer.publish(msg.trim()).expect("produce");
+        let res = producer.publish(msg.trim()).await().expect("produce");
         println!("Produce: {:?} -> {:?} in {}", msg, res, start.to(PreciseTime::now()));
     }
 }
