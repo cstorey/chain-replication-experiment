@@ -9,12 +9,11 @@ use std::io::{self, Read, BufReader, BufRead};
 use std::fs::File;
 use time::{Duration, PreciseTime};
 use eventual::Async;
+use std::collections::VecDeque;
 
 use clap::{Arg, App, SubCommand};
 
 use crexp_client::Producer;
-
-struct Void;
 
 fn main() {
     env_logger::init().expect("env-logger init");
@@ -22,9 +21,11 @@ fn main() {
     let matches = App::new("producer")
         .arg(Arg::with_name("head").index(1))
         .arg(Arg::with_name("file").short("f").takes_value(true))
+        .arg(Arg::with_name("max_in_flight").short("m").takes_value(true))
         .get_matches();
 
     let head = value_t_or_exit!(matches.value_of("head"), SocketAddr);
+    let max_in_flight = value_t!(matches.value_of("max_in_flight"), usize).unwrap_or(32);
     let source = matches.value_of("file");
 
     println!("Top level start from {}", source.as_ref().unwrap_or(&"stdin"));
@@ -35,11 +36,32 @@ fn main() {
     let mut producer = Producer::new(head).expect("connect");
     println!("Got producer");
 
-    for msg in src.lines() {
-        let msg = msg.expect("input message");
-        let start = PreciseTime::now();
-        println!("Producing: {:?}", msg.trim());
-        let res = producer.publish(msg.trim()).await().expect("produce");
-        println!("Produce: {:?} -> {:?} in {}", msg, res, start.to(PreciseTime::now()));
+    let pending = src.lines()
+        .map(|msg| msg.expect("input message"))
+        .enumerate()
+        .map(|(i, msg)| { 
+                println!("Producing {}: {:?}", i, msg.trim());
+                let started = PreciseTime::now();
+                producer.publish(msg.trim())
+                    .map(move |res| {
+                        let ended = PreciseTime::now();
+                        println!("Produce {}: {:?} -> {:?} in {}", i+1, msg, res, started.to(ended));
+                    })
+            });
+
+    let mut buf = VecDeque::new();
+    for (i, p) in pending.into_iter().enumerate() {
+        buf.push_back((i, p));
+        while buf.len() > max_in_flight {
+            if let Some((i, p)) = buf.pop_front() {
+                println!("Await: {:?}", i+1);
+                let () = p.await().expect("producer");
+            }
+        };
+    }
+
+    while let Some((i, p)) = buf.pop_front() {
+        println!("Await: {:?}", i+1);
+        let () = p.await().expect("producer");
     }
 }

@@ -69,22 +69,23 @@ impl<S: ser::Serialize + 'static + fmt::Debug, R: de::Deserialize + 'static + fm
     fn recv(&mut self) -> Result<R, Error> {
         let mut buf = vec![0; 4096];
         loop {
-            let nread = try!(self.stream.read(&mut buf));
-            self.packets.feed(&buf[..nread]);
             if let Some(msg) = try!(self.packets.take()) {
                 return Ok(msg)
             }
+            let nread = try!(self.stream.read(&mut buf));
+            self.packets.feed(&buf[..nread]);
         }
     }
 }
 
 pub struct Producer {
     thread: thread::JoinHandle<()>,
-    chan: mpsc::Sender<(ClientReq, Complete<Seqno, Error>)>,
+    tx: mpsc::Sender<Complete<Seqno, Error>>,
+    chan: SexpChannel<ClientReq, ClientResp>,
 }
 
 struct ProducerInner {
-    recv: mpsc::Receiver<(ClientReq, Complete<Seqno, Error>)>,
+    rx: mpsc::Receiver<Complete<Seqno, Error>>,
     chan: SexpChannel<ClientReq, ClientResp>,
 }
 
@@ -94,24 +95,35 @@ impl Producer {
         let (tx, rx) = mpsc::channel();
 
         let inner = ProducerInner {
-            recv: rx,
-            chan: SexpChannel::new(stream),
+            rx: rx,
+            chan: SexpChannel::new(try!(stream.try_clone())),
         };
 
         let thread = try!(thread::Builder::new()
                 .name(format!("prod:{}", host))
                 .spawn(move || inner.run()));
         Ok(Producer {
-            chan: tx,
+            chan: SexpChannel::new(stream),
+            tx: tx,
             thread: thread,
+
         })
     }
 
     pub fn publish(&mut self, data: &str) -> Future<Seqno, Error> {
         let req = ClientReq::Publish(data.as_bytes().to_vec().into());
-
         let (completer, future) = Future::pair();
-        if let Err(mpsc::SendError((_req, completer))) = self.chan.send((req, completer)) {
+        debug!("Sending: {:?}", req);
+        match self.chan.send(req) {
+            Ok(()) => (),
+            Err(err) => {
+                error!("Failed to send with {:?}", err);
+                completer.fail(err);
+                return future;
+            }
+        }
+        debug!("Sending completer to reader: {:?}", completer);
+        if let Err(mpsc::SendError(completer)) = self.tx.send(completer) {
             completer.fail(Error::ThreadDeath)
         }
         future
@@ -121,17 +133,8 @@ impl Producer {
 impl ProducerInner {
     fn run(mut self) {
         debug!("Running producer inner loop");
-        for (req, completer) in self.recv {
-            debug!("Sending: {:?}", req);
-            match self.chan.send(req) {
-                Ok(()) => (),
-                Err(err) => {
-                    error!("Failed to send with {:?}", err);
-                    completer.fail(err);
-                    break;
-                }
-            };
-
+        for completer in self.rx {
+            debug!("waiting for completer: {:?}", completer);
             let resp = match self.chan.recv() {
                 Ok(resp) => resp,
                 Err(err) => {
