@@ -32,7 +32,7 @@ extern crate test;
 use mio::tcp::*;
 use mio::EventLoop;
 use mio::util::Slab;
-use std::collections::VecDeque;
+use std::collections::{VecDeque,HashMap};
 use std::net::SocketAddr;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
@@ -47,7 +47,7 @@ mod event_handler;
 mod data;
 mod replication_log;
 mod replica;
-
+mod consumer;
 
 use line_conn::{SexpPeer, LineConn, LineConnEvents};
 use downstream_conn::Downstream;
@@ -94,9 +94,9 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
         self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
     }
 
-    fn consume_requested(&mut self, source: mio::Token) {
-        // self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
-        unimplemented!()
+    fn consume_requested(&mut self, source: mio::Token, mark: Option<Seqno>) {
+        debug!("recv: consume_requested: {:?} from {:?}", source, mark);
+        self.model.send(ReplCommand::ConsumeRequest(source, mark)).expect("model send");
     }
 
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno) {
@@ -300,7 +300,9 @@ impl ChainRepl {
                 let &mut ChainRepl { ref mut queue, ref mut clock, ref mut connections, .. } = self;
                 for conn in connections.iter_mut() {
                     let now = clock.now();
-                    let mut events = ChainReplEvents { changes: queue, clock: clock, model: self.model.clone() };
+                    let mut events = ChainReplEvents {
+                        changes: queue, clock: clock, model: self.model.clone()
+                    };
                     changed |= conn.process_rules(event_loop, &now, &mut events);
                     trace!("changed:{:?}; conn:{:?} ", changed, conn);
                 }

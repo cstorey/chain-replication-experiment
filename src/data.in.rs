@@ -81,6 +81,13 @@ impl Into<client::Seqno> for Seqno {
     }
 }
 
+impl From<client::Seqno> for Seqno {
+    fn from(s: client::Seqno) -> Seqno {
+	Seqno(s.into())
+    }
+}
+
+
 #[derive(Eq,PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum Role {
     ProducerClient,

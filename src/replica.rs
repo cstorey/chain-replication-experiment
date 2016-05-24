@@ -6,6 +6,7 @@ use mio;
 
 use data::{Operation, OpResp, PeerMsg, Seqno, NodeViewConfig, Buf};
 use config::{ConfigurationView, Epoch};
+use consumer::Consumer;
 use {Notifier};
 use spki_sexp;
 use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
@@ -19,7 +20,9 @@ struct Forwarder {
 }
 
 #[derive(Debug)]
-struct Terminus;
+struct Terminus {
+    consumers: HashMap<mio::Token, Consumer>,
+}
 
 #[derive(Debug)]
 enum ReplRole {
@@ -49,6 +52,7 @@ pub enum ReplCommand {
     ResponseObserved(OpResp),
     NewConfiguration(ConfigurationView<NodeViewConfig>),
     HelloDownstream (mio::Token, Timestamp<WallT>, Epoch),
+    ConsumeRequest(mio::Token, Option<Seqno>),
     Reset,
 }
 
@@ -210,7 +214,7 @@ impl Forwarder {
 
 impl Terminus {
     fn new() -> Terminus {
-        Terminus
+        Terminus { consumers: HashMap::new() }
     }
 
     fn process_operation<O: Outputs>(&mut self,
@@ -263,6 +267,8 @@ impl<L: Log> ReplModel<L> {
                     self.reconfigure(view),
                 ReplCommand::HelloDownstream (token, at, epoch) =>
                     self.hello_downstream(&mut tx, token, at, epoch),
+                ReplCommand::ConsumeRequest (token, mark) =>
+                    self.consume_requested(&mut tx, token, mark),
                 ReplCommand::Reset => self.reset(),
             }
             while self.process_replication(&mut tx) {/* Nothing */}
@@ -351,6 +357,10 @@ impl<L: Log> ReplModel<L> {
         let msg = OpResp::HelloIWant(at, self.log.seqno());
         info!("Inform upstream about our current version, {:?}!", msg);
         out.respond_to(token, msg)
+    }
+
+    pub fn consume_requested<O: Outputs>(&mut self, out: &mut O, token: mio::Token, mark: Option<Seqno>) {
+        info!("Consume requested: {:?}@{:?}", token, mark);
     }
 
     fn configure_forwarding(&mut self, is_forwarder: bool) {
@@ -744,3 +754,5 @@ mod test {
             fn(Vec<Operation>, usize, Vec<ReplCommand>) -> TestResult)
     }
 }
+
+// let consumer = self.consumers.entry(source).or_insert_with(|| Consumer::new());

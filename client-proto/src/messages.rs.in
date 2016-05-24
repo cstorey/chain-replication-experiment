@@ -19,7 +19,7 @@ pub enum ProducerResp {
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
 pub enum ConsumerReq {
-    Consume,
+    ConsumeFrom(Option<Seqno>),
 }
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
 pub enum ConsumerResp {
