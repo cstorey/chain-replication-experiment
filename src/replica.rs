@@ -1,7 +1,9 @@
 use std::cmp;
 use std::fmt;
+use std::thread;
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver};
+use std::sync::mpsc::{Sender, Receiver, channel};
+use std::marker::PhantomData;
 use mio;
 
 use data::{Operation, OpResp, PeerMsg, Seqno, NodeViewConfig, Buf};
@@ -40,22 +42,11 @@ pub trait Log: fmt::Debug {
 }
 
 pub trait Outputs {
-    fn respond_to(&mut self, mio::Token, OpResp);
+    fn respond_to(&mut self, mio::Token, &OpResp);
     fn forward_downstream(&mut self, Timestamp<WallT>, Epoch, PeerMsg);
 }
 
-#[derive(Debug)]
-pub enum ReplCommand {
-    Operation (mio::Token, Epoch, Seqno, Buf),
-    ClientOperation (mio::Token, Buf),
-    CommitObserved (Epoch, Seqno),
-    ResponseObserved(OpResp),
-    NewConfiguration(ConfigurationView<NodeViewConfig>),
-    HelloDownstream (mio::Token, Timestamp<WallT>, Epoch),
-    ConsumeRequest(mio::Token, Option<Seqno>),
-    Reset,
-}
-
+type ReplOp<L> = Box<FnMut(&mut ReplModel<L>, &mut Notifier) + Send>;
 #[derive(Debug)]
 pub struct ReplModel<L> {
     next: ReplRole,
@@ -80,7 +71,7 @@ impl ReplRole {
             &mut ReplRole::Terminus(ref mut t) => t.process_operation(output, token, epoch, seqno, op),
         }
     }
-    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: OpResp) {
+    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
         trace!("ReplRole: process_downstream_response: {:?}", reply);
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_downstream_response(out, reply),
@@ -124,11 +115,11 @@ impl Forwarder {
         self.pending_operations.insert(seqno, token);
     }
 
-    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: OpResp) {
+    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
         trace!("Forwarder: {:?}", self);
         trace!("Forwarder: process_downstream_response: {:?}", reply);
         match reply {
-            OpResp::Ok(_epoch, seqno, _) | OpResp::Err(_epoch, seqno, _) => {
+            &OpResp::Ok(_epoch, seqno, _) | &OpResp::Err(_epoch, seqno, _) => {
                 self.last_acked_downstream = Some(seqno);
                 if let Some(token) = self.pending_operations.remove(&seqno) {
                     trace!("Found in-flight op {:?} for client token {:?}",
@@ -139,7 +130,7 @@ impl Forwarder {
                     warn!("Unexpected response for seqno: {:?}", seqno);
                 }
             }
-            OpResp::HelloIWant(ts, last_prepared_downstream) => {
+            &OpResp::HelloIWant(ts, last_prepared_downstream) => {
                 info!("{}; Downstream has {:?}", ts, last_prepared_downstream);
                 // assert!(last_prepared_downstream <= self.seqno());
                 self.last_acked_downstream = Some(last_prepared_downstream);
@@ -225,7 +216,7 @@ impl Terminus {
                          op: &[u8])
                          {
         trace!("Terminus! {:?}/{:?}", seqno, op);
-        output.respond_to(token, OpResp::Ok(epoch, seqno, None))
+        output.respond_to(token, &OpResp::Ok(epoch, seqno, None))
     }
 }
 
@@ -250,27 +241,11 @@ impl<L: Log> ReplModel<L> {
         self.log.seqno()
     }
 
-    pub fn run_from(&mut self, rx: Receiver<ReplCommand>, mut tx: Notifier) {
+    fn run_from(&mut self, rx: Receiver<ReplOp<L>>, mut tx: Notifier) {
         loop {
-            let cmd = rx.recv().expect("recv model command");
-            debug!("Command: {:?}", cmd);
-            match cmd {
-                ReplCommand::Operation (source, epoch, seqno, op) =>
-                    self.process_operation(&mut tx, source, seqno, epoch, &op),
-                ReplCommand::ClientOperation (source, op) =>
-                    self.process_client(&mut tx, source, &op),
-                ReplCommand::CommitObserved (epoch, seqno) =>
-                    self.commit_observed(seqno),
-                ReplCommand::ResponseObserved(resp) =>
-                    self.process_downstream_response(&mut tx, resp),
-                ReplCommand::NewConfiguration(view) =>
-                    self.reconfigure(view),
-                ReplCommand::HelloDownstream (token, at, epoch) =>
-                    self.hello_downstream(&mut tx, token, at, epoch),
-                ReplCommand::ConsumeRequest (token, mark) =>
-                    self.consume_requested(&mut tx, token, mark),
-                ReplCommand::Reset => self.reset(),
-            }
+            let mut cmd = rx.recv().expect("recv model command");
+            cmd(self, &mut tx);
+
             while self.process_replication(&mut tx) {/* Nothing */}
         }
     }
@@ -301,7 +276,7 @@ impl<L: Log> ReplModel<L> {
                                    format!("BadEpoch: {:?}; last seen config: {:?}",
                                            epoch,
                                            self.current_epoch));
-            return output.respond_to(token, resp);
+            return output.respond_to(token, &resp);
         }
 
         self.log.prepare(seqno, &op);
@@ -309,7 +284,7 @@ impl<L: Log> ReplModel<L> {
         self.next.process_operation(output, token, epoch, seqno, &op)
     }
 
-    pub fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: OpResp) {
+    pub fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
         trace!("ReplRole: process_downstream_response: {:?}", reply);
         self.next.process_downstream_response(out, reply)
     }
@@ -356,7 +331,7 @@ impl<L: Log> ReplModel<L> {
         debug!("{}; hello_downstream: {:?}; {:?}", at, token, epoch);
         let msg = OpResp::HelloIWant(at, self.log.seqno());
         info!("Inform upstream about our current version, {:?}!", msg);
-        out.respond_to(token, msg)
+        out.respond_to(token, &msg)
     }
 
     pub fn consume_requested<O: Outputs>(&mut self, out: &mut O, token: mio::Token, mark: Option<Seqno>) {
@@ -390,7 +365,7 @@ impl<L: Log> ReplModel<L> {
         self.current_epoch = epoch;
     }
 
-    pub fn reconfigure(&mut self, view: ConfigurationView<NodeViewConfig>) {
+    pub fn reconfigure(&mut self, view: &ConfigurationView<NodeViewConfig>) {
         info!("Reconfiguring from: {:?}", view);
         self.set_epoch(view.epoch);
         self.configure_forwarding(view.should_connect_downstream().is_some());
@@ -398,6 +373,52 @@ impl<L: Log> ReplModel<L> {
         info!("Reconfigured from: {:?}", view);
     }
 
+}
+
+pub struct ReplProxy<L: Log + Send + 'static> {
+    inner_thread: thread::JoinHandle<()>,
+    tx: Sender<ReplOp<L>>,
+}
+
+impl<L: Log + Send + 'static> ReplProxy<L> {
+    pub fn build(mut inner: ReplModel<L>, notifications: Notifier) -> Self {
+        let (tx, rx) = channel();
+        let inner_thread = thread::Builder::new().name("replmodel".to_string())
+            .spawn(move || inner.run_from(rx, notifications)).expect("spawn model");
+        ReplProxy {
+            inner_thread: inner_thread,
+            tx: tx,
+        }
+    }
+
+    fn invoke<F: FnMut(&mut ReplModel<L>, &mut Notifier) + Send + 'static>(&mut self, f: F) {
+        self.tx.send(Box::new(f)).expect("send to inner thread")
+    }
+
+    pub fn process_operation (&mut self, token: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf) {
+       self.invoke(move |m, tx| m.process_operation(tx, token, seqno, epoch, &op))
+    }
+    pub fn client_operation (&mut self, token: mio::Token, op: Buf){
+       self.invoke(move |m, tx| m.process_client(tx, token, &op))
+    }
+    pub fn commit_observed (&mut self, epoch: Epoch, seq: Seqno){
+       self.invoke(move |m, tx| m.commit_observed(seq))
+    }
+    pub fn response_observed(&mut self, resp: OpResp){
+        self.invoke(move |m, tx| m.process_downstream_response(tx, &resp))
+    }
+    pub fn new_configuration(&mut self, view: ConfigurationView<NodeViewConfig>){
+       self.invoke(move |m, tx| m.reconfigure(&view))
+    }
+    pub fn hello_downstream (&mut self, token: mio::Token, at: Timestamp<WallT>, epoch: Epoch){
+       self.invoke(move |m, tx| m.hello_downstream(tx, token, at, epoch))
+    }
+    pub fn consume_requested(&mut self, token: mio::Token, mark: Option<Seqno>){
+       self.invoke(move |m, tx| m.consume_requested(tx, token, mark))
+    }
+    pub fn reset(&mut self) {
+       self.invoke(move |m, _| m.reset())
+    }
 }
 
 #[cfg(test)]
@@ -425,8 +446,8 @@ mod test {
     #[derive(Debug)]
     struct Outs(VecDeque<OutMessage>);
     impl Outputs for Outs {
-        fn respond_to(&mut self, token: Token, resp: OpResp) {
-            self.0.push_back(OutMessage::Response(token, resp))
+        fn respond_to(&mut self, token: Token, resp: &OpResp) {
+            self.0.push_back(OutMessage::Response(token, resp.clone()))
         }
         fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
             self.0.push_back(OutMessage::Forward(
@@ -702,7 +723,7 @@ mod test {
         let mut observed = Outs(VecDeque::new());
 
         replication.configure_forwarding(true);
-        replication.process_downstream_response(&mut observed, OpResp::HelloIWant(clock.now(), Seqno::new(downstream_has as u64)));
+        replication.process_downstream_response(&mut observed, &OpResp::HelloIWant(clock.now(), Seqno::new(downstream_has as u64)));
 
         while replication.process_replication(&mut observed) {
             debug!("iterated replication");

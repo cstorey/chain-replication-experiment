@@ -34,7 +34,7 @@ use mio::EventLoop;
 use mio::util::Slab;
 use std::collections::{VecDeque,HashMap};
 use std::net::SocketAddr;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel};
 use std::thread;
 use std::mem;
 use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
@@ -58,7 +58,7 @@ use data::{Seqno, OpResp, PeerMsg, NodeViewConfig, Buf};
 use config::{ConfigurationView, Epoch};
 
 pub use config::ConfigClient;
-pub use replica::{ReplModel,ReplCommand};
+pub use replica::{ReplModel,ReplProxy};
 pub use replication_log::RocksdbLog;
 pub use data::Role;
 
@@ -71,7 +71,7 @@ pub enum ChainReplMsg {
 struct ChainReplEvents<'a> {
     changes: &'a mut VecDeque<ChainReplMsg>,
     clock: &'a mut Clock<Wall>,
-    model: Sender<ReplCommand>,
+    model: &'a mut ReplProxy<RocksdbLog>,
 }
 
 impl<'a> ListenerEvents for ChainReplEvents<'a> {
@@ -85,35 +85,36 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
         self.clock.observe(&at);
         let now = self.clock.now();
         debug!("recv hello_downstream: {} -> {}", at, now);
-        self.model.send(ReplCommand::HelloDownstream(source, now, epoch)).expect("model send")
+        self.model.hello_downstream(source, now, epoch)
     }
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf) {
-        self.model.send(ReplCommand::Operation(source, epoch, seqno, op)).expect("model send");
+        self.model.process_operation(source, epoch, seqno, op)
     }
     fn client_request(&mut self, source: mio::Token, op: Buf) {
-        self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
+        self.model.client_operation(source, op)
     }
 
     fn consume_requested(&mut self, source: mio::Token, mark: Option<Seqno>) {
         debug!("recv: consume_requested: {:?} from {:?}", source, mark);
-        self.model.send(ReplCommand::ConsumeRequest(source, mark)).expect("model send");
+        self.model.consume_requested(source, mark)
     }
 
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno) {
-        self.model.send(ReplCommand::CommitObserved(epoch, seqno)).expect("model send");
+        self.model.commit_observed(epoch, seqno)
     }
 
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>) {
-        self.model.send(ReplCommand::ResponseObserved(OpResp::Ok(epoch, seqno, data))).expect("model send");
+        self.model.response_observed(OpResp::Ok(epoch, seqno, data))
     }
+
     fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno) {
         self.clock.observe(&at);
         let now = self.clock.now();
         debug!("recv hello_i_want: {} -> {}", at, now);
-        self.model.send(ReplCommand::ResponseObserved(OpResp::HelloIWant(now, seqno))).expect("model send");
+        self.model.response_observed(OpResp::HelloIWant(now, seqno))
     }
     fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String) {
-        self.model.send(ReplCommand::ResponseObserved(OpResp::Err(epoch, seqno, data))).expect("model send");
+        self.model.response_observed(OpResp::Err(epoch, seqno, data))
     }
 }
 
@@ -124,8 +125,7 @@ pub struct ChainRepl {
     node_config: NodeViewConfig,
     new_view: Option<ConfigurationView<NodeViewConfig>>,
     queue: VecDeque<ChainReplMsg>,
-    model_thread: thread::JoinHandle<()>,
-    model: Sender<ReplCommand>,
+    model: ReplProxy<RocksdbLog>,
     clock: Clock<Wall>,
 }
 
@@ -133,12 +133,7 @@ const MAX_LISTENERS: usize = 4;
 const MAX_CONNS: usize = 1024;
 
 impl ChainRepl {
-    pub fn new(mut model: ReplModel<RocksdbLog>, event_loop: &mut EventLoop<ChainRepl>) -> ChainRepl {
-        let (tx, rx) = channel();
-        let notifications = Self::get_notifier(event_loop);
-        let model_thread = thread::Builder::new().name("replmodel".to_string()).spawn(move || {
-            model.run_from(rx, notifications);
-        }).expect("spawn model");
+    pub fn new(model: ReplProxy<RocksdbLog>, event_loop: &mut EventLoop<ChainRepl>) -> ChainRepl {
         ChainRepl {
             listeners: Slab::new(MAX_LISTENERS),
             connections: Slab::new_starting_at(mio::Token(MAX_LISTENERS), MAX_CONNS),
@@ -146,8 +141,7 @@ impl ChainRepl {
             node_config: Default::default(),
             new_view: None,
             queue: VecDeque::new(),
-            model_thread: model_thread,
-            model: tx,
+            model: model,
             clock: Clock::wall(),
         }
     }
@@ -254,7 +248,7 @@ impl ChainRepl {
         self.set_downstream(event_loop, view.epoch, ds);
 
         info!("Reconfigure model: {:?}", view);
-        self.model.send(ReplCommand::NewConfiguration(view)).expect("model send")
+        self.model.new_configuration(view)
     }
 
     fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {
@@ -290,13 +284,12 @@ impl ChainRepl {
             trace!("Iter: {:?}", iterations);
             changed = false;
             {
-                let &mut ChainRepl { ref mut queue, ref mut clock,
+                let &mut ChainRepl { ref mut queue, ref mut clock, ref mut model,
                     ref mut connections, ref mut listeners, .. } = self;
                 let mut events = ChainReplEvents {
-                    changes: queue, clock: clock, model: self.model.clone()
+                    changes: queue, clock: clock, model: model,
                 };
                 for conn in listeners.iter_mut() {
-                    let now = events.clock.now();
                     changed |= conn.process_rules(event_loop, &mut events);
                     trace!("changed:{:?}; listener:{:?} ", changed, conn);
                 }
@@ -328,7 +321,7 @@ impl ChainRepl {
             trace!("Removing; {:?}; {:?}", token, it);
             if Some(token) == self.downstream_slot {
                 self.downstream_slot = None;
-                self.model.send(ReplCommand::Reset).expect("model send");
+                self.model.reset()
             }
         }
     }
@@ -407,9 +400,9 @@ impl Notifier {
 }
 
 impl replica::Outputs for Notifier {
-    fn respond_to(&mut self, token: mio::Token, resp: OpResp) {
+    fn respond_to(&mut self, token: mio::Token, resp: &OpResp) {
         trace!("respond_to: {:?} -> {:?}", token, resp);
-        self.notify(Notification::RespondTo(token, resp))
+        self.notify(Notification::RespondTo(token, resp.clone()))
     }
 
     fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {

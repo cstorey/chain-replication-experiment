@@ -12,7 +12,7 @@ use std::net::ToSocketAddrs;
 use std::collections::HashSet;
 use clap::{Arg, App};
 
-use vastatrix::{ChainRepl, Role, ConfigClient, ReplModel, RocksdbLog};
+use vastatrix::{ChainRepl, Role, ConfigClient, ReplModel, ReplProxy, RocksdbLog};
 
 const LOG_FILE: &'static str = "log.toml";
 
@@ -32,7 +32,10 @@ fn main() {
     let repl_notifier = ChainRepl::get_notifier(&mut event_loop);
     let log = RocksdbLog::new(move |seqno| repl_notifier.committed_to(seqno));
     let replication = ReplModel::new(log);
-    let mut service = ChainRepl::new(replication, &mut event_loop);
+
+    let mut service = ChainRepl::new(
+            ReplProxy::build(replication, ChainRepl::get_notifier(&mut event_loop)),
+            &mut event_loop);
 
     if let Some(listen_addr) = matches.value_of("bind") {
         let listen_addrs = listen_addr.to_socket_addrs()
