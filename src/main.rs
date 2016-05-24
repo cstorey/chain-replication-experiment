@@ -22,6 +22,7 @@ fn main() {
     }
     let matches = App::new("chain-repl-test")
                       .arg(Arg::with_name("bind").short("l").takes_value(true))
+                      .arg(Arg::with_name("consumer").short("c").takes_value(true))
                       .arg(Arg::with_name("peer").short("p").takes_value(true))
                       .arg(Arg::with_name("etcd").short("e").takes_value(true))
                       .get_matches();
@@ -39,7 +40,16 @@ fn main() {
                                       .collect::<HashSet<_>>();
         info!("Client addresses: {:?}", listen_addrs);
         for listen_addr in listen_addrs {
-            service.listen(&mut event_loop, listen_addr, Role::Client);
+            service.listen(&mut event_loop, listen_addr, Role::ProducerClient);
+        }
+    }
+    if let Some(listen_addr) = matches.value_of("consumer") {
+        let listen_addrs = listen_addr.to_socket_addrs()
+                                      .expect("parse bind address")
+                                      .collect::<HashSet<_>>();
+        info!("Client addresses: {:?}", listen_addrs);
+        for listen_addr in listen_addrs {
+            service.listen(&mut event_loop, listen_addr, Role::ConsumerClient);
         }
     }
 

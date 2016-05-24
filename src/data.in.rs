@@ -27,16 +27,16 @@ pub enum OpResp {
     Err(Epoch, Seqno, String),
 }
 
-impl Into<client::ClientResp> for OpResp {
-    fn into(self) -> client::ClientResp {
+impl Into<client::ProducerResp> for OpResp {
+    fn into(self) -> client::ProducerResp {
         match self {
-	    OpResp::Ok(_, seqno, None) => client::ClientResp::Ok(seqno.into()),
+	    OpResp::Ok(_, seqno, None) => client::ProducerResp::Ok(seqno.into()),
 	    OpResp::Ok(_, seqno, Some(val)) => {
 		warn!("Ignored response val @{:?}: {:?}", seqno, val);
-		client::ClientResp::Ok(seqno.into())
+		client::ProducerResp::Ok(seqno.into())
 	    },
 	    OpResp::HelloIWant(_, _) => unreachable!(),
-	    OpResp::Err(_, seqno, message) => client::ClientResp::Err(seqno.into(), message),
+	    OpResp::Err(_, seqno, message) => client::ProducerResp::Err(seqno.into(), message),
 	}
     }
 }
@@ -83,14 +83,16 @@ impl Into<client::Seqno> for Seqno {
 
 #[derive(Eq,PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum Role {
-    Client,
+    ProducerClient,
+    ConsumerClient,
     Upstream,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeViewConfig {
     pub peer_addr: Option<String>,
-    pub client_addr: Option<String>,
+    pub producer_addr: Option<String>,
+    pub consumer_addr: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

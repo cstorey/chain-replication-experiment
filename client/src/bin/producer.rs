@@ -39,7 +39,7 @@ fn main() {
     let pending = src.lines()
         .map(|msg| msg.expect("input message"))
         .enumerate()
-        .map(|(i, msg)| { 
+        .map(|(i, msg)| {
                 println!("Producing {}: {:?}", i, msg.trim());
                 let started = PreciseTime::now();
                 producer.publish(msg.trim())

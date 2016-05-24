@@ -357,9 +357,14 @@ impl<T: Clone> ConfigurationView<T> {
         self.ord == 0
     }
 
+    pub fn is_tail(&self) -> bool {
+        self.next.is_none()
+    }
+
     pub fn should_listen_for(&self, role: &Role) -> bool {
         match role {
-            &Role::Client => self.is_head(),
+            &Role::ProducerClient => self.is_head(),
+            &Role::ConsumerClient => self.is_tail(),
             &Role::Upstream => !self.is_head(),
         }
     }

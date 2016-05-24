@@ -8,13 +8,22 @@ pub struct Seqno(u64);
 pub struct Buf(ByteBuf);
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
-pub enum ClientReq {
+pub enum ProducerReq {
     Publish(Buf)
 }
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
-pub enum ClientResp {
+pub enum ProducerResp {
     Ok(Seqno),
     Err(Seqno, String),
+}
+
+#[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
+pub enum ConsumerReq {
+    Consume,
+}
+#[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
+pub enum ConsumerResp {
+    Ok(Seqno, Buf),
 }
 
 impl Into<Vec<u8>> for Buf {

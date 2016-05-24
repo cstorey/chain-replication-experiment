@@ -84,7 +84,7 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
     fn hello_downstream(&mut self, source: mio::Token, at: Timestamp<WallT>, epoch: Epoch) {
         self.clock.observe(&at);
         let now = self.clock.now();
-        debug!("hello_downstream: {} -> {}", at, now);
+        debug!("recv hello_downstream: {} -> {}", at, now);
         self.model.send(ReplCommand::HelloDownstream(source, now, epoch)).expect("model send")
     }
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf) {
@@ -93,6 +93,12 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
     fn client_request(&mut self, source: mio::Token, op: Buf) {
         self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
     }
+
+    fn consume_requested(&mut self, source: mio::Token) {
+        // self.model.send(ReplCommand::ClientOperation(source, op)).expect("model send");
+        unimplemented!()
+    }
+
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno) {
         self.model.send(ReplCommand::CommitObserved(epoch, seqno)).expect("model send");
     }
@@ -103,7 +109,7 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
     fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno) {
         self.clock.observe(&at);
         let now = self.clock.now();
-        debug!("hello_i_want: {} -> {}", at, now);
+        debug!("recv hello_i_want: {} -> {}", at, now);
         self.model.send(ReplCommand::ResponseObserved(OpResp::HelloIWant(now, seqno))).expect("model send");
     }
     fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String) {
@@ -154,8 +160,12 @@ impl ChainRepl {
                                            node_config.peer_addr = Some(format!("{}",
                                                                                 l.listen_addr()))
                                        }
-                                       Role::Client => {
-                                           node_config.client_addr = Some(format!("{}",
+                                       Role::ProducerClient => {
+                                           node_config.producer_addr = Some(format!("{}",
+                                                                                  l.listen_addr()))
+                                       }
+                                       Role::ConsumerClient => {
+                                           node_config.consumer_addr = Some(format!("{}",
                                                                                   l.listen_addr()))
                                        }
                                    }
@@ -207,7 +217,8 @@ impl ChainRepl {
         let token = self.connections
                         .insert_with(|token| {
                             match role {
-                                Role::Client => EventHandler::Client(LineConn::peer(socket, token)),
+                                Role::ProducerClient => EventHandler::Client(LineConn::peer(socket, token)),
+                                Role::ConsumerClient => EventHandler::Consumer(LineConn::peer(socket, token)),
                                 Role::Upstream => EventHandler::Upstream(LineConn::peer(socket, token))
                             }
                         })

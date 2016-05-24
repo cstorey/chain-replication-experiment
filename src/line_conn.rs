@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use super::{ChainRepl,ChainReplMsg};
 use data::{OpResp, Operation, PeerMsg, ReplicationMessage, Seqno, Buf};
 use config::Epoch;
-use crexp_client_proto::messages::{ClientReq,ClientResp};
+use crexp_client_proto::messages::{ProducerReq,ProducerResp, ConsumerReq, ConsumerResp};
 use hybrid_clocks::{Timestamp, WallT};
 
 const NL: u8 = '\n' as u8;
@@ -38,6 +38,8 @@ pub trait LineConnEvents {
     fn operation(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf);
     fn client_request(&mut self, source: mio::Token, op: Buf);
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno);
+
+    fn consume_requested(&mut self, source: mio::Token);
 
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>);
     fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno);
@@ -280,7 +282,7 @@ impl Reader<OpResp> for SexpPeer {
 }
 
 
-impl Reader<ClientReq> for SexpPeer {
+impl Reader<ProducerReq> for SexpPeer {
     fn new(token: mio::Token) -> SexpPeer {
         Self::fresh(token)
     }
@@ -288,12 +290,12 @@ impl Reader<ClientReq> for SexpPeer {
         self.packets.feed(slice)
     }
 
-    fn process<P: Protocol<Recv=ClientReq>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
+    fn process<P: Protocol<Recv=ProducerReq>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ClientReq::Publish(data)  => events.client_request(token, data.into()),
+                ProducerReq::Publish(data)  => events.client_request(token, data.into()),
             }
             changed = true;
         }
@@ -302,6 +304,28 @@ impl Reader<ClientReq> for SexpPeer {
     }
 }
 
+impl Reader<ConsumerReq> for SexpPeer {
+    fn new(token: mio::Token) -> SexpPeer {
+        Self::fresh(token)
+    }
+    fn feed(&mut self, slice: &[u8]) {
+        self.packets.feed(slice)
+    }
+
+    // No requests yet
+    fn process<P: Protocol<Recv=ConsumerReq>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
+        let mut changed = false;
+        // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
+        while let Some(msg) = self.packets.take().expect("Pull packet") {
+            match msg {
+                ConsumerReq::Consume => events.consume_requested(token)
+            }
+            changed = true;
+        }
+
+        changed
+    }
+}
 impl<P> LineConn<SexpPeer, P>
     where P: Protocol,
           SexpPeer: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug
@@ -314,6 +338,13 @@ impl<P> LineConn<SexpPeer, P>
 #[derive(Debug)]
 pub struct ClientProto;
 impl Protocol for ClientProto {
-    type Send = ClientResp;
-    type Recv = ClientReq;
+    type Send = ProducerResp;
+    type Recv = ProducerReq;
+}
+
+#[derive(Debug)]
+pub struct ConsumerProto;
+impl Protocol for ConsumerProto {
+    type Send = ConsumerResp;
+    type Recv = ConsumerReq;
 }

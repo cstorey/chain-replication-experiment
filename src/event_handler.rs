@@ -3,7 +3,7 @@ use mio;
 use super::{ChainRepl, ChainReplMsg};
 use data::OpResp;
 
-use line_conn::{SexpPeer, LineConn, ClientProto, PeerClientProto, LineConnEvents};
+use line_conn::{SexpPeer, LineConn, ClientProto, ConsumerProto, PeerClientProto, LineConnEvents};
 use downstream_conn::Downstream;
 use listener::{Listener,ListenerEvents};
 use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
@@ -12,6 +12,7 @@ use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 pub enum EventHandler {
     Listener(Listener),
     Client(LineConn<SexpPeer, ClientProto>),
+    Consumer(LineConn<SexpPeer, ConsumerProto>),
     Upstream(LineConn<SexpPeer, PeerClientProto>),
     Downstream(Downstream<SexpPeer /* , ServerProto */>),
 }
@@ -22,6 +23,7 @@ impl EventHandler {
                         events: mio::EventSet) {
         match self {
             &mut EventHandler::Client(ref mut conn) => conn.handle_event(_event_loop, events),
+            &mut EventHandler::Consumer(ref mut conn) => conn.handle_event(_event_loop, events),
             &mut EventHandler::Upstream(ref mut conn) => conn.handle_event(_event_loop, events),
             &mut EventHandler::Downstream(ref mut conn) => conn.handle_event(_event_loop, events),
             &mut EventHandler::Listener(ref mut listener) => {
@@ -33,6 +35,7 @@ impl EventHandler {
     pub fn initialize(&self, event_loop: &mut mio::EventLoop<ChainRepl>, token: mio::Token) {
         match self {
             &EventHandler::Client(ref conn) => conn.initialize(event_loop, token),
+            &EventHandler::Consumer(ref conn) => conn.initialize(event_loop, token),
             &EventHandler::Upstream(ref conn) => conn.initialize(event_loop, token),
             &EventHandler::Downstream(ref conn) => conn.initialize(event_loop, token),
             &EventHandler::Listener(ref listener) => listener.initialize(event_loop, token),
@@ -47,6 +50,7 @@ impl EventHandler {
                                                  -> bool {
         match self {
             &mut EventHandler::Client(ref mut conn) => conn.process_rules(event_loop, events),
+            &mut EventHandler::Consumer(ref mut conn) => conn.process_rules(event_loop, events),
             &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, events),
             &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, now, events),
             &mut EventHandler::Listener(ref mut listener) => {
@@ -58,6 +62,7 @@ impl EventHandler {
     pub fn should_close(&self) -> bool {
         match self {
             &EventHandler::Client(ref conn) => conn.should_close(),
+            &EventHandler::Consumer(ref conn) => conn.should_close(),
             &EventHandler::Upstream(ref conn) => conn.should_close(),
             &EventHandler::Downstream(ref conn) => conn.should_close(),
             &EventHandler::Listener(ref listener) => listener.should_close(),
