@@ -118,6 +118,7 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
 }
 
 pub struct ChainRepl {
+    listeners: Slab<Listener>,
     connections: Slab<EventHandler>,
     downstream_slot: Option<mio::Token>,
     node_config: NodeViewConfig,
@@ -128,6 +129,9 @@ pub struct ChainRepl {
     clock: Clock<Wall>,
 }
 
+const MAX_LISTENERS: usize = 4;
+const MAX_CONNS: usize = 1024;
+
 impl ChainRepl {
     pub fn new(mut model: ReplModel<RocksdbLog>, event_loop: &mut EventLoop<ChainRepl>) -> ChainRepl {
         let (tx, rx) = channel();
@@ -136,7 +140,8 @@ impl ChainRepl {
             model.run_from(rx, notifications);
         }).expect("spawn model");
         ChainRepl {
-            connections: Slab::new(1024),
+            listeners: Slab::new(MAX_LISTENERS),
+            connections: Slab::new_starting_at(mio::Token(MAX_LISTENERS), MAX_CONNS),
             downstream_slot: None,
             node_config: Default::default(),
             new_view: None,
@@ -152,8 +157,8 @@ impl ChainRepl {
                   addr: SocketAddr,
                   role: Role) {
         info!("Listen on {:?} for {:?}", addr, role);
-        let &mut ChainRepl { ref mut connections, ref mut node_config, .. } = self;
-        let token = connections.insert_with(|token| {
+        let &mut ChainRepl { ref mut listeners, ref mut node_config, .. } = self;
+        let token = listeners.insert_with(|token| {
                                    let l = Listener::new(addr, token, role.clone());
                                    match role {
                                        Role::Upstream => {
@@ -171,10 +176,10 @@ impl ChainRepl {
                                    }
 
                                    trace!("Listener: {:?}", l);
-                                   EventHandler::Listener(l)
+                                   l
                                })
                                .expect("insert listener");
-        connections[token].initialize(event_loop, token);
+        listeners[token].initialize(event_loop, token);
     }
 
     pub fn set_downstream(&mut self,
@@ -236,7 +241,7 @@ impl ChainRepl {
                    view: ConfigurationView<NodeViewConfig>) {
         info!("Reconfigure according to: {:?}", view);
 
-        for p in self.listeners() {
+        for p in self.listeners.iter_mut() {
             let should_listen = view.should_listen_for(&p.role);
             trace!("Active: {:?} -> {:?}", p, should_listen);
             p.set_active(should_listen);
@@ -264,18 +269,6 @@ impl ChainRepl {
         })
     }
 
-    fn listeners<'a>(&'a mut self) -> Vec<&'a mut Listener> {
-        self.connections
-            .iter_mut()
-            .filter_map(|it| {
-                match it {
-                    &mut EventHandler::Listener(ref mut l) => Some(l),
-                    _ => None,
-                }
-            })
-            .collect()
-    }
-
     fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>)
                                              -> bool {
         let mut changed = false;
@@ -297,12 +290,18 @@ impl ChainRepl {
             trace!("Iter: {:?}", iterations);
             changed = false;
             {
-                let &mut ChainRepl { ref mut queue, ref mut clock, ref mut connections, .. } = self;
+                let &mut ChainRepl { ref mut queue, ref mut clock,
+                    ref mut connections, ref mut listeners, .. } = self;
+                let mut events = ChainReplEvents {
+                    changes: queue, clock: clock, model: self.model.clone()
+                };
+                for conn in listeners.iter_mut() {
+                    let now = events.clock.now();
+                    changed |= conn.process_rules(event_loop, &mut events);
+                    trace!("changed:{:?}; listener:{:?} ", changed, conn);
+                }
                 for conn in connections.iter_mut() {
-                    let now = clock.now();
-                    let mut events = ChainReplEvents {
-                        changes: queue, clock: clock, model: self.model.clone()
-                    };
+                    let now = events.clock.now();
                     changed |= conn.process_rules(event_loop, &now, &mut events);
                     trace!("changed:{:?}; conn:{:?} ", changed, conn);
                 }
@@ -323,7 +322,7 @@ impl ChainRepl {
 
     fn io_ready(&mut self, event_loop: &mut mio::EventLoop<Self>, token: mio::Token) {
         self.converge_state(event_loop);
-        if self.connections[token].should_close() {
+        if !self.token_is_listener(token) && self.connections[token].should_close() {
             trace!("Close candidate: {:?}", token);
             let it = self.connections.remove(token);
             trace!("Removing; {:?}; {:?}", token, it);
@@ -363,6 +362,9 @@ impl ChainRepl {
         let now = self.clock.now();
 
         self.downstream().expect("downstream").send_to_downstream(now, epoch, msg)
+    }
+    fn token_is_listener(&self, token: mio::Token) -> bool {
+        token.as_usize() < MAX_LISTENERS
     }
 }
 
@@ -425,7 +427,11 @@ impl mio::Handler for ChainRepl {
              token: mio::Token,
              events: mio::EventSet) {
         trace!("{:?}: {:?}", token, events);
-        self.connections[token].handle_event(event_loop, events);
+        if self.token_is_listener(token) {
+            self.listeners[token].handle_event(event_loop, events);
+        } else {
+            self.connections[token].handle_event(event_loop, events);
+        }
         self.io_ready(event_loop, token);
     }
 
