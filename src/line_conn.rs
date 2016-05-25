@@ -39,7 +39,7 @@ pub trait LineConnEvents {
     fn client_request(&mut self, source: mio::Token, op: Buf);
     fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno);
 
-    fn consume_requested(&mut self, source: mio::Token, mark: Option<Seqno>);
+    fn consume_requested(&mut self, source: mio::Token, mark: Seqno);
 
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>);
     fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno);
@@ -318,7 +318,7 @@ impl Reader<ConsumerReq> for SexpPeer {
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ConsumerReq::ConsumeFrom(mark) => events.consume_requested(token, mark.map(|s| s.into()))
+                ConsumerReq::ConsumeFrom(mark) => events.consume_requested(token, mark.into())
             }
             changed = true;
         }

@@ -44,6 +44,7 @@ pub trait Log: fmt::Debug {
 pub trait Outputs {
     fn respond_to(&mut self, mio::Token, &OpResp);
     fn forward_downstream(&mut self, Timestamp<WallT>, Epoch, PeerMsg);
+    fn consumer_message(&mut self, mio::Token, Seqno, Buf);
 }
 
 type ReplOp<L> = Box<FnMut(&mut ReplModel<L>, &mut Notifier) + Send>;
@@ -83,10 +84,19 @@ impl ReplRole {
         trace!("ReplRole: process_replication");
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_replication(clock, epoch, log, out),
-            _ => { debug!("process_replication no-op"); false },
+            &mut ReplRole::Terminus(ref mut t) => t.process_replication(clock, epoch, log, out),
         }
     }
 
+    pub fn consume_requested<O: Outputs>(&mut self, out: &mut O, token: mio::Token, epoch: Epoch, mark: Seqno) {
+        match self {
+            &mut ReplRole::Terminus(ref mut t) => t.consume_requested(out, token, epoch, mark),
+            other => {
+                error!("consume_requested of {:?}", other);
+                out.respond_to(token, &OpResp::Err(epoch, mark, "cannot consume from non-terminus".to_string()))
+            },
+        }
+    }
     fn reset(&mut self) {
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.reset(),
@@ -218,6 +228,21 @@ impl Terminus {
         trace!("Terminus! {:?}/{:?}", seqno, op);
         output.respond_to(token, &OpResp::Ok(epoch, seqno, None))
     }
+    pub fn consume_requested<O: Outputs>(&mut self, out: &mut O, token: mio::Token, epoch: Epoch, mark: Seqno) {
+        debug!("Terminus: consume_requested: {:?} from {:?}@{:?}", token, mark, epoch);
+        let consumer = self.consumers.entry(token).or_insert_with(|| Consumer::new());
+        consumer.consume_requested(mark)
+    }
+
+    fn process_replication<L: Log, O: Outputs>(&mut self,
+            clock: &mut Clock<Wall>, epoch: Epoch, log: &L, out: &mut O) -> bool {
+        let mut changed = false;
+        for (&token, cons) in self.consumers.iter_mut() {
+            changed |= cons.process(out, token, log)
+        }
+        changed
+    }
+
 }
 
 impl<L: Log> ReplModel<L> {
@@ -334,8 +359,8 @@ impl<L: Log> ReplModel<L> {
         out.respond_to(token, &msg)
     }
 
-    pub fn consume_requested<O: Outputs>(&mut self, out: &mut O, token: mio::Token, mark: Option<Seqno>) {
-        info!("Consume requested: {:?}@{:?}", token, mark);
+    pub fn consume_requested<O: Outputs>(&mut self, out: &mut O, token: mio::Token, mark: Seqno) {
+        self.next.consume_requested(out, token, self.current_epoch, mark)
     }
 
     fn configure_forwarding(&mut self, is_forwarder: bool) {
@@ -413,7 +438,7 @@ impl<L: Log + Send + 'static> ReplProxy<L> {
     pub fn hello_downstream (&mut self, token: mio::Token, at: Timestamp<WallT>, epoch: Epoch){
        self.invoke(move |m, tx| m.hello_downstream(tx, token, at, epoch))
     }
-    pub fn consume_requested(&mut self, token: mio::Token, mark: Option<Seqno>){
+    pub fn consume_requested(&mut self, token: mio::Token, mark: Seqno){
        self.invoke(move |m, tx| m.consume_requested(tx, token, mark))
     }
     pub fn reset(&mut self) {
@@ -775,5 +800,3 @@ mod test {
             fn(Vec<Operation>, usize, Vec<ReplCommand>) -> TestResult)
     }
 }
-
-// let consumer = self.consumers.entry(source).or_insert_with(|| Consumer::new());

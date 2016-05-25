@@ -71,7 +71,7 @@ impl Consumer {
 
     pub fn subscribe(&mut self) -> Stream<(Seqno, Vec<u8>), Error> {
         let (sender, stream) = Stream::pair();
-        let req = ConsumerReq::ConsumeFrom(None);
+        let req = ConsumerReq::ConsumeFrom(Seqno::zero());
         match self.chan.send(req) {
             Ok(()) => (),
             Err(err) => {

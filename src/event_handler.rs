@@ -1,7 +1,8 @@
 use mio;
 
 use super::{ChainRepl, ChainReplMsg};
-use data::OpResp;
+use data::{OpResp, Seqno, Buf};
+use crexp_client_proto::messages as client;
 
 use line_conn::{SexpPeer, LineConn, ClientProto, ConsumerProto, PeerClientProto, LineConnEvents};
 use downstream_conn::Downstream;
@@ -67,6 +68,12 @@ impl EventHandler {
         }
     }
 
+    pub fn consumer_message(&mut self, msg: client::ConsumerResp) {
+        match self {
+            &mut EventHandler::Consumer(ref mut conn) => conn.response(msg),
+            other => panic!("Unexpected consumer message to {:?}", other),
+        }
+    }
 
     pub fn handle_timeout(&mut self) {
         match self {

@@ -19,7 +19,7 @@ pub enum ProducerResp {
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
 pub enum ConsumerReq {
-    ConsumeFrom(Option<Seqno>),
+    ConsumeFrom(Seqno),
 }
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
 pub enum ConsumerResp {
@@ -64,6 +64,17 @@ impl Into<u64> for Seqno {
 impl From<u64> for Seqno {
     fn from(bytes: u64) -> Self {
         Seqno(From::from(bytes))
+    }
+}
+
+impl Seqno {
+    pub fn zero() -> Seqno {
+        Seqno(0)
+    }
+
+    pub fn succ(&self) -> Seqno {
+        let &Seqno(ref n) = self;
+        Seqno(n + 1)
     }
 }
 

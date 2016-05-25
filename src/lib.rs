@@ -55,6 +55,7 @@ use listener::{Listener,ListenerEvents};
 use event_handler::EventHandler;
 
 use data::{Seqno, OpResp, PeerMsg, NodeViewConfig, Buf};
+use crexp_client_proto::messages as client;
 use config::{ConfigurationView, Epoch};
 
 pub use config::ConfigClient;
@@ -94,7 +95,7 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
         self.model.client_operation(source, op)
     }
 
-    fn consume_requested(&mut self, source: mio::Token, mark: Option<Seqno>) {
+    fn consume_requested(&mut self, source: mio::Token, mark: Seqno) {
         debug!("recv: consume_requested: {:?} from {:?}", source, mark);
         self.model.consume_requested(source, mark)
     }
@@ -356,6 +357,17 @@ impl ChainRepl {
 
         self.downstream().expect("downstream").send_to_downstream(now, epoch, msg)
     }
+
+    fn consumer_message(&mut self, token: mio::Token, seqno: Seqno, msg: Buf) {
+        trace!("consumer_message: {:?} -> {:?}; {:?}", token, seqno, msg);
+        if let Some(conn) = self.connections.get_mut(token) {
+            conn.consumer_message(client::ConsumerResp::Ok(seqno.into(), msg.into()));
+        } else {
+            warn!("Response for disconnected client {:?}: {:?}", token, msg);
+        }
+    }
+
+
     fn token_is_listener(&self, token: mio::Token) -> bool {
         token.as_usize() < MAX_LISTENERS
     }
@@ -368,6 +380,7 @@ pub enum Notification {
     CommittedTo(Seqno),
     RespondTo(mio::Token, OpResp),
     Forward(Epoch, PeerMsg),
+    ConsumerMessage(mio::Token, Seqno, Buf),
 }
 pub struct Notifier(mio::Sender<Notification>);
 
@@ -409,6 +422,10 @@ impl replica::Outputs for Notifier {
         trace!("forward_downstream: @{:?} -> {:?}", epoch, msg);
         self.notify(Notification::Forward(epoch, msg))
     }
+
+    fn consumer_message(&mut self, token: mio::Token, seqno: Seqno, msg: Buf) {
+        self.notify(Notification::ConsumerMessage(token, seqno, msg))
+    }
 }
 
 impl mio::Handler for ChainRepl {
@@ -445,6 +462,7 @@ impl mio::Handler for ChainRepl {
             },
             Notification::RespondTo(token, resp) => self.respond_to(token, resp),
             Notification::Forward(epoch, msg) => self.forward_downstream(epoch, msg),
+            Notification::ConsumerMessage(token, seq, msg) => self.consumer_message(token, seq, msg),
         }
         self.converge_state(event_loop);
     }
