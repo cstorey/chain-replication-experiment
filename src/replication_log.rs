@@ -2,8 +2,6 @@ use std::fmt;
 use rocksdb::{DB, Writable, Options, WriteBatch, WriteOptions};
 use rocksdb::ffi::DBCFHandle;
 use tempdir::TempDir;
-use spki_sexp;
-use data::Operation;
 use data::Seqno;
 use replica::Log;
 use time::PreciseTime;
@@ -83,8 +81,8 @@ impl RocksdbLog {
         let d = TempDir::new("rocksdb-log").expect("new log");
         info!("DB path: {:?}", d.path());
         let mut db = DB::open_default(&d.path().to_string_lossy()).expect("open db");
-        let meta = db.create_cf(META, &Options::new()).expect("open meta cf");
-        let data = db.create_cf(DATA, &Options::new()).expect("open data cf");
+        let _meta = db.create_cf(META, &Options::new()).expect("open meta cf");
+        let _data = db.create_cf(DATA, &Options::new()).expect("open data cf");
         let db = Arc::new(db);
         let (flush_tx, flush_rx) = mpsc::sync_channel(42);
 
@@ -266,60 +264,61 @@ impl Log for RocksdbLog {
     }
 }
 
-pub struct VecLog {
-    log: Vec<Vec<u8>>,
-    on_committed: Box<Fn(Seqno)>,
-    commit_point: Option<Seqno>,
-}
-
-impl fmt::Debug for VecLog {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.debug_struct("VecLog")
-            .field("mark/prepared", &self.log.len())
-            .field("mark/committed", &self.commit_point)
-            .finish()
-    }
-}
-
-impl Log for VecLog {
-    fn seqno(&self) -> Seqno {
-        Seqno::new(self.log.len() as u64)
-    }
-    fn read_prepared(&self) -> Option<Seqno> {
-        self.log.iter().enumerate().rev().map(|(i, _)| Seqno::new(i as u64)).next()
-    }
-
-    fn read_committed(&self) -> Option<Seqno> { None }
-
-    fn read(&self, pos: Seqno) -> Option<Vec<u8>> {
-        self.log.get(pos.offset() as usize).map(|o| o.clone())
-    }
-
-    fn prepare(&mut self, pos: Seqno, op: &[u8]) {
-        assert_eq!(pos, self.seqno());
-        self.log.push(op.to_vec())
-    }
-    fn commit_to(&mut self, pos: Seqno) -> bool {
-        if Some(pos) > self.commit_point {
-            (self.on_committed)(pos);
-            self.commit_point = Some(pos);
-        }
-        false
-    }
-}
-
 #[cfg(test)]
 pub mod test {
-    use data::{Operation, Seqno};
+    use data::Seqno;
     use quickcheck::{Arbitrary, Gen, TestResult};
     use std::sync::mpsc::channel;
     use std::sync::atomic::{AtomicUsize,Ordering};
-    use super::{VecLog,RocksdbLog};
+    use std::fmt;
+    use super::RocksdbLog;
     use replica::Log;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     #[cfg(feature = "benches")]
     use test::Bencher;
+
+    pub struct VecLog {
+        log: Vec<Vec<u8>>,
+        on_committed: Box<Fn(Seqno)>,
+        commit_point: Option<Seqno>,
+    }
+
+    impl fmt::Debug for VecLog {
+        fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+            fmt.debug_struct("VecLog")
+                .field("mark/prepared", &self.log.len())
+                .field("mark/committed", &self.commit_point)
+                .finish()
+        }
+    }
+
+    impl Log for VecLog {
+        fn seqno(&self) -> Seqno {
+            Seqno::new(self.log.len() as u64)
+        }
+        fn read_prepared(&self) -> Option<Seqno> {
+            self.log.iter().enumerate().rev().map(|(i, _)| Seqno::new(i as u64)).next()
+        }
+
+        fn read_committed(&self) -> Option<Seqno> { None }
+
+        fn read(&self, pos: Seqno) -> Option<Vec<u8>> {
+            self.log.get(pos.offset() as usize).map(|o| o.clone())
+        }
+
+        fn prepare(&mut self, pos: Seqno, op: &[u8]) {
+            assert_eq!(pos, self.seqno());
+            self.log.push(op.to_vec())
+        }
+        fn commit_to(&mut self, pos: Seqno) -> bool {
+            if Some(pos) > self.commit_point {
+                (self.on_committed)(pos);
+                self.commit_point = Some(pos);
+            }
+            false
+        }
+    }
 
     // pub trait Log {
     // fn seqno(&self) -> Seqno;
@@ -405,7 +404,7 @@ pub mod test {
                 model.prepare(seq, op)
             },
             &LogCommand::CommitTo(ref s) => { model.commit_to(s.clone()); },
-            &LogCommand::ReadAt(ref s) => (),
+            &LogCommand::ReadAt(_) => (),
         }
     }
 
@@ -474,7 +473,7 @@ pub mod test {
     }
     fn validate_commands(cmds: &Commands) -> bool {
             let model_committed = Arc::new(AtomicUsize::new(0));
-            let mut model_log = {
+            let model_log = {
                 let model_committed = model_committed.clone();
                 VecLog::new(move |seq| model_committed.store(seq.offset() as usize, Ordering::SeqCst))
             };
@@ -491,7 +490,7 @@ pub mod test {
         debug!("Command sequence: {:?}", cmds);
 
         let model_committed = Arc::new(AtomicUsize::new(0));
-        let mut model_log = {
+        let model_log = {
             let model_committed = model_committed.clone();
             VecLog::new(move |seq| model_committed.store(seq.offset() as usize, Ordering::SeqCst))
         };
@@ -703,17 +702,11 @@ pub mod test {
     }
 
     mod vec {
-        use rand;
-        use data::{Operation, Seqno};
-        use quickcheck::{self, Arbitrary, Gen, StdGen, TestResult};
-        use std::io::Write;
-        use std::sync::mpsc::channel;
-        use super::super::VecLog;
+        use quickcheck::{self, TestResult};
+        use super::VecLog;
         use super::{test_can_commit_prepared_values_prop, test_can_read_prepared_values_prop,
                     LogCommand};
-        use replica::Log;
         use env_logger;
-        use std::collections::BTreeMap;
         #[cfg(feature = "benches")]
         use test::Bencher;
 

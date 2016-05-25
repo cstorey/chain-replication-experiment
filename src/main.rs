@@ -34,8 +34,7 @@ fn main() {
     let replication = ReplModel::new(log);
 
     let mut service = ChainRepl::new(
-            ReplProxy::build(replication, ChainRepl::get_notifier(&mut event_loop)),
-            &mut event_loop);
+            ReplProxy::build(replication, ChainRepl::get_notifier(&mut event_loop)));
 
     if let Some(listen_addr) = matches.value_of("bind") {
         let listen_addrs = listen_addr.to_socket_addrs()

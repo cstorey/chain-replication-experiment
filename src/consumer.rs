@@ -5,7 +5,6 @@ Consumer:
 Client LWM -------------- Sent point -------------- Client HWM
 */
 
-use std::cmp::max;
 use data::Seqno;
 use replica::{Log, Outputs};
 use mio;

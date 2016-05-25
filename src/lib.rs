@@ -32,10 +32,8 @@ extern crate test;
 use mio::tcp::*;
 use mio::EventLoop;
 use mio::util::Slab;
-use std::collections::{VecDeque,HashMap};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::mpsc::{channel};
-use std::thread;
 use std::mem;
 use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 
@@ -83,7 +81,7 @@ impl<'a> ListenerEvents for ChainReplEvents<'a> {
 
 impl<'a> LineConnEvents for ChainReplEvents<'a> {
     fn hello_downstream(&mut self, source: mio::Token, at: Timestamp<WallT>, epoch: Epoch) {
-        self.clock.observe(&at);
+        self.clock.observe(&at).expect("observe clock");
         let now = self.clock.now();
         debug!("recv hello_downstream: {} -> {}", at, now);
         self.model.hello_downstream(source, now, epoch)
@@ -100,7 +98,7 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
         self.model.consume_requested(source, mark)
     }
 
-    fn commit(&mut self, source: mio::Token, epoch: Epoch, seqno: Seqno) {
+    fn commit(&mut self, _source: mio::Token, epoch: Epoch, seqno: Seqno) {
         self.model.commit_observed(epoch, seqno)
     }
 
@@ -109,7 +107,7 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
     }
 
     fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno) {
-        self.clock.observe(&at);
+        self.clock.observe(&at).expect("observe clock");
         let now = self.clock.now();
         debug!("recv hello_i_want: {} -> {}", at, now);
         self.model.response_observed(OpResp::HelloIWant(now, seqno))
@@ -134,7 +132,7 @@ const MAX_LISTENERS: usize = 4;
 const MAX_CONNS: usize = 1024;
 
 impl ChainRepl {
-    pub fn new(model: ReplProxy<RocksdbLog>, event_loop: &mut EventLoop<ChainRepl>) -> ChainRepl {
+    pub fn new(model: ReplProxy<RocksdbLog>) -> ChainRepl {
         ChainRepl {
             listeners: Slab::new(MAX_LISTENERS),
             connections: Slab::new_starting_at(mio::Token(MAX_LISTENERS), MAX_CONNS),
@@ -419,7 +417,7 @@ impl replica::Outputs for Notifier {
     }
 
     fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
-        trace!("forward_downstream: @{:?} -> {:?}", epoch, msg);
+        trace!("forward_downstream: @{}, {:?}:{:?}", now, epoch, msg);
         self.notify(Notification::Forward(epoch, msg))
     }
 

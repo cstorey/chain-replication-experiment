@@ -2,19 +2,16 @@ use mio;
 use mio::tcp::*;
 use mio::{TryRead, TryWrite};
 use serde::ser::Serialize;
-use serde::de::Deserialize;
 use spki_sexp as sexp;
 use std::fmt;
 use std::marker::PhantomData;
-use std::collections::VecDeque;
 
-use super::{ChainRepl,ChainReplMsg};
-use data::{OpResp, Operation, PeerMsg, ReplicationMessage, Seqno, Buf};
+use super::ChainRepl;
+use data::{OpResp, PeerMsg, ReplicationMessage, Seqno, Buf};
 use config::Epoch;
 use crexp_client_proto::messages::{ProducerReq,ProducerResp, ConsumerReq, ConsumerResp};
 use hybrid_clocks::{Timestamp, WallT};
 
-const NL: u8 = '\n' as u8;
 const DEFAULT_BUFSZ: usize = 1 << 12;
 
 pub trait Encoder<T> {
@@ -246,9 +243,9 @@ impl Reader<ReplicationMessage> for SexpPeer {
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream } => events.hello_downstream(token, ts, epoch),
-                ReplicationMessage { epoch, ts, msg: PeerMsg::Prepare(seqno, op) } => events.operation(token, epoch, seqno, op.into()),
-                ReplicationMessage { epoch, ts, msg: PeerMsg::CommitTo(seqno) } => events.commit(token, epoch, seqno),
+                ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream, } => events.hello_downstream(token, ts, epoch),
+                ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op), .. } => events.operation(token, epoch, seqno, op.into()),
+                ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. } => events.commit(token, epoch, seqno),
             }
             changed = true;
         }
@@ -265,7 +262,7 @@ impl Reader<OpResp> for SexpPeer {
         self.packets.feed(slice)
     }
 
-    fn process<P: Protocol<Recv=OpResp>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
+    fn process<P: Protocol<Recv=OpResp>, E: LineConnEvents>(&mut self, _token: mio::Token, events: &mut E) -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {

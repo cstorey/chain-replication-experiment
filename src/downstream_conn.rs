@@ -11,7 +11,7 @@ use super::ChainRepl;
 use data::{OpResp, PeerMsg, ReplicationMessage};
 use config::Epoch;
 use line_conn::{Encoder, Reader, SexpPeer, Protocol, LineConnEvents};
-use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
+use hybrid_clocks::{Timestamp, WallT};
 
 #[derive(Debug)]
 pub struct Downstream<T: fmt::Debug> {

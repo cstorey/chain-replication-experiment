@@ -145,7 +145,6 @@ impl<T: 'static + Deserialize + Serialize + fmt::Debug + Eq + Clone + Send + Syn
 const MEMBERS: &'static str = "/chain/members";
 const SEQUENCER: &'static str = "/chain/config_seq";
 const KEY_EXISTS: u64 = 105;
-const KEY_NOT_EXISTS: u64 = 100;
 const COMPARE_FAILED: u64 = 101;
 
 fn has_error(es: &[etcd::Error], code: u64) -> bool {

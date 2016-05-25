@@ -3,14 +3,12 @@ use std::fmt;
 use std::thread;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, Receiver, channel};
-use std::marker::PhantomData;
 use mio;
 
-use data::{Operation, OpResp, PeerMsg, Seqno, NodeViewConfig, Buf};
+use data::{OpResp, PeerMsg, Seqno, NodeViewConfig, Buf};
 use config::{ConfigurationView, Epoch};
 use consumer::Consumer;
 use {Notifier};
-use spki_sexp;
 use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 
 #[derive(Debug)]
@@ -228,14 +226,14 @@ impl Terminus {
         trace!("Terminus! {:?}/{:?}", seqno, op);
         output.respond_to(token, &OpResp::Ok(epoch, seqno, None))
     }
-    pub fn consume_requested<O: Outputs>(&mut self, out: &mut O, token: mio::Token, epoch: Epoch, mark: Seqno) {
+    pub fn consume_requested<O: Outputs>(&mut self, _out: &mut O, token: mio::Token, epoch: Epoch, mark: Seqno) {
         debug!("Terminus: consume_requested: {:?} from {:?}@{:?}", token, mark, epoch);
         let consumer = self.consumers.entry(token).or_insert_with(|| Consumer::new());
         consumer.consume_requested(mark)
     }
 
     fn process_replication<L: Log, O: Outputs>(&mut self,
-            clock: &mut Clock<Wall>, epoch: Epoch, log: &L, out: &mut O) -> bool {
+            _clock: &mut Clock<Wall>, _epoch: Epoch, log: &L, out: &mut O) -> bool {
         let mut changed = false;
         for (&token, cons) in self.consumers.iter_mut() {
             changed |= cons.process(out, token, log)
@@ -401,7 +399,7 @@ impl<L: Log> ReplModel<L> {
 }
 
 pub struct ReplProxy<L: Log + Send + 'static> {
-    inner_thread: thread::JoinHandle<()>,
+    _inner_thread: thread::JoinHandle<()>,
     tx: Sender<ReplOp<L>>,
 }
 
@@ -411,7 +409,7 @@ impl<L: Log + Send + 'static> ReplProxy<L> {
         let inner_thread = thread::Builder::new().name("replmodel".to_string())
             .spawn(move || inner.run_from(rx, notifications)).expect("spawn model");
         ReplProxy {
-            inner_thread: inner_thread,
+            _inner_thread: inner_thread,
             tx: tx,
         }
     }
@@ -426,14 +424,14 @@ impl<L: Log + Send + 'static> ReplProxy<L> {
     pub fn client_operation (&mut self, token: mio::Token, op: Buf){
        self.invoke(move |m, tx| m.process_client(tx, token, &op))
     }
-    pub fn commit_observed (&mut self, epoch: Epoch, seq: Seqno){
-       self.invoke(move |m, tx| m.commit_observed(seq))
+    pub fn commit_observed (&mut self, _epoch: Epoch, seq: Seqno){
+       self.invoke(move |m, _| m.commit_observed(seq))
     }
     pub fn response_observed(&mut self, resp: OpResp){
         self.invoke(move |m, tx| m.process_downstream_response(tx, &resp))
     }
     pub fn new_configuration(&mut self, view: ConfigurationView<NodeViewConfig>){
-       self.invoke(move |m, tx| m.reconfigure(&view))
+       self.invoke(move |m, _| m.reconfigure(&view))
     }
     pub fn hello_downstream (&mut self, token: mio::Token, at: Timestamp<WallT>, epoch: Epoch){
        self.invoke(move |m, tx| m.hello_downstream(tx, token, at, epoch))
@@ -453,13 +451,13 @@ mod test {
     use quickcheck::{self, Arbitrary, Gen, TestResult};
     use super::{ReplModel, Outputs};
     use std::sync::mpsc::channel;
-    use replication_log::{VecLog};
+    use replication_log::test::VecLog;
     use replication_log::test::TestLog;
     use env_logger;
     use spki_sexp;
     use std::collections::{VecDeque, HashMap};
     use mio::Token;
-    use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
+    use hybrid_clocks::{Clock, Timestamp, WallT};
 
     #[derive(Debug)]
     enum OutMessage {
@@ -481,6 +479,9 @@ mod test {
                     ts: now,
                     msg: msg,
                 }))
+        }
+        fn consumer_message(&mut self, _: Token, _: Seqno, _: Buf) {
+            unimplemented!()
         }
     }
 
@@ -538,13 +539,13 @@ mod test {
         }
     }
 
-    fn precondition(model: &FakeReplica, cmd: &ReplCommand) -> bool {
+    fn precondition(_model: &FakeReplica, cmd: &ReplCommand) -> bool {
         match cmd {
-            &ReplCommand::ClientOperation(ref token, ref s) => true,
+            &ReplCommand::ClientOperation(ref _token, ref _s) => true,
         }
     }
 
-    fn postcondition<L: TestLog>(actual: &ReplModel<L>, model: &FakeReplica,
+    fn postcondition<L: TestLog>(_actual: &ReplModel<L>, model: &FakeReplica,
             cmd: &ReplCommand, observed: &Outs) -> bool {
         debug!("observed: {:?}; model:{:?}", observed, model);
         for msg in observed.0.iter() {
@@ -570,19 +571,19 @@ mod test {
                 &OutMessage::Response(token, _) => {
                     assert!(model.outstanding.contains_key(&token));
                 },
-                &OutMessage::LogCommitted(seqno) => {},
+                &OutMessage::LogCommitted(_seqno) => {},
             };
         }
 
         match cmd {
-            &ReplCommand::ClientOperation(ref token, ref s) => true,
+            &ReplCommand::ClientOperation(ref _token, ref _s) => true,
         }
     }
 
     impl FakeReplica {
         fn next_state(&mut self, cmd: &ReplCommand) -> () {
             match cmd {
-                &ReplCommand::ClientOperation(ref token, ref op) => {
+                &ReplCommand::ClientOperation(ref token, ref _op) => {
                     *self.outstanding.entry(*token).or_insert(0) += 1;
                 }
             }
@@ -700,7 +701,7 @@ mod test {
         debug!("Model state:{:?}", model);
 
         assert_eq!(
-                model.outstanding.iter().filter(|&(k, v)| v != &0).collect::<Vec<_>>(),
+                model.outstanding.iter().filter(|&(_k, v)| v != &0).collect::<Vec<_>>(),
                 vec![]);
 
         assert_eq!(model.prepared, Default::default());
@@ -737,7 +738,7 @@ mod test {
             // TODO: Verify me.
         });
 
-        for (n, it) in log_prefix.iter().enumerate() {
+        for (_seq, it) in log_prefix.iter().enumerate() {
             let seq = log.seqno();
             let data_bytes = spki_sexp::as_bytes(it).expect("encode operation");
             log.prepare(seq, &data_bytes)

@@ -1,12 +1,12 @@
 use mio;
 
-use super::{ChainRepl, ChainReplMsg};
-use data::{OpResp, Seqno, Buf};
+use super::ChainRepl;
+use data::OpResp;
 use crexp_client_proto::messages as client;
 
 use line_conn::{SexpPeer, LineConn, ClientProto, ConsumerProto, PeerClientProto, LineConnEvents};
 use downstream_conn::Downstream;
-use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
+use hybrid_clocks::{Timestamp, WallT};
 
 #[derive(Debug)]
 pub enum EventHandler {
