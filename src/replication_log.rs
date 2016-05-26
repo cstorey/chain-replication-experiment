@@ -209,7 +209,7 @@ impl RocksdbLog {
         drop(db);
     }
 
-    pub fn quiesce(&mut self) {
+    pub fn quiesce(&self) {
         let pair = Arc::new((Mutex::new(false), Condvar::new()));
         self.flush_tx.send(CommitCommand::Quiesce(pair.clone())).expect("Send to flusher");
         let &(ref lock, ref cond) = &*pair;
@@ -361,7 +361,7 @@ pub mod test {
 
     pub trait TestLog : Log {
         fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self;
-        fn quiesce(&mut self);
+        fn quiesce(&self);
         fn stop(self);
     }
 
@@ -369,7 +369,7 @@ pub mod test {
         fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self {
             RocksdbLog::new(committed)
         }
-        fn quiesce(&mut self) {
+        fn quiesce(&self) {
             RocksdbLog::quiesce(self)
         }
         fn stop(self) {
@@ -381,7 +381,7 @@ pub mod test {
         fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self {
             VecLog { log: Vec::new(), on_committed: Box::new(committed), commit_point: None }
         }
-        fn quiesce(&mut self) { }
+        fn quiesce(&self) { }
         fn stop(self) { }
     }
 

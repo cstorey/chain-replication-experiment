@@ -256,6 +256,11 @@ impl<L: Log> ReplModel<L> {
         }
     }
 
+    #[cfg(test)]
+    fn borrow_log(&self) -> &L {
+        &self.log
+    }
+
     pub fn seqno(&self) -> Seqno {
         self.log.seqno()
     }
@@ -680,22 +685,22 @@ pub mod test {
 
     fn simulate_single_node_chain_prop<L: TestLog>(cmds: Commands) -> TestResult {
         let Commands(cmds) = cmds;
+        let client_ops = cmds.len();
         debug!("Command sequence: {:?}", cmds);
         let epoch : Epoch = From::from(42);
 
         let mut model = FakeReplica::new();
 
         let (tx, rx) = channel();
-        let mut actual = {
-            let log = L::new(move |seq| {
-                info!("committed: {:?}", seq);
-                tx.send(seq).expect("send")
-                // TODO: Verify me.
-            });
-            ReplModel::new(log)
-        };
+        let log = L::new(move |seq| {
+            info!("committed: {:?}", seq);
+            tx.send(seq).expect("send")
+            // TODO: Verify me.
+        });
+        let mut actual = ReplModel::new(log);
         actual.set_is_head(true);
         actual.set_epoch(epoch);
+        actual.configure_forwarding(false);
         model.epoch = epoch;
 
         for cmd in cmds {
@@ -713,6 +718,7 @@ pub mod test {
             assert!(postcondition(&actual, &model, &cmd, &observed));
             model.update_from_outputs(&observed);
         }
+        actual.borrow_log().quiesce();
 
         debug!("Model state:{:?}", model);
 
@@ -722,6 +728,8 @@ pub mod test {
 
         assert_eq!(model.prepared, Default::default());
         assert_eq!(model.log_committed, model.responded);
+        assert_eq!(actual.borrow_log().read_prepared().map(|o| o.succ().offset() as usize).unwrap_or(0), client_ops);
+        assert_eq!(actual.borrow_log().read_committed().map(|o| o.succ().offset() as usize).unwrap_or(0), client_ops);
 
         TestResult::passed()
     }
