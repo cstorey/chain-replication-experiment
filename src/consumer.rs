@@ -58,17 +58,12 @@ impl Consumer {
         trace!("Consumer#process: committed: {:?}; next: {:?}", committed, next);
 
         if let (Some(next), Some(committed)) = (next, committed) {
-            for i in next.upto(&committed) {
-                debug!("Consuming seq:{:?}", i);
-                if let Some(op) = log.read(i) {
-                    debug!("Consume seq:{:?}/{:?}; ds/seqno: {:?}", i, op, self.low_water_mark);
-                    out.consumer_message(token, i, op.into());
-                    self.sent = Some(i);
-                    self.low_water_mark = Some(i.succ());
-                    changed = true
-                } else {
-                    panic!("Attempted to consume item not in log: {:?}", i);
-                }
+            for (i, op) in log.read_from(next).take_while(|&(i, _)| i <= committed) {
+                debug!("Consume seq:{:?}/{:?}; ds/seqno: {:?}", i, op, self.low_water_mark);
+                out.consumer_message(token, i, op.into());
+                self.sent = Some(i);
+                self.low_water_mark = Some(i.succ());
+                changed = true
             }
         }
         changed
@@ -221,9 +216,9 @@ mod test {
         log.quiesce();
 
         let expected_msgs = if let (Some(min), Some(committed)) = (min_seq, log.read_committed()) {
-                min.upto(&committed)
-                .inspect(|s| debug!("Read: {:?} -> {:?}", s, log.read(*s)))
-                .map(|s| (s, hash(&log.read(s).expect("read item"))))
+                log.read_from(min).take_while(|&(s, _)| s <= committed)
+                .inspect(|&(s, ref v)| debug!("Read: {:?} -> {:?}", s, v))
+                .map(|(s, v)| (s, hash(&v)))
                 .collect::<Vec<_>>()
         } else {
             vec![]

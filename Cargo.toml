@@ -56,7 +56,7 @@ features = ["toml"]
 version = "*"
 
 [dependencies.rocksdb]
-git = "https://github.com/cstorey/rust-rocksdb.git"
+# git = "https://github.com/cstorey/rust-rocksdb.git"
 optional = false
 
 [dependencies.serde_macros]

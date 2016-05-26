@@ -1,5 +1,5 @@
 use std::fmt;
-use rocksdb::{DB, Writable, Options, WriteBatch, WriteOptions};
+use rocksdb::{DB, DBIterator, Writable, Options, WriteBatch, WriteOptions, Direction, IteratorMode};
 use rocksdb::ffi::DBCFHandle;
 use tempdir::TempDir;
 use data::Seqno;
@@ -9,6 +9,7 @@ use std::thread;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::{Mutex, Condvar};
+use std::iter;
 
 // Approximate structure of the log.
 //
@@ -69,6 +70,8 @@ pub struct RocksdbLog {
     flush_tx: mpsc::SyncSender<CommitCommand>,
     flush_thread: thread::JoinHandle<()>,
 }
+
+pub struct RocksdbCursor(DBIterator);
 
 const META: &'static str = "meta";
 const DATA: &'static str = "data";
@@ -223,6 +226,8 @@ impl RocksdbLog {
 }
 
 impl Log for RocksdbLog {
+    type Cursor = RocksdbCursor;
+
     fn seqno(&self) -> Seqno {
         self.read_prepared().as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero)
     }
@@ -235,15 +240,12 @@ impl Log for RocksdbLog {
         self.read_seqno(META_COMMITTED)
     }
 
-    fn read(&self, seqno: Seqno) -> Option<Vec<u8>> {
+    fn read_from(&self, seqno: Seqno) -> RocksdbCursor {
         let key = Seqno::tokey(&seqno);
         let datacf = Self::data(&self.db);
-        let ret = match self.db.get_cf(datacf, &key.as_ref()) {
-            Ok(ret) => ret.map(|v| v.to_vec()),
-            Err(e) => panic!("Unexpected error reading index: {:?}: {:?}", seqno, e),
-        };
-        trace!("Read: {:?} => {:?}", seqno, ret);
-        ret
+        let iter = self.db.iterator_cf(datacf, IteratorMode::From(&key.as_ref(), Direction::Forward))
+            .expect("iterator_cf");
+        RocksdbCursor(iter)
     }
 
 
@@ -291,6 +293,19 @@ impl Log for RocksdbLog {
     }
 }
 
+impl iter::Iterator for RocksdbCursor {
+    type Item = (Seqno, Vec<u8>);
+    fn next(&mut self) -> Option<Self::Item> {
+        let &mut RocksdbCursor(ref mut iter) = self;
+        if let Some((key, val)) = iter.next() {
+            let seqno = Seqno::fromkey(&key);
+            Some((seqno, val.to_vec()))
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 pub mod test {
     use data::Seqno;
@@ -303,42 +318,50 @@ pub mod test {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::hash::{Hash, SipHasher, Hasher};
+    use std::iter;
+    use std::rc::Rc;
+    use std::cell::RefCell;
 
     #[cfg(feature = "benches")]
     use test::Bencher;
 
     pub struct VecLog {
-        log: Vec<Vec<u8>>,
+        log: Rc<RefCell<Vec<Vec<u8>>>>,
         on_committed: Box<Fn(Seqno)>,
         commit_point: Option<Seqno>,
     }
 
+    pub struct VecCursor(usize, Rc<RefCell<Vec<Vec<u8>>>>);
+
     impl fmt::Debug for VecLog {
         fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+
             fmt.debug_struct("VecLog")
-                .field("mark/prepared", &self.log.len())
+                .field("mark/prepared", &self.log.borrow().len())
                 .field("mark/committed", &self.commit_point)
                 .finish()
         }
     }
 
     impl Log for VecLog {
+        type Cursor = VecCursor;
+
         fn seqno(&self) -> Seqno {
-            Seqno::new(self.log.len() as u64)
+            Seqno::new(self.log.borrow().len() as u64)
         }
         fn read_prepared(&self) -> Option<Seqno> {
-            self.log.iter().enumerate().rev().map(|(i, _)| Seqno::new(i as u64)).next()
+            self.log.borrow().iter().enumerate().rev().map(|(i, _)| Seqno::new(i as u64)).next()
         }
 
         fn read_committed(&self) -> Option<Seqno> { self.commit_point }
 
-        fn read(&self, pos: Seqno) -> Option<Vec<u8>> {
-            self.log.get(pos.offset() as usize).map(|o| o.clone())
+        fn read_from(&self, pos: Seqno) -> Self::Cursor {
+            VecCursor(pos.offset() as usize, self.log.clone())
         }
 
         fn prepare(&mut self, pos: Seqno, op: &[u8]) {
             assert_eq!(pos, self.seqno());
-            self.log.push(op.to_vec())
+            self.log.borrow_mut().push(op.to_vec())
         }
         fn commit_to(&mut self, pos: Seqno) -> bool {
             if Some(pos) > self.commit_point {
@@ -346,6 +369,15 @@ pub mod test {
                 self.commit_point = Some(pos);
             }
             false
+        }
+    }
+
+    impl iter::Iterator for VecCursor {
+        type Item = (Seqno, Vec<u8>);
+        fn next(&mut self) -> Option<Self::Item> {
+            let res = self.1.borrow().get(self.0).map(|x| (Seqno::new(self.0 as u64), x.clone()));
+            self.0 += 1;
+            res
         }
     }
 
@@ -379,7 +411,8 @@ pub mod test {
 
     impl TestLog for VecLog {
         fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self {
-            VecLog { log: Vec::new(), on_committed: Box::new(committed), commit_point: None }
+            VecLog { log: Rc::new(RefCell::new(Vec::new())),
+                on_committed: Box::new(committed), commit_point: None }
         }
         fn quiesce(&self) { }
         fn stop(self) { }
@@ -389,7 +422,7 @@ pub mod test {
     pub enum LogCommand {
         PrepareNext(Vec<u8>),
         CommitTo(Seqno),
-        ReadAt(Seqno),
+        ReadFrom(Seqno),
     }
 
     impl LogCommand {
@@ -400,13 +433,13 @@ pub mod test {
                     model.prepare(seq, op)
                 },
                 &LogCommand::CommitTo(ref s) => { model.commit_to(s.clone()); },
-                &LogCommand::ReadAt(_) => (),
+                &LogCommand::ReadFrom(_) => (),
             }
         }
         pub fn satisfies_precondition(&self, model: &VecLog) -> bool {
             match self {
                 &LogCommand::CommitTo(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
-                &LogCommand::ReadAt(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
+                &LogCommand::ReadFrom(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
                     _ => true,
             }
         }
@@ -417,7 +450,7 @@ pub mod test {
             let case = u64::arbitrary(g) % 15;
             let res = match case {
                 0...5 => LogCommand::PrepareNext(Arbitrary::arbitrary(g)),
-                5...10 => LogCommand::ReadAt(Arbitrary::arbitrary(g)),
+                5...10 => LogCommand::ReadFrom(Arbitrary::arbitrary(g)),
                 _ => LogCommand::CommitTo(Arbitrary::arbitrary(g)),
             };
             res
@@ -434,7 +467,7 @@ pub mod test {
                 &LogCommand::CommitTo(ref s) => Box::new(
                         s.shrink().map(LogCommand::CommitTo)
                             .inspect(move |it| trace!("LogCommand#shrink {:x}: => {:?}", h, it))),
-                &LogCommand::ReadAt(ref s) => Box::new(s.shrink().map(LogCommand::ReadAt)),
+                &LogCommand::ReadFrom(ref s) => Box::new(s.shrink().map(LogCommand::ReadFrom)),
             }
         }
     }
@@ -444,7 +477,7 @@ pub mod test {
     #[derive(Debug,PartialEq,Eq,Clone)]
     enum CommandReturn {
         Done,
-        Read(Option<Vec<u8>>),
+        Read(Vec<Vec<u8>>),
     }
 
     impl LogCommands {
@@ -470,7 +503,8 @@ pub mod test {
                 actual.commit_to(s.clone());
                 CommandReturn::Done
             },
-            &LogCommand::ReadAt(ref s) => CommandReturn::Read(actual.read(s.clone())),
+            &LogCommand::ReadFrom(ref s) => CommandReturn::Read(
+                    actual.read_from(s.clone()).map(|(_, v)| v).collect()),
         }
     }
 
@@ -485,8 +519,8 @@ pub mod test {
                 // Well, this happens at some time in the future.
                 true
             },
-            (&LogCommand::ReadAt(ref seq), &CommandReturn::Read(ref val)) => {
-                &model.read(seq.clone()) == val
+            (&LogCommand::ReadFrom(ref seq), &CommandReturn::Read(ref val)) => {
+                &model.read_from(seq.clone()).map(|(_, v)|v).collect::<Vec<_>>() == val
             },
             (cmd, ret) => {
                 warn!("Unexpected command / return combination: {:?} -> {:?}", cmd, ret);
@@ -612,8 +646,8 @@ pub mod test {
                         let _ = prepared.insert(seq, op);
                     }
                 }
-                LogCommand::ReadAt(ref read_seq) => {
-                    let result = log.read(*read_seq);
+                LogCommand::ReadFrom(ref read_seq) => {
+                    let result = log.read_from(*read_seq).map(|(_, v)| v).next();
                     assert_eq!(result.as_ref(), prepared.get(read_seq))
                 }
                 LogCommand::CommitTo(_) => (),
@@ -689,7 +723,7 @@ pub mod test {
                 LogCommand::CommitTo(ref commit) => {
                     let _ = log.commit_to(*commit);
                 }
-                LogCommand::ReadAt(_) => (),
+                LogCommand::ReadFrom(_) => (),
             }
         }
         debug!("Stopping Log");

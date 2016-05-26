@@ -31,10 +31,11 @@ enum ReplRole {
 }
 
 pub trait Log: fmt::Debug {
+    type Cursor : Iterator<Item=(Seqno, Vec<u8>)>;
     fn seqno(&self) -> Seqno;
     fn read_prepared(&self) -> Option<Seqno>;
     fn read_committed(&self) -> Option<Seqno>;
-    fn read(&self, Seqno) -> Option<Vec<u8>>;
+    fn read_from<'a>(&'a self, Seqno) -> Self::Cursor;
     fn prepare(&mut self, Seqno, &[u8]);
     fn commit_to(&mut self, Seqno) -> bool;
 }
@@ -167,8 +168,7 @@ impl Forwarder {
                        send_next,
                        max_to_prepare_now,
                        log.read_prepared());
-                for i in send_next.upto(&max_to_prepare_now) {
-                    if let Some(op) = log.read(i) {
+                for (i, op) in log.read_from(send_next).take_while(|&(i, _)| i <= max_to_prepare_now) {
                         debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}",
                                i,
                                op,
@@ -176,11 +176,8 @@ impl Forwarder {
                         out.forward_downstream(clock.now(), epoch, PeerMsg::Prepare(i, op.into()));
                         self.last_prepared_downstream = Some(i.succ());
                         changed = true
-                    } else {
-                        panic!("Attempted to replicate item not in log: {:?}", self);
                     }
                 }
-            }
             debug!("post Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
                    log.seqno(),
                    self.last_prepared_downstream,
