@@ -449,7 +449,7 @@ pub mod test {
     use data::{Operation, OpResp, PeerMsg, Seqno, Buf, ReplicationMessage};
     use config::Epoch;
     use quickcheck::{self, Arbitrary, Gen, TestResult};
-    use super::{ReplModel, Outputs};
+    use replica::{ReplModel, Outputs};
     use std::sync::mpsc::channel;
     use replication_log::test::VecLog;
     use replication_log::test::TestLog;

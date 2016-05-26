@@ -298,7 +298,7 @@ pub mod test {
     use std::sync::mpsc::channel;
     use std::sync::atomic::{AtomicUsize,Ordering};
     use std::fmt;
-    use super::RocksdbLog;
+    use replication_log::RocksdbLog;
     use replica::Log;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -731,7 +731,7 @@ pub mod test {
 
     mod rocksdb {
         use quickcheck::{self, TestResult};
-        use super::super::RocksdbLog;
+        use replication_log::RocksdbLog;
         use super::{test_can_commit_prepared_values_prop, test_can_read_prepared_values_prop,
                     LogCommand};
         use env_logger;

@@ -56,7 +56,6 @@ impl Consumer {
         let next = self.low_water_mark;
         let committed = log.read_committed();
         trace!("Consumer#process: committed: {:?}; next: {:?}", committed, next);
-        assert!(next <= committed);
 
         if let (Some(next), Some(committed)) = (next, committed) {
             for i in next.upto(&committed) {
@@ -64,8 +63,8 @@ impl Consumer {
                 if let Some(op) = log.read(i) {
                     debug!("Consume seq:{:?}/{:?}; ds/seqno: {:?}", i, op, self.low_water_mark);
                     out.consumer_message(token, i, op.into());
+                    self.sent = Some(i);
                     self.low_water_mark = Some(i.succ());
-                    self.sent = Some(i.succ());
                     changed = true
                 } else {
                     panic!("Attempted to consume item not in log: {:?}", i);
@@ -78,13 +77,13 @@ impl Consumer {
 
 #[cfg(test)]
 mod test {
-    use super::Consumer;
+    use consumer::Consumer;
     use data::Seqno;
     use replica::Log;
     use replica::test::{Outs,OutMessage};
     use replication_log::test::{VecLog,TestLog, LogCommand, arbitrary_given, hash};
-    use mio;
     use slab::Index;
+    use mio;
     use quickcheck::{self, Arbitrary, Gen, TestResult};
     use std::cmp;
 
@@ -183,7 +182,6 @@ mod test {
         let mut log = VecLog::new(move |_| ());
 
         let token = mio::Token::from_usize(0);
-
         let mut observed = Outs::new();
 
         let mut min_seq = None;
@@ -194,16 +192,16 @@ mod test {
             match cmd {
                 ConsOp::RequestMark(s) => {
                     let res = actual.consume_requested(s);
-                    min_seq = Some(min_seq.map(|m| cmp::min(m, s)).unwrap_or(s));
-                    if let Some(p) = prev_seq {
-                        if s < p { assert!(res.is_err()) }
-                    }
+                    min_seq = Some(min_seq.unwrap_or(s));
+                    if Some(s) < prev_seq { assert!(res.is_err()) }
+
                     if let Some(sent) = observed.borrow().iter().rev().filter_map(|x| {
                         match x {
                             &OutMessage::ConsumerMessage(_, seq, _) => Some(seq),
                             _ => None,
                         }
                     }).next() {
+                        debug!("found sent: {:?}; mark: {:?}", sent, s);
                         if s > sent { assert!(res.is_err()) }
                     }
                     prev_seq = Some(s)
@@ -254,3 +252,4 @@ mod test {
         quickcheck::quickcheck(should_do_the_thing_prop::<VecLog> as fn(Commands) -> TestResult);
     }
 }
+

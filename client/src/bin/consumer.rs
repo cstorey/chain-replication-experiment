@@ -28,5 +28,5 @@ fn main() {
     println!("Got consumer");
 
     let subs = consumer.subscribe();
-    subs.each(|(seq, msg)| println!("{:?}: {:?}", seq, msg)).await().expect("consume each");
+    subs.each(|(seq, msg)| println!("{:?}: {}", seq, String::from_utf8_lossy(&msg))).await().expect("consume each");
 }
