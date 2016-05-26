@@ -175,7 +175,7 @@ mod test {
         }
     }
 
-    fn should_do_the_thing_prop<L: TestLog>(cmds: Commands) -> TestResult {
+    fn can_totally_do_the_thing_prop<L: TestLog>(cmds: Commands) -> TestResult {
         debug!("commands {:x}: {:?}", hash(&cmds), cmds);
         let Commands(cmds) = cmds;
         let mut actual = Consumer::new();
@@ -245,11 +245,11 @@ mod test {
     }
 
     #[test]
-    fn should_do_the_thing() {
+    fn can_totally_do_the_thing() {
         use env_logger;
 
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(should_do_the_thing_prop::<VecLog> as fn(Commands) -> TestResult);
+        quickcheck::quickcheck(can_totally_do_the_thing_prop::<VecLog> as fn(Commands) -> TestResult);
     }
 }
 
