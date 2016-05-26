@@ -229,7 +229,7 @@ impl Terminus {
     pub fn consume_requested<O: Outputs>(&mut self, _out: &mut O, token: mio::Token, epoch: Epoch, mark: Seqno) {
         debug!("Terminus: consume_requested: {:?} from {:?}@{:?}", token, mark, epoch);
         let consumer = self.consumers.entry(token).or_insert_with(|| Consumer::new());
-        consumer.consume_requested(mark)
+        consumer.consume_requested(mark).expect("consume");
     }
 
     fn process_replication<L: Log, O: Outputs>(&mut self,
@@ -445,7 +445,7 @@ impl<L: Log + Send + 'static> ReplProxy<L> {
 }
 
 #[cfg(test)]
-mod test {
+pub mod test {
     use data::{Operation, OpResp, PeerMsg, Seqno, Buf, ReplicationMessage};
     use config::Epoch;
     use quickcheck::{self, Arbitrary, Gen, TestResult};
@@ -460,14 +460,28 @@ mod test {
     use hybrid_clocks::{Clock, Timestamp, WallT};
 
     #[derive(Debug)]
-    enum OutMessage {
+    pub enum OutMessage {
         Response(Token, OpResp),
         Forward(ReplicationMessage),
         LogCommitted(Seqno),
+        ConsumerMessage(Token, Seqno, Buf),
     }
 
     #[derive(Debug)]
-    struct Outs(VecDeque<OutMessage>);
+    pub struct Outs(VecDeque<OutMessage>);
+    impl Outs {
+        pub fn new() -> Outs {
+            Outs(VecDeque::new())
+        }
+        pub fn inner(self) -> VecDeque<OutMessage> {
+            self.0
+        }
+
+        pub fn borrow(&self) -> &VecDeque<OutMessage> {
+            &self.0
+        }
+    }
+
     impl Outputs for Outs {
         fn respond_to(&mut self, token: Token, resp: &OpResp) {
             self.0.push_back(OutMessage::Response(token, resp.clone()))
@@ -480,8 +494,8 @@ mod test {
                     msg: msg,
                 }))
         }
-        fn consumer_message(&mut self, _: Token, _: Seqno, _: Buf) {
-            unimplemented!()
+        fn consumer_message(&mut self, token: Token, seqno: Seqno, msg: Buf) {
+            self.0.push_back(OutMessage::ConsumerMessage(token, seqno, msg))
         }
     }
 
@@ -572,6 +586,7 @@ mod test {
                     assert!(model.outstanding.contains_key(&token));
                 },
                 &OutMessage::LogCommitted(_seqno) => {},
+                &OutMessage::ConsumerMessage(_, _, _) => {},
             };
         }
 
@@ -615,6 +630,7 @@ mod test {
                     &OutMessage::LogCommitted(seqno) => {
                         self.log_committed = Some(seqno);
                     },
+                    &OutMessage::ConsumerMessage(_, _, _) => {},
                 };
             }
         }

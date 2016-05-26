@@ -25,6 +25,10 @@ extern crate rand;
 extern crate quickcheck;
 #[cfg(test)]
 extern crate env_logger;
+#[cfg(test)]
+extern crate slab;
+#[macro_use]
+extern crate quick_error;
 
 #[cfg(feature = "benches")]
 extern crate test;
