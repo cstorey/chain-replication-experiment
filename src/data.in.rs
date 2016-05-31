@@ -20,7 +20,7 @@ pub enum Operation {
     Get
 }
 
-#[derive(Debug, Clone, Eq,PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OpResp {
     Ok(Epoch, Seqno, Option<Buf>),
     HelloIWant(Timestamp<WallT>, Seqno),

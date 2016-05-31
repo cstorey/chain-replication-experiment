@@ -161,28 +161,27 @@ impl Forwarder {
                self.last_acked_downstream);
 
         let mut changed = false;
-        if let Some(send_next) = self.last_prepared_downstream {
-            if send_next < log.seqno() {
-                let max_to_prepare_now = log.seqno();
-                debug!("Window prepare {:?} - {:?}; prepared locally: {:?}",
-                       send_next,
-                       max_to_prepare_now,
-                       log.read_prepared());
-                for (i, op) in log.read_from(send_next).take_while(|&(i, _)| i <= max_to_prepare_now) {
-                        debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}",
-                               i,
-                               op,
-                               self.last_prepared_downstream);
-                        out.forward_downstream(clock.now(), epoch, PeerMsg::Prepare(i, op.into()));
-                        self.last_prepared_downstream = Some(i.succ());
-                        changed = true
-                    }
+        let send_next = self.last_prepared_downstream.map(|s| s.succ()).unwrap_or_else(Seqno::zero);
+        if send_next < log.seqno() {
+            let max_to_prepare_now = log.seqno();
+            debug!("Window prepare {:?} - {:?}; prepared locally: {:?}",
+                   send_next,
+                   max_to_prepare_now,
+                   log.read_prepared());
+            for (i, op) in log.read_from(send_next).take_while(|&(i, _)| i <= max_to_prepare_now) {
+                    debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}",
+                           i,
+                           op,
+                           self.last_prepared_downstream);
+                    out.forward_downstream(clock.now(), epoch, PeerMsg::Prepare(i, op.into()));
+                    self.last_prepared_downstream = Some(i.succ());
+                    changed = true
                 }
-            debug!("post Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
-                   log.seqno(),
-                   self.last_prepared_downstream,
-                   self.last_acked_downstream);
-        }
+            }
+        debug!("post Repl: Ours: {:?}; downstream sent: {:?}; acked: {:?}",
+               log.seqno(),
+               self.last_prepared_downstream,
+               self.last_acked_downstream);
 
         if let (Some(ds_prepared), ds_committed, Some(our_committed)) =
                (self.last_prepared_downstream,
@@ -390,7 +389,7 @@ impl<L: Log> ReplModel<L> {
         self.current_epoch = epoch;
     }
 
-    pub fn reconfigure(&mut self, view: &ConfigurationView<NodeViewConfig>) {
+    pub fn reconfigure<T: fmt::Debug + Clone>(&mut self, view: &ConfigurationView<T>) {
         info!("Reconfiguring from: {:?}", view);
         self.set_epoch(view.epoch);
         self.configure_forwarding(view.should_connect_downstream().is_some());
@@ -453,14 +452,16 @@ pub mod test {
     use quickcheck::{self, Arbitrary, Gen, TestResult};
     use replica::{ReplModel, Outputs};
     use std::sync::mpsc::channel;
-    use replication_log::test::VecLog;
-    use replication_log::test::TestLog;
+    use replication_log::test::{VecLog, TestLog, hash};
+    use config::ConfigurationView;
     use env_logger;
     use spki_sexp;
-    use std::collections::{VecDeque, HashMap};
+    use std::collections::{VecDeque, HashMap, BTreeMap};
     use mio::Token;
-    use hybrid_clocks::{Clock, Timestamp, WallT};
+    use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
     use std::mem;
+    use std::iter;
+    use std::sync::{Arc,Mutex};
 
     #[derive(Debug)]
     pub enum OutMessage {
@@ -645,12 +646,24 @@ pub mod test {
         }
     }
 
-    fn apply_cmd<L: TestLog, O: Outputs>(actual: &mut ReplModel<L>, cmd: &ReplCommand, outputs: &mut O) -> () {
+    fn apply_cmd<L: TestLog, O: Outputs>(actual: &mut ReplModel<L>, cmd: &ReplCommand, token: Token, outputs: &mut O) -> () {
         match cmd {
             &ReplCommand::ClientOperation(ref token, ref op) => {
                 actual.process_client(outputs, *token, &op)
             },
-            _ => unimplemented!(),
+
+            &ReplCommand::Forward(
+                ReplicationMessage { epoch, msg: PeerMsg::Prepare(seq, ref data) , .. }) => {
+                actual.process_operation(outputs, token, seq, epoch, &data);
+            },
+            &ReplCommand::Forward(
+                ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seq) , .. }) => {
+                actual.commit_observed(seq);
+            },
+            &ReplCommand::Response(token, ref reply) => {
+                actual.process_downstream_response(outputs, reply)
+            },
+            other => panic!("Unimplemented apply_cmd: {:?}", other)
         };
         actual.process_replication(outputs);
     }
@@ -688,150 +701,6 @@ pub mod test {
         }).all(|p| p)
     }
 
-    fn simulate_single_node_chain_prop<L: TestLog>(cmds: Commands) -> TestResult {
-        let Commands(cmds) = cmds;
-        let client_ops = cmds.len();
-        debug!("Command sequence: {:?}", cmds);
-        let epoch : Epoch = From::from(42);
-
-        let mut model = FakeReplica::new();
-
-        let (tx, rx) = channel();
-        let log = L::new(move |seq| {
-            info!("committed: {:?}", seq);
-            tx.send(seq).expect("send")
-            // TODO: Verify me.
-        });
-        let mut actual = ReplModel::new(log);
-        actual.set_is_head(true);
-        actual.set_epoch(epoch);
-        actual.configure_forwarding(false);
-        model.epoch = epoch;
-
-        for cmd in cmds {
-            let mut observed = Outs(VecDeque::new());
-            if !precondition(&model, &cmd) {
-                // we have produced an invalid sequence.
-                return TestResult::discard();
-            }
-            let ret = apply_cmd(&mut actual, &cmd, &mut observed);
-            while let Ok(seq) = rx.try_recv() {
-                observed.0.push_back(OutMessage::LogCommitted(seq))
-            }
-            trace!("Apply: {:?} => {:?}, {:?}", cmd, ret, observed);
-            model.next_state(&cmd);
-            assert!(postcondition(&actual, &model, &cmd, &observed));
-            model.update_from_outputs(&observed);
-        }
-        actual.borrow_log().quiesce();
-
-        debug!("Model state:{:?}", model);
-
-        assert_eq!(
-                model.outstanding.iter().filter(|&(_k, v)| v != &0).collect::<Vec<_>>(),
-                vec![]);
-
-        assert_eq!(model.prepared, Default::default());
-        assert_eq!(model.log_committed, model.responded);
-        assert_eq!(actual.borrow_log().read_prepared().map(|o| o.succ().offset() as usize).unwrap_or(0), client_ops);
-        assert_eq!(actual.borrow_log().read_committed().map(|o| o.succ().offset() as usize).unwrap_or(0), client_ops);
-
-        TestResult::passed()
-    }
-
-    #[test]
-    fn simulate_single_node_chain_mem() {
-        env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(simulate_single_node_chain_prop::<VecLog> as fn(vals: Commands) -> TestResult)
-    }
-
-    fn should_forward_all_requests_downstream_when_present_prop<L: TestLog>(
-        log_prefix: Vec<Operation>,
-        downstream_has: usize,
-        commands: Vec<ReplCommand>,
-        ) -> TestResult {
-        let downstream_has = if log_prefix.is_empty() {
-            0
-        } else {
-            downstream_has % log_prefix.len() as usize
-        };
-
-        let mut clock = Clock::wall();
-
-        debug!("should_forward_all_requests_downstream_when_present_prop:");
-        debug!("log_prefix: {:?}", log_prefix);
-        debug!("downstream_has: {:?}", downstream_has);
-        debug!("commands: {:?}", commands);
-        let mut log = L::new(move |seq| {
-            info!("committed: {:?}", seq);
-            // TODO: Verify me.
-        });
-
-        for (_seq, it) in log_prefix.iter().enumerate() {
-            let seq = log.seqno();
-            let data_bytes = spki_sexp::as_bytes(it).expect("encode operation");
-            log.prepare(seq, &data_bytes)
-        }
-
-        let mut replication = ReplModel::new(log);
-        replication.set_is_head(true);
-        let mut observed = Outs(VecDeque::new());
-
-        replication.configure_forwarding(true);
-        replication.process_downstream_response(&mut observed, &OpResp::HelloIWant(clock.now(), Seqno::new(downstream_has as u64)));
-
-        while replication.process_replication(&mut observed) {
-            debug!("iterated replication");
-        }
-
-        for cmd in commands.iter() {
-            debug!("apply: {:?}", cmd);
-            match cmd {
-                &ReplCommand::ClientOperation(ref token, ref op) => {
-                    let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
-                    replication.process_client(&mut observed, token.clone(), &data_bytes)
-                },
-                _ => unimplemented!(),
-            };
-            while replication.process_replication(&mut observed) {
-                debug!("iterated replication");
-            }
-        }
-
-        debug!("Stopping Log");
-        drop(replication);
-        debug!("Stopped Log");
-
-        let prepares =  observed.0.into_iter()
-            .filter_map(|op| match op {
-                    OutMessage::Forward(ReplicationMessage { msg: PeerMsg::Prepare(seq, op), .. }) =>
-                        Some((seq.offset() as usize, op)),
-                    _ => None
-            })
-            .collect::<Vec<_>>();
-        let expected = log_prefix.into_iter()
-            .map(|op| spki_sexp::as_bytes(&op).expect("encode operation"))
-            .skip(downstream_has)
-            .chain(commands.into_iter()
-            .filter_map(|c| match c {
-                ReplCommand::ClientOperation(_, op) => Some(spki_sexp::as_bytes(&op).expect("encode operation")),
-                _ => unimplemented!(),
-            }))
-            .map(Into::into)
-            .zip(downstream_has..).map(|(x, i)| (i, x))
-            .collect::<Vec<_>>();
-        assert_eq!(prepares, expected);
-        TestResult::from_bool(true)
-    }
-
-    #[test]
-    fn should_forward_all_requests_downstream_when_present() {
-        env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(
-            should_forward_all_requests_downstream_when_present_prop::<VecLog> as
-            fn(Vec<Operation>, usize, Vec<ReplCommand>) -> TestResult)
-    }
-
     #[test]
     fn simulate_two_node_system_vec() {
         env_logger::init().unwrap_or(());
@@ -839,13 +708,25 @@ pub mod test {
     }
 
 
-    struct OutBufs<'a>(usize, &'a mut HashMap<usize, VecDeque<ReplCommand>>);
+    struct OutBufs<'a> {
+        node_id: usize,
+        epoch: Epoch,
+        ports: &'a mut HashMap<usize, VecDeque<(usize, ReplCommand)>>,
+        clock: &'a mut Clock<Wall>,
+    }
 
     impl<'a> OutBufs<'a> {
         fn enqueue(&mut self, dest: usize, cmd: ReplCommand) {
-            let &mut OutBufs(_node_id, ref mut map) = self;
-            let queue = map.entry(dest).or_insert_with(VecDeque::new);
-            queue.push_back(cmd)
+            let &mut OutBufs { node_id, ref mut ports, .. } = self;
+            let queue = ports.entry(dest).or_insert_with(VecDeque::new);
+            queue.push_back((node_id, cmd));
+        }
+
+
+        fn commit_observed(&mut self, seq: Seqno) {
+            let now = self.clock.now();
+            let epoch = self.epoch;
+            self.forward_downstream(now, epoch, PeerMsg::CommitTo(seq));
         }
     }
     impl<'a> Outputs for OutBufs<'a> {
@@ -855,7 +736,7 @@ pub mod test {
         }
 
         fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
-            let &mut OutBufs(node_id, _) = self;
+            let &mut OutBufs { node_id, .. } = self;
             let downstream_id = node_id + 1; // TODO: Use a "view" object
 
             self.enqueue(downstream_id,
@@ -873,13 +754,20 @@ pub mod test {
 
 
     fn simulate_two_node_system<L: TestLog>() {
-        let nodes = 2;
+        let node_count = 2;
         let end_of_time = 9;
-        let client_id = nodes + 42;
+        let client_id = node_count + 42;
+        let epoch = Epoch::from(0);
+        let mut clock = Clock::wall();
 
-        let mut nodes = (0..nodes).map(|id| {
-            let log = L::new(move |seq| info!("committed: {:?}", seq));
-            ReplModel::new(log)
+        let mut nodes = (0..node_count).map(|id| {
+            let q = Arc::new(Mutex::new(VecDeque::new()));
+            let q2 = q.clone();
+            let log = L::new(move |seq| {
+                info!("committed: {:?}", seq);
+                q2.lock().expect("lock mutex").push_back(seq);
+            });
+            (ReplModel::new(log), q)
         }).collect::<Vec<_>>();
 
         let mut input_bufs = HashMap::new();
@@ -889,29 +777,54 @@ pub mod test {
 
         // Configuration event
 
-        nodes[0].set_is_head(true);
-        for (lastp, n) in nodes.iter_mut().rev().enumerate().map(|(i, n)| (i == 0, n)) {
-            n.configure_forwarding(lastp);
+        let node_ids = 0..node_count;
+        let configs = node_ids.clone()
+            .zip(node_ids.clone().skip(1).map(Some).chain(iter::repeat(None))).map(|(nid, next)| {
+            debug!("fake config: id:{:?}; next:{:?}", nid, next);
+            ConfigurationView {
+                epoch: epoch,
+                ord: nid,
+                next: next.map(|x| ()),
+            }
+        }).collect::<Vec<_>>();
+        for (&mut (ref mut n, _), ref config) in nodes.iter_mut().zip(configs.iter()) {
+            debug!("configure node: {:?}", config);
+            n.reconfigure(config)
         }
 
         // Perturb
         input_bufs.entry(0usize).or_insert_with(VecDeque::new).push_back(
-                ReplCommand::ClientOperation(Token(client_id), b"hello_world".to_vec()));
+                (client_id, ReplCommand::ClientOperation(Token(client_id), b"hello_world".to_vec())));
 
         for t in 0..end_of_time {
             debug!("time: {:?}", t);
-            for (node_id, inputs) in input_bufs.drain() {
+            for (node_id, mut inputs) in input_bufs.drain() {
                 debug!("Inputs for {:?}: {:?}", node_id, inputs);
                 if node_id == client_id {
-                    client_buf.extend(inputs);
+                    client_buf.extend(inputs.into_iter().map(|(_, m)| m));
                 } else {
                     assert!(node_id < nodes.len());
-                    let n = &mut nodes[node_id];
+                    let (ref mut n, ref mut commits) = nodes[node_id];
+                    let mut output = OutBufs { node_id: node_id, ports: &mut output_bufs, epoch: epoch, clock: &mut clock };
 
-                    for c in inputs {
+                    for (src, c)  in inputs {
                         debug!("Feed node {:?} with {:?}", node_id, c);
-                        apply_cmd(n, &c, &mut OutBufs(node_id, &mut output_bufs));
+                        apply_cmd(n, &c, Token(src), &mut output);
                     }
+                    n.borrow_log().quiesce();
+
+                    while n.process_replication(&mut output) {
+                        debug!("iterated replication for node {:?}", node_id);
+                    }
+
+                    // TODO: De-async the commit nonsense.
+                    let mut queue = commits.lock().expect("lock");
+                    if let Some(_) = configs[node_id].next {
+                        if let Some(s) = queue.iter().max() {
+                            output.commit_observed(*s);
+                        }
+                    }
+                    queue.clear();
                 }
             }
 
@@ -925,14 +838,38 @@ pub mod test {
                 .collect::<Vec<&ReplCommand>>(),
                 Vec::<&ReplCommand>::new());
 
-        let responses = client_buf.into_iter()
+        let (ok, errors) : (Vec<_>, Vec<_>) = client_buf.into_iter()
             .filter_map(|m| match m { ReplCommand::Response(_, m) => Some(m), _ => None })
-            .collect::<Vec<_>>();
-        let (ok, errors) : (Vec<_>, Vec<_>) = responses.iter().partition(|m| match m { &&OpResp::Ok(_, _, _) => true, _ => false });
+            .partition(|m| match m { &OpResp::Ok(_, _, _) => true, _ => false });
 
         debug!("Errors: {:?}", errors);
         assert!(errors.is_empty());
 
         assert_eq!(ok.len(), 1);
+        let seqs = ok.into_iter()
+            .filter_map(|m| match m { OpResp::Ok(_, seq, _) => Some(seq), _ => None })
+            .collect::<Vec<_>>();
+
+        assert!(seqs.iter().zip(seqs.iter().skip(1)).all(|(a, b)| a < b), "is sorted");
+
+        let logs_by_node = nodes.iter().enumerate().map(|(id, &(ref n, _))| {
+            let committed_seq = n.borrow_log().read_committed();
+            debug!("Committed @{:?}: {:?}", id, committed_seq);
+            let committed = n.borrow_log().read_from(Seqno::zero())
+                    .take_while(|&(s, _)| Some(s) <= committed_seq)
+                    .map(|(s, val)| (s, hash(&val)))
+                    .collect::<BTreeMap<_, _>>();
+            committed
+        }).collect::<Vec<_>>();
+
+        debug!("Committed logs: {:#?}", logs_by_node);
+        for a in 0..nodes.len() {
+            for b in (a..nodes.len()).filter(|&b| a != b) {
+                let log_a = &logs_by_node[a];
+                let log_b = &logs_by_node[b];
+                debug!("compare log for {:?} ({:x}) with {:?} ({:x})", a, hash(log_a), b, hash(log_b));
+                assert_eq!(log_a, log_b);
+            }
+        }
     }
 }

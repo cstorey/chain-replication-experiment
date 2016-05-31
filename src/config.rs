@@ -34,8 +34,8 @@ pub struct ConfigClient<T> {
 #[derive(Clone,Debug, Default)]
 pub struct ConfigurationView<T> {
     pub epoch: Epoch,
-    ord: usize,
-    next: Option<T>,
+    pub ord: usize,
+    pub next: Option<T>,
 }
 
 struct InnerClient<T> {
