@@ -460,6 +460,7 @@ pub mod test {
     use std::collections::{VecDeque, HashMap};
     use mio::Token;
     use hybrid_clocks::{Clock, Timestamp, WallT};
+    use std::mem;
 
     #[derive(Debug)]
     pub enum OutMessage {
@@ -501,12 +502,14 @@ pub mod test {
         }
     }
 
-    #[derive(Debug,PartialEq,Eq,Clone)]
+    #[derive(Debug,Eq,PartialEq,Clone)]
     enum ReplCommand {
         ClientOperation(Token, Vec<u8>), // UpstreamOperation(Token, Seqno, Epoch, Operation),
+        Response(Token, OpResp),
+        Forward(ReplicationMessage),
     }
 
-    #[derive(Debug,PartialEq,Eq,Clone)]
+    #[derive(Debug,Eq,PartialEq,Clone)]
     struct Commands(Vec<ReplCommand>);
 
     #[derive(Debug,PartialEq,Eq,Clone)]
@@ -551,6 +554,7 @@ pub mod test {
                                  .shrink()
                                  .map(|(t, op)| ReplCommand::ClientOperation(Token(t), op)))
                 }
+                _ => unimplemented!(),
             }
         }
     }
@@ -558,6 +562,7 @@ pub mod test {
     fn precondition(_model: &FakeReplica, cmd: &ReplCommand) -> bool {
         match cmd {
             &ReplCommand::ClientOperation(ref _token, ref _s) => true,
+            _ => unimplemented!(),
         }
     }
 
@@ -594,6 +599,7 @@ pub mod test {
 
         match cmd {
             &ReplCommand::ClientOperation(ref _token, ref _s) => true,
+            _ => unimplemented!(),
         }
     }
 
@@ -603,6 +609,7 @@ pub mod test {
                 &ReplCommand::ClientOperation(ref token, ref _op) => {
                     *self.outstanding.entry(*token).or_insert(0) += 1;
                 }
+                _ => unimplemented!(),
             }
         }
 
@@ -638,11 +645,12 @@ pub mod test {
         }
     }
 
-    fn apply_cmd<L: TestLog>(actual: &mut ReplModel<L>, cmd: &ReplCommand, outputs: &mut Outs) -> () {
+    fn apply_cmd<L: TestLog, O: Outputs>(actual: &mut ReplModel<L>, cmd: &ReplCommand, outputs: &mut O) -> () {
         match cmd {
             &ReplCommand::ClientOperation(ref token, ref op) => {
                 actual.process_client(outputs, *token, &op)
             },
+            _ => unimplemented!(),
         };
         actual.process_replication(outputs);
     }
@@ -783,6 +791,7 @@ pub mod test {
                     let data_bytes = spki_sexp::as_bytes(op).expect("encode operation");
                     replication.process_client(&mut observed, token.clone(), &data_bytes)
                 },
+                _ => unimplemented!(),
             };
             while replication.process_replication(&mut observed) {
                 debug!("iterated replication");
@@ -806,6 +815,7 @@ pub mod test {
             .chain(commands.into_iter()
             .filter_map(|c| match c {
                 ReplCommand::ClientOperation(_, op) => Some(spki_sexp::as_bytes(&op).expect("encode operation")),
+                _ => unimplemented!(),
             }))
             .map(Into::into)
             .zip(downstream_has..).map(|(x, i)| (i, x))
@@ -820,5 +830,109 @@ pub mod test {
         quickcheck::quickcheck(
             should_forward_all_requests_downstream_when_present_prop::<VecLog> as
             fn(Vec<Operation>, usize, Vec<ReplCommand>) -> TestResult)
+    }
+
+    #[test]
+    fn simulate_two_node_system_vec() {
+        env_logger::init().unwrap_or(());
+        simulate_two_node_system::<VecLog>();
+    }
+
+
+    struct OutBufs<'a>(usize, &'a mut HashMap<usize, VecDeque<ReplCommand>>);
+
+    impl<'a> OutBufs<'a> {
+        fn enqueue(&mut self, dest: usize, cmd: ReplCommand) {
+            let &mut OutBufs(_node_id, ref mut map) = self;
+            let queue = map.entry(dest).or_insert_with(VecDeque::new);
+            queue.push_back(cmd)
+        }
+    }
+    impl<'a> Outputs for OutBufs<'a> {
+        fn respond_to(&mut self, token: Token, resp: &OpResp) {
+            let cmd = ReplCommand::Response(token, resp.clone());
+            self.enqueue(token.as_usize(), cmd);
+        }
+
+        fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
+            let &mut OutBufs(node_id, _) = self;
+            let downstream_id = node_id + 1; // TODO: Use a "view" object
+
+            self.enqueue(downstream_id,
+                ReplCommand::Forward(ReplicationMessage {
+                    epoch: epoch,
+                    ts: now,
+                    msg: msg,
+                }));
+        }
+        fn consumer_message(&mut self, token: Token, seqno: Seqno, msg: Buf) {
+            unimplemented!()
+        }
+    }
+
+
+
+    fn simulate_two_node_system<L: TestLog>() {
+        let nodes = 2;
+        let end_of_time = 9;
+        let client_id = nodes + 42;
+
+        let mut nodes = (0..nodes).map(|id| {
+            let log = L::new(move |seq| info!("committed: {:?}", seq));
+            ReplModel::new(log)
+        }).collect::<Vec<_>>();
+
+        let mut input_bufs = HashMap::new();
+        let mut output_bufs = HashMap::new();
+
+        let mut client_buf = VecDeque::new();
+
+        // Configuration event
+
+        nodes[0].set_is_head(true);
+        for (lastp, n) in nodes.iter_mut().rev().enumerate().map(|(i, n)| (i == 0, n)) {
+            n.configure_forwarding(lastp);
+        }
+
+        // Perturb
+        input_bufs.entry(0usize).or_insert_with(VecDeque::new).push_back(
+                ReplCommand::ClientOperation(Token(client_id), b"hello_world".to_vec()));
+
+        for t in 0..end_of_time {
+            debug!("time: {:?}", t);
+            for (node_id, inputs) in input_bufs.drain() {
+                debug!("Inputs for {:?}: {:?}", node_id, inputs);
+                if node_id == client_id {
+                    client_buf.extend(inputs);
+                } else {
+                    assert!(node_id < nodes.len());
+                    let n = &mut nodes[node_id];
+
+                    for c in inputs {
+                        debug!("Feed node {:?} with {:?}", node_id, c);
+                        apply_cmd(n, &c, &mut OutBufs(node_id, &mut output_bufs));
+                    }
+                }
+            }
+
+            mem::swap(&mut input_bufs, &mut output_bufs);
+        }
+
+        debug!("Client responses: {:?}", client_buf);
+
+        assert_eq!(client_buf.iter()
+                .filter_map(|m| match m { &ReplCommand::Response(_, _) => None, other => Some(other)})
+                .collect::<Vec<&ReplCommand>>(),
+                Vec::<&ReplCommand>::new());
+
+        let responses = client_buf.into_iter()
+            .filter_map(|m| match m { ReplCommand::Response(_, m) => Some(m), _ => None })
+            .collect::<Vec<_>>();
+        let (ok, errors) : (Vec<_>, Vec<_>) = responses.iter().partition(|m| match m { &&OpResp::Ok(_, _, _) => true, _ => false });
+
+        debug!("Errors: {:?}", errors);
+        assert!(errors.is_empty());
+
+        assert_eq!(ok.len(), 1);
     }
 }
