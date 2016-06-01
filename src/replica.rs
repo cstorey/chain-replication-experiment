@@ -162,19 +162,20 @@ impl Forwarder {
 
         let mut changed = false;
         let send_next = self.last_prepared_downstream.map(|s| s.succ()).unwrap_or_else(Seqno::zero);
-        if send_next < log.seqno() {
-            let max_to_prepare_now = log.seqno();
-            debug!("Window prepare {:?} - {:?}; prepared locally: {:?}",
-                   send_next,
-                   max_to_prepare_now,
-                   log.read_prepared());
+        let max_to_prepare_now = log.seqno();
+        debug!("Window prepare {:?} - {:?}; prepared locally: {:?}",
+               send_next,
+               max_to_prepare_now,
+               log.read_prepared());
+
+        if send_next <= max_to_prepare_now {
             for (i, op) in log.read_from(send_next).take_while(|&(i, _)| i <= max_to_prepare_now) {
                     debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}",
                            i,
                            op,
                            self.last_prepared_downstream);
                     out.forward_downstream(clock.now(), epoch, PeerMsg::Prepare(i, op.into()));
-                    self.last_prepared_downstream = Some(i.succ());
+                    self.last_prepared_downstream = Some(i);
                     changed = true
                 }
             }
@@ -702,10 +703,27 @@ pub mod test {
     }
 
     #[test]
-    fn simulate_two_node_system_vec() {
+    fn simulate_three_node_system_vec() {
         env_logger::init().unwrap_or(());
-        let mut sim = NetworkSim::<VecLog>::new(2);
-        sim.run();
+        let mut sim = NetworkSim::<VecLog>::new(3);
+        sim.run_for(10, |t, sim, state| {
+            if t == 0 {
+                sim.client_request(state, b"hello_world".to_vec());
+            }
+        });
+        sim.validate();
+    }
+
+    #[test]
+    fn simulate_three_node_system_streaming_vec() {
+        env_logger::init().unwrap_or(());
+        let mut sim = NetworkSim::<VecLog>::new(3);
+        sim.run_for(15, |t, sim, state| {
+            if t < 3 {
+                sim.client_request(state, format!("hello_world at {}", t).into_bytes())
+            }
+        });
+        sim.validate();
     }
 
 
@@ -756,16 +774,21 @@ pub mod test {
         nodes: Vec<ReplModel<L>>,
         commit_queues: Vec<Arc<Mutex<VecDeque<Seqno>>>>,
         node_count: usize,
-        end_of_time: usize,
         epoch: Epoch,
         client_id: usize,
         configs: Vec<ConfigurationView<()>>,
+        client_buf: VecDeque<ReplCommand>,
     }
 
     struct NetworkState {
         input_bufs: HashMap<usize, VecDeque<(usize, ReplCommand)>>,
         output_bufs: HashMap<usize, VecDeque<(usize, ReplCommand)>>,
-        client_buf: VecDeque<ReplCommand>,
+    }
+
+    impl NetworkState {
+        fn is_quiescent(&self) -> bool {
+            self.input_bufs.is_empty() && self.output_bufs.is_empty()
+        }
     }
 
     impl<L: TestLog> NetworkSim<L> {
@@ -800,14 +823,14 @@ pub mod test {
                 nodes: nodes,
                 commit_queues: commit_queues,
                 node_count: node_count,
-                end_of_time: 10,
                 epoch: epoch,
                 client_id: node_count + 42,
                 configs: configs,
+                client_buf: VecDeque::new(),
             }
         }
 
-        fn run(&mut self) {
+        fn run_for<F: FnMut(usize, &Self, &mut NetworkState)>(&mut self, end_of_time: usize, mut f: F) {
             // Configuration event
 
             for (ref mut n, ref config) in self.nodes.iter_mut().zip(self.configs.iter()) {
@@ -818,40 +841,41 @@ pub mod test {
             let mut state = NetworkState {
                 input_bufs: HashMap::new(),
                 output_bufs: HashMap::new(),
-                client_buf: VecDeque::new(),
             };
 
-            // Perturb
-            let initial_command = ReplCommand::ClientOperation(
-                    Token(self.client_id), b"hello_world".to_vec());
-            state.input_bufs.entry(0usize).or_insert_with(VecDeque::new).push_back(
-                    (self.client_id,
-                     initial_command));
-
-            for t in 0..self.end_of_time {
+            for t in 0..end_of_time {
+                debug!("time: {:?}/{:?}", t, end_of_time);
+                f(t, self, &mut state);
                 self.step(t, &mut state);
             }
 
-            self.validate(state);
+            assert!(state.is_quiescent());
         }
-        fn validate(&self, state: NetworkState) {
-            debug!("Client responses: {:?}", state.client_buf);
 
-            assert_eq!(state.client_buf.iter()
+        fn client_request(&self, state: &mut NetworkState, val: Vec<u8>) {
+            let head = 0usize;
+            let cmd = ReplCommand::ClientOperation(Token(self.client_id), val);
+            state.input_bufs.entry(head).or_insert_with(VecDeque::new).push_back(
+                    (self.client_id, cmd));
+        }
+
+        fn validate(&self) {
+            debug!("Client responses: {:?}", self.client_buf);
+
+            assert_eq!(self.client_buf.iter()
                     .filter_map(|m| match m { &ReplCommand::Response(_, _) => None, other => Some(other)})
                     .collect::<Vec<&ReplCommand>>(),
                     Vec::<&ReplCommand>::new());
 
-            let (ok, errors) : (Vec<_>, Vec<_>) = state.client_buf.into_iter()
-                .filter_map(|m| match m { ReplCommand::Response(_, m) => Some(m), _ => None })
-                .partition(|m| match m { &OpResp::Ok(_, _, _) => true, _ => false });
+            let (ok, errors) : (Vec<_>, Vec<_>) = self.client_buf.iter()
+                .filter_map(|m| match m { &ReplCommand::Response(_, ref m) => Some(m), _ => None })
+                .partition(|&m| match m { &OpResp::Ok(_, _, _) => true, _ => false });
 
             debug!("Errors: {:?}", errors);
             assert!(errors.is_empty());
 
-            assert_eq!(ok.len(), 1);
             let seqs = ok.into_iter()
-                .filter_map(|m| match m { OpResp::Ok(_, seq, _) => Some(seq), _ => None })
+                .filter_map(|m| match m { &OpResp::Ok(_, ref seq, _) => Some(seq), _ => None })
                 .collect::<Vec<_>>();
 
             assert!(seqs.iter().zip(seqs.iter().skip(1)).all(|(a, b)| a < b), "is sorted");
@@ -879,16 +903,14 @@ pub mod test {
 
         fn step(&mut self, t: usize, state: &mut NetworkState) {
             let &mut NetworkState {
-                ref mut input_bufs, ref mut output_bufs, ref mut client_buf,
+                ref mut input_bufs, ref mut output_bufs,
             } = state;
 
             let mut clock = Clock::wall();
-
-            debug!("time: {:?}", t);
             for (node_id, mut inputs) in input_bufs.drain() {
                 debug!("Inputs for {:?}: {:?}", node_id, inputs);
                 if node_id == self.client_id {
-                    client_buf.extend(inputs.into_iter().map(|(_, m)| m));
+                    self.client_buf.extend(inputs.into_iter().map(|(_, m)| m));
                 } else {
                     assert!(node_id < self.node_count);
                     let ref mut n = self.nodes[node_id];
