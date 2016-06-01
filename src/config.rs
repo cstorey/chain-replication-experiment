@@ -3,6 +3,7 @@ use std::thread;
 use std::sync::atomic::{Ordering, AtomicBool};
 use std::fmt;
 use std::sync::Arc;
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use time::{SteadyTime, Duration};
 use serde_json as json;
@@ -337,11 +338,11 @@ impl<T: Deserialize + Serialize + fmt::Debug + Eq + Clone> InnerClient<T> {
 }
 
 impl<T: Clone> ConfigurationView<T> {
-    fn of_membership(epoch: Epoch,
-                     this_node: &str,
-                     members: BTreeMap<String, T>)
+    pub fn of_membership<Q : PartialEq, K: Ord + Borrow<Q>>(epoch: Epoch,
+                     this_node: &Q,
+                     members: BTreeMap<K, T>)
                      -> Option<ConfigurationView<T>> {
-        let ordp = members.keys().position(|x| *x == this_node);
+        let ordp = members.keys().position(|k| k.borrow() == this_node);
         ordp.map(|ord| {
             let next = members.values().nth(ord + 1).map(|v| v.clone());
             ConfigurationView {

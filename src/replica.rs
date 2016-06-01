@@ -775,7 +775,6 @@ pub mod test {
         node_count: usize,
         epoch: Epoch,
         client_id: usize,
-        configs: Vec<ConfigurationView<()>>,
         client_buf: VecDeque<ReplCommand>,
     }
 
@@ -801,32 +800,30 @@ pub mod test {
                 nodes.push(ReplModel::new(log));
             }
 
-            let configs = (0..node_count)
-                .zip((1..node_count).map(Some).chain(iter::repeat(None))).map(|(nid, next)| {
-                debug!("fake config: id:{:?}; next:{:?}", nid, next);
-                ConfigurationView {
-                    epoch: epoch,
-                    ord: nid,
-                    next: next.map(|x| ()),
-                }
-            }).collect::<Vec<_>>();
-
             NetworkSim {
                 nodes: nodes,
                 node_count: node_count,
                 epoch: epoch,
                 client_id: node_count + 42,
-                configs: configs,
                 client_buf: VecDeque::new(),
             }
+        }
+
+        fn configs(&self) -> Vec<ConfigurationView<()>> {
+            let node_count = self.node_count;
+            let members = (0..node_count).zip(iter::repeat(())).collect::<BTreeMap<_, _>>();
+            (0..node_count)
+                .map(|id| ConfigurationView::of_membership(self.epoch, &id, members.clone()).expect("in view"))
+                .collect::<Vec<_>>()
         }
 
         fn run_for<F: FnMut(usize, &Self, &mut NetworkState)>(&mut self, end_of_time: usize, mut f: F) {
             // Configuration event
 
-            for (ref mut n, ref config) in self.nodes.iter_mut().zip(self.configs.iter()) {
+            let configs = self.configs().into_iter();
+            for (ref mut n, ref config) in self.nodes.iter_mut().zip(configs) {
                 debug!("configure node: {:?}", config);
-                n.reconfigure(config)
+                n.reconfigure(&config)
             }
 
             let mut state = NetworkState {
