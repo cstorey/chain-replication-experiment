@@ -5,7 +5,6 @@ use tempdir::TempDir;
 use data::Seqno;
 use replica::Log;
 use time::PreciseTime;
-use std::thread;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::{Mutex, Condvar};

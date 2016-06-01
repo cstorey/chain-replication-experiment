@@ -333,9 +333,6 @@ impl ChainRepl {
         self.new_view = Some(view)
     }
 
-    fn committed_to(&mut self, seqno: Seqno) {
-        info!("Committed upto: {:?}", seqno);
-    }
     pub fn get_notifier(event_loop: &mut mio::EventLoop<Self>) -> Notifier {
         Notifier(event_loop.channel())
     }
@@ -379,7 +376,6 @@ impl ChainRepl {
 pub enum Notification {
     ViewChange(ConfigurationView<NodeViewConfig>),
     Shutdown,
-    CommittedTo(Seqno),
     RespondTo(mio::Token, OpResp),
     Forward(Epoch, PeerMsg),
     ConsumerMessage(mio::Token, Seqno, Buf),
@@ -408,9 +404,6 @@ impl Notifier {
     }
     pub fn shutdown(&self) {
         self.notify(Notification::Shutdown)
-    }
-    pub fn committed_to(&self, seqno: Seqno) {
-        self.notify(Notification::CommittedTo(seqno))
     }
 }
 
@@ -457,7 +450,6 @@ impl mio::Handler for ChainRepl {
         trace!("Notified: {:?}", msg);
         match msg {
             Notification::ViewChange(view) => self.handle_view_changed(view),
-            Notification::CommittedTo(seqno) => self.committed_to(seqno),
             Notification::Shutdown => {
                 info!("Shutting down");
                 event_loop.shutdown();
