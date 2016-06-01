@@ -59,16 +59,11 @@ use std::iter;
 //  │ 9│  O
 //  └──┘        ◀─────R0.Prepare
 
-enum CommitCommand {
-    CommitTo(Seqno),
-    Quiesce(Arc<(Mutex<bool>, Condvar)>)
-}
 pub struct RocksdbLog {
     dir: TempDir,
     db: Arc<DB>,
     seqno_prepared: Option<Seqno>,
-    flush_tx: mpsc::SyncSender<CommitCommand>,
-    flush_thread: thread::JoinHandle<()>,
+    on_committed: Box<Fn(Seqno) + Send + 'static>,
 }
 
 pub struct RocksdbCursor(DBIterator);
@@ -92,23 +87,13 @@ impl RocksdbLog {
         let _meta = db.create_cf(META, &Options::new()).expect("open meta cf");
         let _data = db.create_cf(DATA, &Options::new()).expect("open data cf");
         let db = Arc::new(db);
-        let (flush_tx, flush_rx) = mpsc::sync_channel(42);
 
-
-        let flusher = {
-            let db = db.clone();
-            thread::Builder::new()
-                .name("flusher".to_string())
-                .spawn(move || Self::flush_thread_loop(db, flush_rx, committed))
-                .expect("spawn flush thread")
-        };
         let seqno_prepared = Self::do_read_seqno(&db, META_PREPARED);
         RocksdbLog {
             dir: d,
             db: db,
             seqno_prepared: seqno_prepared,
-            flush_tx: flush_tx,
-            flush_thread: flusher,
+            on_committed: Box::new(committed),
         }
     }
 
@@ -119,36 +104,6 @@ impl RocksdbLog {
      fn data(db: &DB) -> DBCFHandle {
          db.cf_handle(DATA).expect("open meta cf").clone()
      }
-
-
-    fn flush_thread_loop<F: Fn(Seqno)>(db: Arc<DB>, rx: mpsc::Receiver<CommitCommand>, committed: F) {
-        let meta = Self::meta(&db);
-        debug!("Awaiting flush");
-        let mut prev_commit = None;
-        for it in rx {
-            match it {
-                CommitCommand::CommitTo(seqno) => {
-                    debug!("Got commit: {:?}", seqno);
-                    if prev_commit.map(|p| p < seqno).unwrap_or(true) {
-                        debug!("Flushing: {:?} -> {:?}", prev_commit, seqno);
-                        Self::do_commit_to(db.clone(), meta, seqno);
-                        debug!("Flushed: {:?}", seqno);
-                        prev_commit = Some(seqno);
-                        committed(seqno);
-                    } else {
-                        debug!("Redundant commit: {:?} -> {:?}", prev_commit, seqno);
-                    }
-                },
-                CommitCommand::Quiesce(pair) => {
-                    let &(ref lock, ref cond) = &*pair;
-                    let mut finished = lock.lock().expect("lock");
-                    *finished = true;
-                    cond.notify_one();
-                }
-            }
-        }
-        debug!("Exiting flush thread");
-    }
 
     fn do_read_seqno(db: &DB, name: &str) -> Option<Seqno> {
         match db.get_cf(Self::meta(&db), name.as_bytes()) {
@@ -162,8 +117,9 @@ impl RocksdbLog {
         Self::do_read_seqno(&self.db, name)
     }
 
-    fn do_commit_to(db: Arc<DB>, meta: DBCFHandle, commit_seqno: Seqno) {
+    fn do_commit_to(db: &DB, commit_seqno: Seqno) {
         debug!("Commit {:?}", commit_seqno);
+        let meta = Self::meta(&db);
         let key = Seqno::tokey(&commit_seqno);
 
         let prepared = Self::do_read_seqno(&db, META_PREPARED);
@@ -206,23 +162,12 @@ impl RocksdbLog {
         }
     }
     pub fn stop(self) {
-        let RocksdbLog { db, flush_thread, flush_tx, .. } = self;
-        drop(flush_tx);
-        flush_thread.join().expect("Join flusher thread");
+        let RocksdbLog { db, .. } = self;
         drop(db);
     }
 
     pub fn quiesce(&self) {
-        let pair = Arc::new((Mutex::new(false), Condvar::new()));
-        self.flush_tx.send(CommitCommand::Quiesce(pair.clone())).expect("Send to flusher");
-        let &(ref lock, ref cond) = &*pair;
-
-        let mut quieted = lock.lock().unwrap();
-        while !*quieted {
-            quieted = cond.wait(quieted).unwrap();
-        }
     }
-
 }
 
 impl Log for RocksdbLog {
@@ -284,7 +229,8 @@ impl Log for RocksdbLog {
         let committed = self.read_seqno(META_COMMITTED);
         if committed.map(|c| c < seqno).unwrap_or(true) {
             trace!("Request to commit {:?} -> {:?}", committed, seqno);
-            self.flush_tx.send(CommitCommand::CommitTo(seqno)).expect("Send to flusher");
+            Self::do_commit_to(&self.db, seqno);
+            (self.on_committed)(seqno);
             true
         } else {
             trace!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
