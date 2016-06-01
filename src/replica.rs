@@ -450,7 +450,7 @@ pub mod test {
     use data::{Operation, OpResp, PeerMsg, Seqno, Buf, ReplicationMessage};
     use config::Epoch;
     use quickcheck::{self, Arbitrary, Gen, TestResult};
-    use replica::{ReplModel, Outputs};
+    use replica::{ReplModel, Outputs, Log};
     use std::sync::mpsc::channel;
     use replication_log::test::{VecLog, TestLog, hash};
     use config::ConfigurationView;
@@ -704,7 +704,8 @@ pub mod test {
     #[test]
     fn simulate_two_node_system_vec() {
         env_logger::init().unwrap_or(());
-        simulate_two_node_system::<VecLog>();
+        let mut sim = NetworkSim::<VecLog>::new(2);
+        sim.run();
     }
 
 
@@ -751,61 +752,148 @@ pub mod test {
         }
     }
 
+    struct NetworkSim<L> {
+        nodes: Vec<ReplModel<L>>,
+        commit_queues: Vec<Arc<Mutex<VecDeque<Seqno>>>>,
+        node_count: usize,
+        end_of_time: usize,
+        epoch: Epoch,
+        client_id: usize,
+        configs: Vec<ConfigurationView<()>>,
+    }
 
+    struct NetworkState {
+        input_bufs: HashMap<usize, VecDeque<(usize, ReplCommand)>>,
+        output_bufs: HashMap<usize, VecDeque<(usize, ReplCommand)>>,
+        client_buf: VecDeque<ReplCommand>,
+    }
 
-    fn simulate_two_node_system<L: TestLog>() {
-        let node_count = 2;
-        let end_of_time = 9;
-        let client_id = node_count + 42;
-        let epoch = Epoch::from(0);
-        let mut clock = Clock::wall();
+    impl<L: TestLog> NetworkSim<L> {
+        fn new(node_count: usize) -> Self {
+            let mut nodes = Vec::new();
+            let mut commit_queues = Vec::new();
 
-        let mut nodes = (0..node_count).map(|id| {
-            let q = Arc::new(Mutex::new(VecDeque::new()));
-            let q2 = q.clone();
-            let log = L::new(move |seq| {
-                info!("committed: {:?}", seq);
-                q2.lock().expect("lock mutex").push_back(seq);
-            });
-            (ReplModel::new(log), q)
-        }).collect::<Vec<_>>();
+            let epoch = Epoch::from(0);
 
-        let mut input_bufs = HashMap::new();
-        let mut output_bufs = HashMap::new();
-
-        let mut client_buf = VecDeque::new();
-
-        // Configuration event
-
-        let node_ids = 0..node_count;
-        let configs = node_ids.clone()
-            .zip(node_ids.clone().skip(1).map(Some).chain(iter::repeat(None))).map(|(nid, next)| {
-            debug!("fake config: id:{:?}; next:{:?}", nid, next);
-            ConfigurationView {
-                epoch: epoch,
-                ord: nid,
-                next: next.map(|x| ()),
+            for id in 0..node_count {
+                let q = Arc::new(Mutex::new(VecDeque::new()));
+                let q2 = q.clone();
+                let log = L::new(move |seq| {
+                    info!("committed {}: {:?}", id, seq);
+                    q2.lock().expect("lock mutex").push_back(seq);
+                });
+                nodes.push(ReplModel::new(log));
+                commit_queues.push(q);
             }
-        }).collect::<Vec<_>>();
-        for (&mut (ref mut n, _), ref config) in nodes.iter_mut().zip(configs.iter()) {
-            debug!("configure node: {:?}", config);
-            n.reconfigure(config)
+
+            let configs = (0..node_count)
+                .zip((1..node_count).map(Some).chain(iter::repeat(None))).map(|(nid, next)| {
+                debug!("fake config: id:{:?}; next:{:?}", nid, next);
+                ConfigurationView {
+                    epoch: epoch,
+                    ord: nid,
+                    next: next.map(|x| ()),
+                }
+            }).collect::<Vec<_>>();
+
+            NetworkSim {
+                nodes: nodes,
+                commit_queues: commit_queues,
+                node_count: node_count,
+                end_of_time: 10,
+                epoch: epoch,
+                client_id: node_count + 42,
+                configs: configs,
+            }
         }
 
-        // Perturb
-        input_bufs.entry(0usize).or_insert_with(VecDeque::new).push_back(
-                (client_id, ReplCommand::ClientOperation(Token(client_id), b"hello_world".to_vec())));
+        fn run(&mut self) {
+            // Configuration event
 
-        for t in 0..end_of_time {
+            for (ref mut n, ref config) in self.nodes.iter_mut().zip(self.configs.iter()) {
+                debug!("configure node: {:?}", config);
+                n.reconfigure(config)
+            }
+
+            let mut state = NetworkState {
+                input_bufs: HashMap::new(),
+                output_bufs: HashMap::new(),
+                client_buf: VecDeque::new(),
+            };
+
+            // Perturb
+            let initial_command = ReplCommand::ClientOperation(
+                    Token(self.client_id), b"hello_world".to_vec());
+            state.input_bufs.entry(0usize).or_insert_with(VecDeque::new).push_back(
+                    (self.client_id,
+                     initial_command));
+
+            for t in 0..self.end_of_time {
+                self.step(t, &mut state);
+            }
+
+            self.validate(state);
+        }
+        fn validate(&self, state: NetworkState) {
+            debug!("Client responses: {:?}", state.client_buf);
+
+            assert_eq!(state.client_buf.iter()
+                    .filter_map(|m| match m { &ReplCommand::Response(_, _) => None, other => Some(other)})
+                    .collect::<Vec<&ReplCommand>>(),
+                    Vec::<&ReplCommand>::new());
+
+            let (ok, errors) : (Vec<_>, Vec<_>) = state.client_buf.into_iter()
+                .filter_map(|m| match m { ReplCommand::Response(_, m) => Some(m), _ => None })
+                .partition(|m| match m { &OpResp::Ok(_, _, _) => true, _ => false });
+
+            debug!("Errors: {:?}", errors);
+            assert!(errors.is_empty());
+
+            assert_eq!(ok.len(), 1);
+            let seqs = ok.into_iter()
+                .filter_map(|m| match m { OpResp::Ok(_, seq, _) => Some(seq), _ => None })
+                .collect::<Vec<_>>();
+
+            assert!(seqs.iter().zip(seqs.iter().skip(1)).all(|(a, b)| a < b), "is sorted");
+
+            let logs_by_node = self.nodes.iter().enumerate().map(|(id, n)| {
+                let committed_seq = n.borrow_log().read_committed();
+                debug!("Committed @{:?}: {:?}", id, committed_seq);
+                let committed = n.borrow_log().read_from(Seqno::zero())
+                        .take_while(|&(s, _)| Some(s) <= committed_seq)
+                        .map(|(s, val)| (s, hash(&val)))
+                        .collect::<BTreeMap<_, _>>();
+                committed
+            }).collect::<Vec<_>>();
+
+            debug!("Committed logs: {:#?}", logs_by_node);
+            for a in 0..self.node_count {
+                for b in (a..self.node_count).filter(|&b| a != b) {
+                    let log_a = &logs_by_node[a];
+                    let log_b = &logs_by_node[b];
+                    debug!("compare log for {:?} ({:x}) with {:?} ({:x})", a, hash(log_a), b, hash(log_b));
+                    assert_eq!(log_a, log_b);
+                }
+            }
+        }
+
+        fn step(&mut self, t: usize, state: &mut NetworkState) {
+            let &mut NetworkState {
+                ref mut input_bufs, ref mut output_bufs, ref mut client_buf,
+            } = state;
+
+            let mut clock = Clock::wall();
+
             debug!("time: {:?}", t);
             for (node_id, mut inputs) in input_bufs.drain() {
                 debug!("Inputs for {:?}: {:?}", node_id, inputs);
-                if node_id == client_id {
+                if node_id == self.client_id {
                     client_buf.extend(inputs.into_iter().map(|(_, m)| m));
                 } else {
-                    assert!(node_id < nodes.len());
-                    let (ref mut n, ref mut commits) = nodes[node_id];
-                    let mut output = OutBufs { node_id: node_id, ports: &mut output_bufs, epoch: epoch, clock: &mut clock };
+                    assert!(node_id < self.node_count);
+                    let ref mut n = self.nodes[node_id];
+                    let ref mut commits = self.commit_queues[node_id];
+                    let mut output = OutBufs { node_id: node_id, ports: output_bufs, epoch: self.epoch, clock: &mut clock };
 
                     for (src, c)  in inputs {
                         debug!("Feed node {:?} with {:?}", node_id, c);
@@ -819,7 +907,7 @@ pub mod test {
 
                     // TODO: De-async the commit nonsense.
                     let mut queue = commits.lock().expect("lock");
-                    if let Some(_) = configs[node_id].next {
+                    if let Some(_) = self.configs[node_id].next {
                         if let Some(s) = queue.iter().max() {
                             output.commit_observed(*s);
                         }
@@ -828,48 +916,8 @@ pub mod test {
                 }
             }
 
-            mem::swap(&mut input_bufs, &mut output_bufs);
-        }
+            mem::swap(input_bufs, output_bufs);
 
-        debug!("Client responses: {:?}", client_buf);
-
-        assert_eq!(client_buf.iter()
-                .filter_map(|m| match m { &ReplCommand::Response(_, _) => None, other => Some(other)})
-                .collect::<Vec<&ReplCommand>>(),
-                Vec::<&ReplCommand>::new());
-
-        let (ok, errors) : (Vec<_>, Vec<_>) = client_buf.into_iter()
-            .filter_map(|m| match m { ReplCommand::Response(_, m) => Some(m), _ => None })
-            .partition(|m| match m { &OpResp::Ok(_, _, _) => true, _ => false });
-
-        debug!("Errors: {:?}", errors);
-        assert!(errors.is_empty());
-
-        assert_eq!(ok.len(), 1);
-        let seqs = ok.into_iter()
-            .filter_map(|m| match m { OpResp::Ok(_, seq, _) => Some(seq), _ => None })
-            .collect::<Vec<_>>();
-
-        assert!(seqs.iter().zip(seqs.iter().skip(1)).all(|(a, b)| a < b), "is sorted");
-
-        let logs_by_node = nodes.iter().enumerate().map(|(id, &(ref n, _))| {
-            let committed_seq = n.borrow_log().read_committed();
-            debug!("Committed @{:?}: {:?}", id, committed_seq);
-            let committed = n.borrow_log().read_from(Seqno::zero())
-                    .take_while(|&(s, _)| Some(s) <= committed_seq)
-                    .map(|(s, val)| (s, hash(&val)))
-                    .collect::<BTreeMap<_, _>>();
-            committed
-        }).collect::<Vec<_>>();
-
-        debug!("Committed logs: {:#?}", logs_by_node);
-        for a in 0..nodes.len() {
-            for b in (a..nodes.len()).filter(|&b| a != b) {
-                let log_a = &logs_by_node[a];
-                let log_b = &logs_by_node[b];
-                debug!("compare log for {:?} ({:x}) with {:?} ({:x})", a, hash(log_a), b, hash(log_b));
-                assert_eq!(log_a, log_b);
-            }
         }
     }
 }
