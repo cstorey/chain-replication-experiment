@@ -62,7 +62,6 @@ pub struct RocksdbLog {
     dir: TempDir,
     db: Arc<DB>,
     seqno_prepared: Option<Seqno>,
-    on_committed: Box<Fn(Seqno) + Send + 'static>,
 }
 
 pub struct RocksdbCursor(DBIterator);
@@ -79,7 +78,7 @@ impl fmt::Debug for RocksdbLog {
 }
 
 impl RocksdbLog {
-    pub fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> RocksdbLog {
+    pub fn new() -> RocksdbLog {
         let d = TempDir::new("rocksdb-log").expect("new log");
         info!("DB path: {:?}", d.path());
         let mut db = DB::open_default(&d.path().to_string_lossy()).expect("open db");
@@ -92,7 +91,6 @@ impl RocksdbLog {
             dir: d,
             db: db,
             seqno_prepared: seqno_prepared,
-            on_committed: Box::new(committed),
         }
     }
 
@@ -229,7 +227,6 @@ impl Log for RocksdbLog {
         if committed.map(|c| c < seqno).unwrap_or(true) {
             trace!("Request to commit {:?} -> {:?}", committed, seqno);
             Self::do_commit_to(&self.db, seqno);
-            (self.on_committed)(seqno);
             true
         } else {
             trace!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
@@ -272,7 +269,6 @@ pub mod test {
 
     pub struct VecLog {
         log: Rc<RefCell<Vec<Vec<u8>>>>,
-        on_committed: Box<Fn(Seqno)>,
         commit_point: Option<Seqno>,
     }
 
@@ -310,10 +306,11 @@ pub mod test {
         }
         fn commit_to(&mut self, pos: Seqno) -> bool {
             if Some(pos) > self.commit_point {
-                (self.on_committed)(pos);
                 self.commit_point = Some(pos);
+                true
+            } else {
+                false
             }
-            false
         }
     }
 
@@ -337,14 +334,14 @@ pub mod test {
     //
 
     pub trait TestLog : Log {
-        fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self;
+        fn new() -> Self;
         fn quiesce(&self);
         fn stop(self);
     }
 
     impl TestLog for RocksdbLog {
-        fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self {
-            RocksdbLog::new(committed)
+        fn new() -> Self {
+            RocksdbLog::new()
         }
         fn quiesce(&self) {
             RocksdbLog::quiesce(self)
@@ -355,9 +352,8 @@ pub mod test {
     }
 
     impl TestLog for VecLog {
-        fn new<F: Fn(Seqno) + Send + 'static>(committed: F) -> Self {
-            VecLog { log: Rc::new(RefCell::new(Vec::new())),
-                on_committed: Box::new(committed), commit_point: None }
+        fn new() -> Self {
+            VecLog { log: Rc::new(RefCell::new(Vec::new())), commit_point: None }
         }
         fn quiesce(&self) { }
         fn stop(self) { }
@@ -482,11 +478,7 @@ pub mod test {
 
     impl Arbitrary for LogCommands {
         fn arbitrary<G: Gen>(g: &mut G) -> LogCommands {
-            let model_committed = Arc::new(AtomicUsize::new(0));
-            let mut model_log = {
-                let model_committed = model_committed.clone();
-                VecLog::new(move |seq| model_committed.store(seq.offset() as usize, Ordering::SeqCst))
-            };
+            let mut model_log = VecLog::new();
             let slots : Vec<()> = Arbitrary::arbitrary(g);
             let mut commands : Vec<LogCommand> = Vec::new();
 
@@ -504,12 +496,7 @@ pub mod test {
         }
     }
     fn validate_commands(cmds: &LogCommands) -> bool {
-            let model_committed = Arc::new(AtomicUsize::new(0));
-            let model_log = {
-                let model_committed = model_committed.clone();
-                VecLog::new(move |seq| model_committed.store(seq.offset() as usize, Ordering::SeqCst))
-            };
-
+            let model_log = VecLog::new();
             cmds.0.iter().scan(model_log, |model_log, cmd| {
                 let ret = cmd.satisfies_precondition(&model_log);
                 next_state(model_log, &cmd);
@@ -521,17 +508,9 @@ pub mod test {
         let LogCommands(cmds) = cmds;
         debug!("Command sequence: {:?}", cmds);
 
-        let model_committed = Arc::new(AtomicUsize::new(0));
-        let model_log = {
-            let model_committed = model_committed.clone();
-            VecLog::new(move |seq| model_committed.store(seq.offset() as usize, Ordering::SeqCst))
-        };
+        let model_log = VecLog::new();
 
-        let actual_committed = Arc::new(AtomicUsize::new(0));
-        let mut actual_log = {
-            let actual_committed = actual_committed.clone();
-            RocksdbLog::new(move |seq| actual_committed.store(seq.offset() as usize, Ordering::SeqCst))
-        };
+        let mut actual_log = RocksdbLog::new();
 
         for cmd in cmds {
             if !cmd.satisfies_precondition(&model_log) {
@@ -573,7 +552,7 @@ pub mod test {
         }
 
 
-        let mut log = L::new(move |_seq| ());
+        let mut log = L::new();
         let mut seq = None;
         let mut prepared = BTreeMap::new();
         for cmd in vals {
@@ -646,11 +625,7 @@ pub mod test {
         }
 
 
-        let (tx, rx) = channel();
-        let mut log = L::new(move |seq| {
-            info!("committed: {:?}", seq);
-            tx.send(seq).expect("send")
-        });
+        let mut log = L::new();
         let mut seq = None;
         let mut prepared = BTreeMap::new();
         for cmd in vals {
@@ -679,20 +654,12 @@ pub mod test {
         log.stop();
         debug!("Stopped Log");
 
-        let mut observed = None;
-
-        debug!("Fetching commits");
-        while let Ok(c) = rx.recv() {
-            observed = Some(c)
-        }
-        debug!("observed: {:?}; expect: {:?}", observed, expected_commit);
-        assert_eq!(observed, expected_commit);
+        debug!("observed: {:?}; expect: {:?}", read_commit, expected_commit);
         debug!("read_commit: {:?}; read_prepared:{:?}, expect: {:?}",
             read_commit, read_prepared, expected_commit);
         assert!(read_commit <= read_prepared);
         assert!(read_commit <= expected_commit);
-        assert_eq!(expected_commit, observed);
-        assert_eq!(read_commit, observed);
+        assert_eq!(expected_commit, read_commit);
 
         TestResult::passed()
     }

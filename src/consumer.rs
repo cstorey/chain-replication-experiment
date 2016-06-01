@@ -134,7 +134,7 @@ mod test {
 
     impl Commands {
         fn validate_commands(&self) -> bool {
-            let (_, okayp) = self.0.iter().fold((VecLog::new(move |_| ()), true),
+            let (_, okayp) = self.0.iter().fold((VecLog::new(), true),
                     |(model_log, okayp), cmd| {
                 if !okayp {
                     (model_log, false)
@@ -152,7 +152,7 @@ mod test {
         fn arbitrary<G: Gen>(g: &mut G) -> Commands {
             let sz = usize::arbitrary(g);
             let mut commands : Vec<ConsOp> = Vec::with_capacity(sz);
-            let mut model_log = VecLog::new(move |seq| ());
+            let mut model_log = VecLog::new();
 
             for _ in 0..sz {
                 let cmd = arbitrary_given(g, |cmd: &ConsOp| cmd.satisfies_precondition(&model_log));
@@ -174,7 +174,7 @@ mod test {
         debug!("commands {:x}: {:?}", hash(&cmds), cmds);
         let Commands(cmds) = cmds;
         let mut actual = Consumer::new();
-        let mut log = VecLog::new(move |_| ());
+        let mut log = VecLog::new();
 
         let token = mio::Token::from_usize(0);
         let mut observed = Outs::new();

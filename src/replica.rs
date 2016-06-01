@@ -772,7 +772,6 @@ pub mod test {
 
     struct NetworkSim<L> {
         nodes: Vec<ReplModel<L>>,
-        commit_queues: Vec<Arc<Mutex<VecDeque<Seqno>>>>,
         node_count: usize,
         epoch: Epoch,
         client_id: usize,
@@ -794,19 +793,12 @@ pub mod test {
     impl<L: TestLog> NetworkSim<L> {
         fn new(node_count: usize) -> Self {
             let mut nodes = Vec::new();
-            let mut commit_queues = Vec::new();
 
             let epoch = Epoch::from(0);
 
             for id in 0..node_count {
-                let q = Arc::new(Mutex::new(VecDeque::new()));
-                let q2 = q.clone();
-                let log = L::new(move |seq| {
-                    info!("committed {}: {:?}", id, seq);
-                    q2.lock().expect("lock mutex").push_back(seq);
-                });
+                let log = L::new();
                 nodes.push(ReplModel::new(log));
-                commit_queues.push(q);
             }
 
             let configs = (0..node_count)
@@ -821,7 +813,6 @@ pub mod test {
 
             NetworkSim {
                 nodes: nodes,
-                commit_queues: commit_queues,
                 node_count: node_count,
                 epoch: epoch,
                 client_id: node_count + 42,
@@ -914,7 +905,6 @@ pub mod test {
                 } else {
                     assert!(node_id < self.node_count);
                     let ref mut n = self.nodes[node_id];
-                    let ref mut commits = self.commit_queues[node_id];
                     let mut output = OutBufs { node_id: node_id, ports: output_bufs, epoch: self.epoch, clock: &mut clock };
 
                     for (src, c)  in inputs {
@@ -926,15 +916,6 @@ pub mod test {
                     while n.process_replication(&mut output) {
                         debug!("iterated replication for node {:?}", node_id);
                     }
-
-                    // TODO: De-async the commit nonsense.
-                    let mut queue = commits.lock().expect("lock");
-                    if let Some(_) = self.configs[node_id].next {
-                        if let Some(s) = queue.iter().max() {
-                            output.commit_observed(*s);
-                        }
-                    }
-                    queue.clear();
                 }
             }
 

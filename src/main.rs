@@ -30,7 +30,7 @@ fn main() {
     let mut event_loop = mio::EventLoop::new().expect("Create event loop");
 
     let repl_notifier = ChainRepl::get_notifier(&mut event_loop);
-    let log = RocksdbLog::new(move |seqno| ());
+    let log = RocksdbLog::new();
     let replication = ReplModel::new(log);
 
     let mut service = ChainRepl::new(
