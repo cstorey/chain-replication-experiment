@@ -930,21 +930,24 @@ pub mod test {
         fn state(&mut self, t: usize, process: &NodeId, state: String) {
             use std::io::Write;
             let mut m = BTreeMap::new();
-            m.insert("type".to_string(), "state".to_string());
-            m.insert("time".to_string(), format!("{}", t));
-            m.insert("process".to_string(), format!("{:?}", process));
-            m.insert("state".to_string(), state);
+            use serde_json::value::to_value;
+            m.insert("type".to_string(), to_value("state"));
+            m.insert("time".to_string(), to_value(&t));
+            m.insert("process".to_string(), to_value(&format!("{:?}", process)));
+            m.insert("state".to_string(), to_value(&state));
             serde_json::to_writer(&mut self.f, &m).expect("write json");
             self.f.write_all(b"\n").expect("write nl");
         }
         fn send(&mut self, t: usize, src: &NodeId, dst: &NodeId, data: String) {
             use std::io::Write;
+            use serde_json::value::to_value;
             let mut m = BTreeMap::new();
-            m.insert("type".to_string(), "send".to_string());
-            m.insert("time".to_string(), format!("{}", t));
-            m.insert("src".to_string(), format!("{:?}", src));
-            m.insert("dst".to_string(), format!("{:?}", dst));
-            m.insert("data".to_string(), data);
+            m.insert("type".to_string(), to_value("send"));
+            m.insert("sent".to_string(), to_value(&t));
+            m.insert("recv".to_string(), to_value(&(t+1)));
+            m.insert("src".to_string(), to_value(&format!("{:?}", src)));
+            m.insert("dst".to_string(), to_value(&format!("{:?}", dst)));
+            m.insert("data".to_string(), to_value(&data));
             serde_json::to_writer(&mut self.f, &m).expect("write json");
             self.f.write_all(b"\n").expect("write nl");
         }
