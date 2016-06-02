@@ -77,7 +77,6 @@ mod test {
     use replica::Log;
     use replica::test::{Outs,OutMessage};
     use replication_log::test::{VecLog,TestLog, LogCommand, arbitrary_given, hash};
-    use slab::Index;
     use mio;
     use quickcheck::{self, Arbitrary, Gen, TestResult};
     use std::cmp;
@@ -176,7 +175,7 @@ mod test {
         let mut actual = Consumer::new();
         let mut log = VecLog::new();
 
-        let token = mio::Token::from_usize(0);
+        let token = mio::Token(0);
         let mut observed = Outs::new();
 
         let mut min_seq = None;

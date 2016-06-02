@@ -11,6 +11,7 @@ extern crate serde_json;
 extern crate spki_sexp;
 extern crate crexp_client_proto;
 extern crate time;
+extern crate rand;
 
 extern crate etcd;
 extern crate tempdir;
@@ -20,13 +21,9 @@ extern crate hex_slice;
 extern crate hybrid_clocks;
 
 #[cfg(test)]
-extern crate rand;
-#[cfg(test)]
 extern crate quickcheck;
 #[cfg(test)]
 extern crate env_logger;
-#[cfg(test)]
-extern crate slab;
 #[macro_use]
 extern crate quick_error;
 
@@ -35,12 +32,13 @@ extern crate test;
 
 use mio::tcp::*;
 use mio::EventLoop;
-use mio::util::Slab;
+use slob::Slab;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::mem;
 use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
 
+mod slob;
 mod line_conn;
 mod downstream_conn;
 mod listener;
@@ -194,7 +192,10 @@ impl ChainRepl {
                 &self.connections[token].initialize(event_loop, token);
                 self.downstream_slot = Some(token)
             }
-            (Some(_), None) => self.downstream().expect("downstream").disconnect(),
+            (Some(_), None) => {
+                self.downstream().expect("downstream").disconnect();
+                self.downstream_slot = None;
+            },
             (None, None) => (),
         }
     }
