@@ -716,7 +716,8 @@ pub mod test {
                 sim.client_operation(state, b"hello_world".to_vec());
             }
         });
-        sim.validate();
+        sim.validate_client_responses();
+        sim.validate_logs();
     }
 
     #[test]
@@ -728,7 +729,8 @@ pub mod test {
                 sim.client_operation(state, format!("hello_world at {}", t).into_bytes())
             }
         });
-        sim.validate();
+        sim.validate_client_responses();
+        sim.validate_logs();
     }
 
     #[test]
@@ -746,7 +748,8 @@ pub mod test {
                 sim.client_operation(state, m);
             }
         });
-        sim.validate();
+        sim.validate_client_responses();
+        sim.validate_logs();
 
         debug!("consumed: {:?}", sim.consumed_messages());
         assert_eq!(sim.consumed_messages().into_iter().map(|(s, v)| v).collect::<Vec<_>>(),
@@ -755,14 +758,14 @@ pub mod test {
 
 
     struct OutBufs<'a> {
-        node_id: usize,
+        node_id: NodeId,
         epoch: Epoch,
-        ports: &'a mut HashMap<usize, VecDeque<(usize, ReplCommand)>>,
+        ports: &'a mut HashMap<NodeId, VecDeque<(NodeId, ReplCommand)>>,
         clock: &'a mut Clock<Wall>,
     }
 
     impl<'a> OutBufs<'a> {
-        fn enqueue(&mut self, dest: usize, cmd: ReplCommand) {
+        fn enqueue(&mut self, dest: NodeId, cmd: ReplCommand) {
             let &mut OutBufs { node_id, ref mut ports, .. } = self;
             let queue = ports.entry(dest).or_insert_with(VecDeque::new);
             queue.push_back((node_id, cmd));
@@ -779,12 +782,12 @@ pub mod test {
     impl<'a> Outputs for OutBufs<'a> {
         fn respond_to(&mut self, token: Token, resp: &OpResp) {
             let cmd = ReplCommand::Response(token, resp.clone());
-            self.enqueue(token.as_usize(), cmd);
+            self.enqueue(NodeId(token.as_usize()), cmd);
         }
 
         fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
             let &mut OutBufs { node_id, .. } = self;
-            let downstream_id = node_id + 1; // TODO: Use a "view" object
+            let downstream_id = NodeId(node_id.0 + 1); // TODO: Use a "view" object
 
             self.enqueue(downstream_id,
                 ReplCommand::Forward(ReplicationMessage {
@@ -795,21 +798,29 @@ pub mod test {
         }
         fn consumer_message(&mut self, token: Token, seqno: Seqno, msg: Buf) {
             let &mut OutBufs { node_id, .. } = self;
-            self.enqueue(token.as_usize(), ReplCommand::ConsumerMsg(seqno, msg))
+            self.enqueue(NodeId(token.as_usize()), ReplCommand::ConsumerMsg(seqno, msg))
+        }
+    }
+
+    #[derive(Debug, Copy, Clone,Hash, Eq,PartialEq,Ord,PartialOrd)]
+    struct NodeId(usize);
+    impl NodeId {
+        fn token(&self) -> Token {
+            Token(self.0)
         }
     }
 
     struct NetworkSim<L> {
-        nodes: Vec<ReplModel<L>>,
+        nodes: BTreeMap<NodeId, ReplModel<L>>,
         node_count: usize,
         epoch: Epoch,
-        client_id: usize,
+        client_id: NodeId,
         client_buf: VecDeque<ReplCommand>,
     }
 
     struct NetworkState {
-        input_bufs: HashMap<usize, VecDeque<(usize, ReplCommand)>>,
-        output_bufs: HashMap<usize, VecDeque<(usize, ReplCommand)>>,
+        input_bufs: HashMap<NodeId, VecDeque<(NodeId, ReplCommand)>>,
+        output_bufs: HashMap<NodeId, VecDeque<(NodeId, ReplCommand)>>,
     }
 
     impl NetworkState {
@@ -820,39 +831,36 @@ pub mod test {
 
     impl<L: TestLog> NetworkSim<L> {
         fn new(node_count: usize) -> Self {
-            let mut nodes = Vec::new();
-
             let epoch = Epoch::from(0);
 
-            for id in 0..node_count {
-                let log = L::new();
-                nodes.push(ReplModel::new(log));
-            }
+            let nodes = (0..node_count).map(|id| (NodeId(id), ReplModel::new(L::new()))).collect();
 
             NetworkSim {
                 nodes: nodes,
                 node_count: node_count,
                 epoch: epoch,
-                client_id: node_count + 42,
+                client_id: NodeId(node_count + 42),
                 client_buf: VecDeque::new(),
             }
         }
 
-        fn configs(&self) -> Vec<ConfigurationView<()>> {
+        fn configs(&self) -> BTreeMap<NodeId, ConfigurationView<()>> {
             let node_count = self.node_count;
             let members = (0..node_count).zip(iter::repeat(())).collect::<BTreeMap<_, _>>();
             (0..node_count)
-                .map(|id| ConfigurationView::of_membership(self.epoch, &id, members.clone()).expect("in view"))
-                .collect::<Vec<_>>()
+                .map(|id| (NodeId(id),
+                            ConfigurationView::of_membership(self.epoch, &id, members.clone()).expect("in view")))
+                .collect()
         }
 
         fn run_for<F: FnMut(usize, &Self, &mut NetworkState)>(&mut self, end_of_time: usize, mut f: F) {
             // Configuration event
 
-            let configs = self.configs().into_iter();
-            for (ref mut n, ref config) in self.nodes.iter_mut().zip(configs) {
+            let configs = self.configs();
+            for (id, n) in self.nodes.iter_mut() {
+                let config = &configs[id];
                 debug!("configure node: {:?}", config);
-                n.reconfigure(&config)
+                n.reconfigure(config)
             }
 
             let mut state = NetworkState {
@@ -870,21 +878,21 @@ pub mod test {
         }
 
         fn client_operation(&self, state: &mut NetworkState, val: Vec<u8>) {
-            let head = 0usize;
-            let cmd = ReplCommand::ClientOperation(Token(self.client_id), val);
+            let head = NodeId(0);
+            let cmd = ReplCommand::ClientOperation(self.client_id.token(), val);
             state.input_bufs.entry(head).or_insert_with(VecDeque::new).push_back(
                     (self.client_id, cmd));
         }
 
         fn consume_from(&self, state: &mut NetworkState, seqno: Seqno) {
-            let tail = self.node_count-1;
-            let cmd = ReplCommand::ConsumeFrom(Token(self.client_id), seqno);
+            let tail = NodeId(self.node_count-1);
+            let cmd = ReplCommand::ConsumeFrom(self.client_id.token(), seqno);
 
             state.input_bufs.entry(tail).or_insert_with(VecDeque::new).push_back(
                     (self.client_id, cmd));
         }
 
-        fn validate(&self) {
+        fn validate_client_responses(&self) {
             debug!("Client responses: {:?}", self.client_buf);
 
             assert_eq!(self.client_buf.iter()
@@ -906,22 +914,21 @@ pub mod test {
                 .collect::<Vec<_>>();
 
             assert!(seqs.iter().zip(seqs.iter().skip(1)).all(|(a, b)| a < b), "is sorted");
-
-            let logs_by_node = self.nodes.iter().enumerate().map(|(id, n)| {
+        }
+        fn validate_logs(&self) {
+            let logs_by_node = self.nodes.iter().map(|(id, n)| {
                 let committed_seq = n.borrow_log().read_committed();
                 debug!("Committed @{:?}: {:?}", id, committed_seq);
                 let committed = n.borrow_log().read_from(Seqno::zero())
                         .take_while(|&(s, _)| Some(s) <= committed_seq)
                         .map(|(s, val)| (s, hash(&val)))
                         .collect::<BTreeMap<_, _>>();
-                committed
-            }).collect::<Vec<_>>();
+                (id, committed)
+            }).collect::<BTreeMap<_, _>>();
 
             debug!("Committed logs: {:#?}", logs_by_node);
-            for a in 0..self.node_count {
-                for b in (a..self.node_count).filter(|&b| a != b) {
-                    let log_a = &logs_by_node[a];
-                    let log_b = &logs_by_node[b];
+            for (a, log_a) in logs_by_node.iter() {
+                for (b, log_b) in logs_by_node.iter().filter(|&(b, _)| a != b) {
                     debug!("compare log for {:?} ({:x}) with {:?} ({:x})", a, hash(log_a), b, hash(log_b));
                     assert_eq!(log_a, log_b);
                 }
@@ -946,13 +953,13 @@ pub mod test {
                 if node_id == self.client_id {
                     self.client_buf.extend(inputs.into_iter().map(|(_, m)| m));
                 } else {
-                    assert!(node_id < self.node_count);
-                    let ref mut n = self.nodes[node_id];
+                    assert!(self.nodes.contains_key(&node_id));
+                    let ref mut n = self.nodes.get_mut(&node_id).expect("node");
                     let mut output = OutBufs { node_id: node_id, ports: output_bufs, epoch: self.epoch, clock: &mut clock };
 
                     for (src, c)  in inputs {
                         debug!("Feed node {:?} with {:?}", node_id, c);
-                        apply_cmd(n, &c, Token(src), &mut output);
+                        apply_cmd(n, &c, src.token(), &mut output);
                     }
                     n.borrow_log().quiesce();
 
