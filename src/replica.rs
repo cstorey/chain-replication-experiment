@@ -546,6 +546,10 @@ pub mod test {
     use std::mem;
     use std::iter;
     use std::sync::{Arc,Mutex};
+    use std::path::{Path,PathBuf};
+    use std::fs::File;
+    use serde_json;
+    use time;
 
     #[derive(Debug)]
     pub enum OutMessage {
@@ -915,6 +919,37 @@ pub mod test {
         }
     }
 
+    struct Tracer {
+        f: File,
+    }
+    impl Tracer {
+        fn new(p: &Path) -> Tracer {
+            let f = File::create(p).expect("open file");
+            Tracer { f: f }
+        }
+        fn state(&mut self, t: usize, process: &NodeId, state: String) {
+            use std::io::Write;
+            let mut m = BTreeMap::new();
+            m.insert("type".to_string(), "state".to_string());
+            m.insert("time".to_string(), format!("{}", t));
+            m.insert("process".to_string(), format!("{:?}", process));
+            m.insert("state".to_string(), state);
+            serde_json::to_writer(&mut self.f, &m).expect("write json");
+            self.f.write_all(b"\n").expect("write nl");
+        }
+        fn send(&mut self, t: usize, src: &NodeId, dst: &NodeId, data: String) {
+            use std::io::Write;
+            let mut m = BTreeMap::new();
+            m.insert("type".to_string(), "send".to_string());
+            m.insert("time".to_string(), format!("{}", t));
+            m.insert("src".to_string(), format!("{:?}", src));
+            m.insert("dst".to_string(), format!("{:?}", dst));
+            m.insert("data".to_string(), data);
+            serde_json::to_writer(&mut self.f, &m).expect("write json");
+            self.f.write_all(b"\n").expect("write nl");
+        }
+    }
+
     impl<L: TestLog> NetworkSim<L> {
         fn new(node_count: usize) -> Self {
             let epoch = Epoch::from(0);
@@ -941,7 +976,8 @@ pub mod test {
 
         fn run_for<F: FnMut(usize, &mut Self, &mut NetworkState)>(&mut self, end_of_time: usize, mut f: F) {
             let mut epoch = None;
-
+            let ts = time::get_time();
+            let mut tracer = Tracer::new(&PathBuf::from(format!("target/run-trace-{}.{:09}.jsons", ts.sec, ts.nsec)));
 
             let mut state = NetworkState {
                 input_bufs: HashMap::new(),
@@ -962,6 +998,16 @@ pub mod test {
                 debug!("time: {:?}/{:?}", t, end_of_time);
                 f(t, self, &mut state);
                 self.step(t, &mut state);
+
+                for (id, n) in self.nodes.iter() {
+                    tracer.state(t, id, format!("{:?}", n));
+                }
+
+                for (dst, inputs) in state.input_bufs.iter() {
+                    for &(ref src, ref msg) in inputs.iter() {
+                        tracer.send(t, src, dst, format!("{:?}", msg));
+                    }
+                }
             }
 
             assert!(state.is_quiescent());
