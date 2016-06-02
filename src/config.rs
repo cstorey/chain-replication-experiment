@@ -51,7 +51,7 @@ struct InnerClient<T> {
 }
 
 impl Epoch {
-    fn succ(&self) -> Epoch {
+    pub fn succ(&self) -> Epoch {
         Epoch(self.0 + 1)
     }
 }

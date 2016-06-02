@@ -1,5 +1,6 @@
 use std::cmp;
 use std::fmt;
+use std::mem;
 use std::thread;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, Receiver, channel};
@@ -25,7 +26,15 @@ struct Terminus {
 }
 
 #[derive(Debug)]
+struct Handshaker {
+    epoch: Epoch,
+    is_sent: bool,
+    pending_operations: HashMap<Seqno, mio::Token>,
+}
+
+#[derive(Debug)]
 enum ReplRole {
+    Handshaking(Handshaker),
     Forwarder(Forwarder),
     Terminus(Terminus),
 }
@@ -69,13 +78,21 @@ impl ReplRole {
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_operation(output, token, epoch, seqno, op),
             &mut ReplRole::Terminus(ref mut t) => t.process_operation(output, token, epoch, seqno, op),
+            &mut ReplRole::Handshaking(ref mut h) => h.process_operation(output, token, epoch, seqno, op),
         }
     }
     fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
         trace!("ReplRole: process_downstream_response: {:?}", reply);
-        match self {
-            &mut ReplRole::Forwarder(ref mut f) => f.process_downstream_response(out, reply),
-            _ => (),
+        let next = match self {
+            &mut ReplRole::Forwarder(ref mut f) => {
+                f.process_downstream_response(out, reply);
+                None
+            },
+            &mut ReplRole::Handshaking(ref mut h) => h.process_downstream_response(out, reply),
+            _ => None,
+        };
+        if let Some(next) = next {
+            *self = next;
         }
     }
 
@@ -84,6 +101,8 @@ impl ReplRole {
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_replication(clock, epoch, log, out),
             &mut ReplRole::Terminus(ref mut t) => t.process_replication(clock, epoch, log, out),
+            &mut ReplRole::Handshaking(ref mut h) => h.process_replication(clock, epoch, log, out),
+
         }
     }
 
@@ -105,12 +124,12 @@ impl ReplRole {
 }
 
 impl Forwarder {
-    fn new() -> Forwarder {
+    fn new(pending: HashMap<Seqno, mio::Token>) -> Forwarder {
         Forwarder {
             last_prepared_downstream: None,
             last_acked_downstream: None,
             last_committed_downstream: None,
-            pending_operations: HashMap::new(),
+            pending_operations: pending,
         }
     }
 
@@ -220,7 +239,7 @@ impl Terminus {
                          seqno: Seqno,
                          op: &[u8])
                          {
-        trace!("Terminus! {:?}/{:?}", seqno, op);
+        trace!("Terminus: process_operation: {:?}/{:?}", epoch, seqno);
         output.respond_to(token, &OpResp::Ok(epoch, seqno, None))
     }
     pub fn consume_requested<O: Outputs>(&mut self, _out: &mut O, token: mio::Token, epoch: Epoch, mark: Seqno) {
@@ -236,6 +255,69 @@ impl Terminus {
             changed |= cons.process(out, token, log)
         }
         changed
+    }
+
+}
+
+impl Handshaker {
+    fn new(epoch: Epoch) -> Handshaker {
+        Handshaker {
+            epoch: epoch,
+            is_sent: false,
+            pending_operations: HashMap::new(),
+        }
+    }
+
+    fn process_operation<O: Outputs>(&mut self,
+                         _output: &mut O,
+                         token: mio::Token,
+                         _epoch: Epoch,
+                         seqno: Seqno,
+                         _op: &[u8]) {
+        trace!("Handshaker: process_operation: {:?}/{:?}", _epoch, seqno);
+        self.pending_operations.insert(seqno, token);
+    }
+
+
+    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp)
+            -> Option<ReplRole> {
+        trace!("Forwarder: {:?}", self);
+        trace!("Forwarder: process_downstream_response: {:?}", reply);
+
+        // Maybe the pending_gubbins should be moved up.
+        match reply {
+            &OpResp::Ok(_epoch, seqno, _) | &OpResp::Err(_epoch, seqno, _) => {
+                if let Some(token) = self.pending_operations.remove(&seqno) {
+                    trace!("Found in-flight op {:?} for client token {:?}",
+                           seqno,
+                           token);
+                    out.respond_to(token, reply);
+                } else {
+                    warn!("Unexpected response for seqno: {:?}", seqno);
+                }
+                None
+            }
+            &OpResp::HelloIWant(ts, last_prepared_downstream) => {
+                info!("{}; Downstream has {:?}", ts, last_prepared_downstream);
+                info!("Handshaking: switched to forwarding from {:?}", self);
+
+                let pending = mem::replace(&mut self.pending_operations, HashMap::new());
+                trace!("Pending operations: {:?}", self);
+                Some(ReplRole::Forwarder(Forwarder::new(pending)))
+            }
+        }
+    }
+
+    fn process_replication<L: Log, O: Outputs>(&mut self,
+            clock: &mut Clock<Wall>, epoch: Epoch, _log: &L, out: &mut O) -> bool {
+        // We should probaby remember that we have sent this...
+        if !self.is_sent {
+            out.forward_downstream(clock.now(), epoch, PeerMsg::HelloDownstream);
+            self.is_sent = true;
+            true
+        } else {
+            false
+        }
     }
 
 }
@@ -354,6 +436,7 @@ impl<L: Log> ReplModel<L> {
 
     pub fn hello_downstream<O: Outputs>(&mut self, out: &mut O, token: mio::Token, at: Timestamp<WallT>, epoch: Epoch) {
         debug!("{}; hello_downstream: {:?}; {:?}", at, token, epoch);
+
         let msg = OpResp::HelloIWant(at, self.log.seqno());
         info!("Inform upstream about our current version, {:?}!", msg);
         out.respond_to(token, &msg)
@@ -363,15 +446,15 @@ impl<L: Log> ReplModel<L> {
         self.next.consume_requested(out, token, self.current_epoch, mark)
     }
 
-    fn configure_forwarding(&mut self, is_forwarder: bool) {
-        // XXX: Replays?
+    fn configure_forwarding<T: Clone>(&mut self, view: &ConfigurationView<T>) {
+        let is_forwarder = view.should_connect_downstream().is_some();
         match (is_forwarder, &mut self.next) {
-            (true, role @ &mut ReplRole::Terminus(_)) => {
-                info!("Switched to forwarding from {:?}", role);
-                *role = ReplRole::Forwarder(Forwarder::new());
+            (true, role) => {
+                info!("Handshaking: switched to greeting from {:?}", role);
+                *role = ReplRole::Handshaking(Handshaker::new(view.epoch));
             }
 
-            (false, role @ &mut ReplRole::Forwarder(_)) => {
+            (false, role @ &mut ReplRole::Forwarder(_)) | (false, role @ &mut ReplRole::Handshaking(_)) => {
                 info!("Switched to terminating from {:?}", role);
                 *role = ReplRole::Terminus(Terminus::new());
             }
@@ -393,7 +476,7 @@ impl<L: Log> ReplModel<L> {
     pub fn reconfigure<T: fmt::Debug + Clone>(&mut self, view: &ConfigurationView<T>) {
         info!("Reconfiguring from: {:?}", view);
         self.set_epoch(view.epoch);
-        self.configure_forwarding(view.should_connect_downstream().is_some());
+        self.configure_forwarding(view);
         self.set_is_head(view.is_head());
         info!("Reconfigured from: {:?}", view);
     }
@@ -663,6 +746,10 @@ pub mod test {
                 ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seq) , .. }) => {
                 actual.commit_observed(seq);
             },
+            &ReplCommand::Forward(
+                ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream , .. }) => {
+                actual.hello_downstream(outputs, token, ts, epoch);
+            },
             &ReplCommand::Response(token, ref reply) => {
                 actual.process_downstream_response(outputs, reply)
             },
@@ -716,7 +803,7 @@ pub mod test {
                 sim.client_operation(state, b"hello_world".to_vec());
             }
         });
-        sim.validate_client_responses();
+        sim.validate_client_responses(1);
         sim.validate_logs();
     }
 
@@ -729,8 +816,8 @@ pub mod test {
                 sim.client_operation(state, format!("hello_world at {}", t).into_bytes())
             }
         });
-        sim.validate_client_responses();
         sim.validate_logs();
+        sim.validate_client_responses(3);
     }
 
     #[test]
@@ -748,14 +835,13 @@ pub mod test {
                 sim.client_operation(state, m);
             }
         });
-        sim.validate_client_responses();
         sim.validate_logs();
+        sim.validate_client_responses(produced_messages.len());
 
         debug!("consumed: {:?}", sim.consumed_messages());
         assert_eq!(sim.consumed_messages().into_iter().map(|(s, v)| v).collect::<Vec<_>>(),
                 produced_messages)
     }
-
 
     struct OutBufs<'a> {
         node_id: NodeId,
@@ -846,22 +932,16 @@ pub mod test {
 
         fn configs(&self) -> BTreeMap<NodeId, ConfigurationView<()>> {
             let node_count = self.node_count;
-            let members = (0..node_count).zip(iter::repeat(())).collect::<BTreeMap<_, _>>();
-            (0..node_count)
-                .map(|id| (NodeId(id),
+            let members = self.nodes.iter().map(|(&id, _)| (id, ())).collect::<BTreeMap<_, _>>();
+            members.keys()
+                .map(|&id| (id,
                             ConfigurationView::of_membership(self.epoch, &id, members.clone()).expect("in view")))
                 .collect()
         }
 
-        fn run_for<F: FnMut(usize, &Self, &mut NetworkState)>(&mut self, end_of_time: usize, mut f: F) {
-            // Configuration event
+        fn run_for<F: FnMut(usize, &mut Self, &mut NetworkState)>(&mut self, end_of_time: usize, mut f: F) {
+            let mut epoch = None;
 
-            let configs = self.configs();
-            for (id, n) in self.nodes.iter_mut() {
-                let config = &configs[id];
-                debug!("configure node: {:?}", config);
-                n.reconfigure(config)
-            }
 
             let mut state = NetworkState {
                 input_bufs: HashMap::new(),
@@ -869,6 +949,16 @@ pub mod test {
             };
 
             for t in 0..end_of_time {
+                if epoch != Some(self.epoch) {
+                    let configs = self.configs();
+                    for (id, n) in self.nodes.iter_mut() {
+                        let config = &configs[id];
+                        debug!("configure epoch: {:?}; node: {:?}", self.epoch, config);
+                        n.reconfigure(config)
+                    }
+                    epoch = Some(self.epoch);
+                }
+
                 debug!("time: {:?}/{:?}", t, end_of_time);
                 f(t, self, &mut state);
                 self.step(t, &mut state);
@@ -877,22 +967,37 @@ pub mod test {
             assert!(state.is_quiescent());
         }
 
+        fn tail_node(&self) -> NodeId {
+            NodeId(self.node_count - 1)
+        }
+
+        fn head_node(&self) -> NodeId {
+            NodeId(0)
+        }
+
+        fn crash_node(&mut self, state: &mut NetworkState, node_id: NodeId) {
+            if let Some(old) = self.nodes.remove(&node_id) {
+                info!("Crashing node: {:?}: {:?}", node_id, old);
+                self.epoch = self.epoch.succ();
+            }
+        }
+
         fn client_operation(&self, state: &mut NetworkState, val: Vec<u8>) {
-            let head = NodeId(0);
+            let head = self.head_node();
             let cmd = ReplCommand::ClientOperation(self.client_id.token(), val);
             state.input_bufs.entry(head).or_insert_with(VecDeque::new).push_back(
                     (self.client_id, cmd));
         }
 
         fn consume_from(&self, state: &mut NetworkState, seqno: Seqno) {
-            let tail = NodeId(self.node_count-1);
+            let tail = self.tail_node();
             let cmd = ReplCommand::ConsumeFrom(self.client_id.token(), seqno);
 
             state.input_bufs.entry(tail).or_insert_with(VecDeque::new).push_back(
                     (self.client_id, cmd));
         }
 
-        fn validate_client_responses(&self) {
+        fn validate_client_responses(&self, count: usize) {
             debug!("Client responses: {:?}", self.client_buf);
 
             assert_eq!(self.client_buf.iter()
@@ -907,14 +1012,16 @@ pub mod test {
                 .partition(|&m| match m { &OpResp::Ok(_, _, _) => true, _ => false });
 
             debug!("Errors: {:?}", errors);
-            assert!(errors.is_empty());
+            // assert!(errors.is_empty());
 
             let seqs = ok.into_iter()
                 .filter_map(|m| match m { &OpResp::Ok(_, ref seq, _) => Some(seq), _ => None })
                 .collect::<Vec<_>>();
 
+            assert_eq!(seqs.len(), count);
             assert!(seqs.iter().zip(seqs.iter().skip(1)).all(|(a, b)| a < b), "is sorted");
         }
+
         fn validate_logs(&self) {
             let logs_by_node = self.nodes.iter().map(|(id, n)| {
                 let committed_seq = n.borrow_log().read_committed();
@@ -953,18 +1060,20 @@ pub mod test {
                 if node_id == self.client_id {
                     self.client_buf.extend(inputs.into_iter().map(|(_, m)| m));
                 } else {
-                    assert!(self.nodes.contains_key(&node_id));
-                    let ref mut n = self.nodes.get_mut(&node_id).expect("node");
-                    let mut output = OutBufs { node_id: node_id, ports: output_bufs, epoch: self.epoch, clock: &mut clock };
+                    if let Some(ref mut n) = self.nodes.get_mut(&node_id) {
+                        let mut output = OutBufs { node_id: node_id, ports: output_bufs, epoch: self.epoch, clock: &mut clock };
 
-                    for (src, c)  in inputs {
-                        debug!("Feed node {:?} with {:?}", node_id, c);
-                        apply_cmd(n, &c, src.token(), &mut output);
-                    }
-                    n.borrow_log().quiesce();
+                        for (src, c)  in inputs {
+                            debug!("Feed node {:?} with {:?}", node_id, c);
+                            apply_cmd(n, &c, src.token(), &mut output);
+                        }
+                        n.borrow_log().quiesce();
 
-                    while n.process_replication(&mut output) {
-                        debug!("iterated replication for node {:?}", node_id);
+                        while n.process_replication(&mut output) {
+                            debug!("iterated replication for node {:?}", node_id);
+                        }
+                    } else {
+                        warn!("Dropping message for node: {:?}: {:?}", node_id, inputs);
                     }
                 }
             }
