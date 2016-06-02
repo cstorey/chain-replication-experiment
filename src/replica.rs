@@ -506,9 +506,11 @@ pub mod test {
 
     #[derive(Debug,Eq,PartialEq,Clone)]
     enum ReplCommand {
-        ClientOperation(Token, Vec<u8>), // UpstreamOperation(Token, Seqno, Epoch, Operation),
+        ClientOperation(Token, Vec<u8>),
+        ConsumeFrom(Token, Seqno),
         Response(Token, OpResp),
         Forward(ReplicationMessage),
+        ConsumerMsg(Seqno, Buf),
     }
 
     #[derive(Debug,Eq,PartialEq,Clone)]
@@ -664,6 +666,9 @@ pub mod test {
             &ReplCommand::Response(token, ref reply) => {
                 actual.process_downstream_response(outputs, reply)
             },
+            &ReplCommand::ConsumeFrom(token, seq) => {
+                actual.consume_requested(outputs, token, seq)
+            },
             other => panic!("Unimplemented apply_cmd: {:?}", other)
         };
         actual.process_replication(outputs);
@@ -708,7 +713,7 @@ pub mod test {
         let mut sim = NetworkSim::<VecLog>::new(3);
         sim.run_for(10, |t, sim, state| {
             if t == 0 {
-                sim.client_request(state, b"hello_world".to_vec());
+                sim.client_operation(state, b"hello_world".to_vec());
             }
         });
         sim.validate();
@@ -720,10 +725,32 @@ pub mod test {
         let mut sim = NetworkSim::<VecLog>::new(3);
         sim.run_for(15, |t, sim, state| {
             if t < 3 {
-                sim.client_request(state, format!("hello_world at {}", t).into_bytes())
+                sim.client_operation(state, format!("hello_world at {}", t).into_bytes())
             }
         });
         sim.validate();
+    }
+
+    #[test]
+    fn simulate_three_node_system_with_consumer() {
+        env_logger::init().unwrap_or(());
+        let mut sim = NetworkSim::<VecLog>::new(3);
+        let mut produced_messages = Vec::new();
+        sim.run_for(15, |t, sim, state| {
+            if t == 0 {
+                sim.consume_from(state, Seqno::zero())
+            }
+            if t < 3 {
+                let m = format!("hello_world at {}", t).into_bytes();
+                produced_messages.push(Buf::from(m.clone()));
+                sim.client_operation(state, m);
+            }
+        });
+        sim.validate();
+
+        debug!("consumed: {:?}", sim.consumed_messages());
+        assert_eq!(sim.consumed_messages().into_iter().map(|(s, v)| v).collect::<Vec<_>>(),
+                produced_messages)
     }
 
 
@@ -748,6 +775,7 @@ pub mod test {
             self.forward_downstream(now, epoch, PeerMsg::CommitTo(seq));
         }
     }
+
     impl<'a> Outputs for OutBufs<'a> {
         fn respond_to(&mut self, token: Token, resp: &OpResp) {
             let cmd = ReplCommand::Response(token, resp.clone());
@@ -766,7 +794,8 @@ pub mod test {
                 }));
         }
         fn consumer_message(&mut self, token: Token, seqno: Seqno, msg: Buf) {
-            unimplemented!()
+            let &mut OutBufs { node_id, .. } = self;
+            self.enqueue(token.as_usize(), ReplCommand::ConsumerMsg(seqno, msg))
         }
     }
 
@@ -840,10 +869,18 @@ pub mod test {
             assert!(state.is_quiescent());
         }
 
-        fn client_request(&self, state: &mut NetworkState, val: Vec<u8>) {
+        fn client_operation(&self, state: &mut NetworkState, val: Vec<u8>) {
             let head = 0usize;
             let cmd = ReplCommand::ClientOperation(Token(self.client_id), val);
             state.input_bufs.entry(head).or_insert_with(VecDeque::new).push_back(
+                    (self.client_id, cmd));
+        }
+
+        fn consume_from(&self, state: &mut NetworkState, seqno: Seqno) {
+            let tail = self.node_count-1;
+            let cmd = ReplCommand::ConsumeFrom(Token(self.client_id), seqno);
+
+            state.input_bufs.entry(tail).or_insert_with(VecDeque::new).push_back(
                     (self.client_id, cmd));
         }
 
@@ -851,7 +888,9 @@ pub mod test {
             debug!("Client responses: {:?}", self.client_buf);
 
             assert_eq!(self.client_buf.iter()
-                    .filter_map(|m| match m { &ReplCommand::Response(_, _) => None, other => Some(other)})
+                    .filter_map(|m| match m {
+                        &ReplCommand::Response(_, _) | &ReplCommand::ConsumerMsg(_, _) => None, other => Some(other)
+                        })
                     .collect::<Vec<&ReplCommand>>(),
                     Vec::<&ReplCommand>::new());
 
@@ -887,6 +926,13 @@ pub mod test {
                     assert_eq!(log_a, log_b);
                 }
             }
+        }
+
+        fn consumed_messages(&self) -> Vec<(Seqno, Buf)> {
+             self.client_buf.iter().filter_map(|m| match m {
+                &ReplCommand::ConsumerMsg(seq, ref buf) => Some((seq, buf.clone())),
+                _ => None,
+            }).collect()
         }
 
         fn step(&mut self, t: usize, state: &mut NetworkState) {
