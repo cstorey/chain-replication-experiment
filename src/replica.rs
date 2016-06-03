@@ -850,15 +850,14 @@ pub mod test {
     struct OutBufs<'a> {
         node_id: NodeId,
         epoch: Epoch,
-        ports: &'a mut HashMap<NodeId, VecDeque<(NodeId, ReplCommand)>>,
+        ports: &'a mut NetworkState,
         clock: &'a mut Clock<Wall>,
     }
 
     impl<'a> OutBufs<'a> {
         fn enqueue(&mut self, dest: NodeId, cmd: ReplCommand) {
-            let &mut OutBufs { node_id, ref mut ports, .. } = self;
-            let queue = ports.entry(dest).or_insert_with(VecDeque::new);
-            queue.push_back((node_id, cmd));
+            let &mut OutBufs { node_id, .. } = self;
+            self.ports.enqueue(node_id, dest, cmd);
         }
 
 
@@ -908,17 +907,45 @@ pub mod test {
         client_buf: VecDeque<ReplCommand>,
     }
 
+    #[derive(Debug)]
     struct NetworkState {
+        tracer: Tracer,
         input_bufs: HashMap<NodeId, VecDeque<(NodeId, ReplCommand)>>,
         output_bufs: HashMap<NodeId, VecDeque<(NodeId, ReplCommand)>>,
     }
 
     impl NetworkState {
         fn is_quiescent(&self) -> bool {
-            self.input_bufs.is_empty() && self.output_bufs.is_empty()
+            self.input_bufs.iter().chain(self.output_bufs.iter()).flat_map(|(_, q)| q).all(|_| false)
+        }
+
+        fn enqueue(&mut self, src:NodeId, dst: NodeId, data: ReplCommand) {
+            self.output_bufs.entry(dst).or_insert_with(VecDeque::new).push_back((src, data));
+            trace!("enqueue:{:?}->{:?}; {:?}", src, dst, self);
+        }
+
+        fn dequeue_one(&mut self) -> Option<(NodeId, NodeId, ReplCommand)> {
+            let (dest, ref mut queue) =
+                if let Some((dest, q)) = self.input_bufs.iter_mut().filter(|&(_, ref q)| !q.is_empty()).next() {
+                trace!("dequeue_one: Node:{:?}: {:?}", dest, q);
+                (*dest, q)
+            } else {
+                trace!("dequeue_one: empty?");
+                return None
+            };
+            queue.pop_front().map(|(src, it)| (src, dest, it))
+        }
+        fn flip(&mut self) {
+            trace!("flip before:{:?}", self);
+            {
+                let &mut NetworkState { ref mut input_bufs, ref mut output_bufs, .. } = self;
+                mem::swap(input_bufs, output_bufs);
+            }
+            trace!("flip after :{:?}", self);
         }
     }
 
+    #[derive(Debug)]
     struct Tracer {
         f: File,
     }
@@ -983,6 +1010,7 @@ pub mod test {
             let mut tracer = Tracer::new(&PathBuf::from(format!("target/run-trace-{}.{:09}.jsons", ts.sec, ts.nsec)));
 
             let mut state = NetworkState {
+                tracer: tracer,
                 input_bufs: HashMap::new(),
                 output_bufs: HashMap::new(),
             };
@@ -1001,16 +1029,19 @@ pub mod test {
                 debug!("time: {:?}/{:?}", t, end_of_time);
                 f(t, self, &mut state);
                 self.step(t, &mut state);
+                debug!("network state {:?}; quiet:{:?}; : {:?}", t, state.is_quiescent(), state);
 
                 for (id, n) in self.nodes.iter() {
-                    tracer.state(t, id, format!("{:?}", n));
+                    state.tracer.state(t, id, format!("{:?}", n));
                 }
 
                 for (dst, inputs) in state.input_bufs.iter() {
-                    for &(ref src, ref msg) in inputs.iter() {
-                        tracer.send(t, src, dst, format!("{:?}", msg));
+                    for (i, &(ref src, ref msg)) in inputs.iter().enumerate() {
+                        state.tracer.send(t, /*i,*/ src, dst, format!("{:?}", msg));
                     }
                 }
+
+                if state.is_quiescent() { break; }
             }
 
             assert!(state.is_quiescent());
@@ -1034,16 +1065,14 @@ pub mod test {
         fn client_operation(&self, state: &mut NetworkState, val: Vec<u8>) {
             let head = self.head_node();
             let cmd = ReplCommand::ClientOperation(self.client_id.token(), val);
-            state.input_bufs.entry(head).or_insert_with(VecDeque::new).push_back(
-                    (self.client_id, cmd));
+            state.enqueue(self.client_id, head, cmd);
         }
 
         fn consume_from(&self, state: &mut NetworkState, seqno: Seqno) {
             let tail = self.tail_node();
             let cmd = ReplCommand::ConsumeFrom(self.client_id.token(), seqno);
 
-            state.input_bufs.entry(tail).or_insert_with(VecDeque::new).push_back(
-                    (self.client_id, cmd));
+            state.enqueue(self.client_id, tail, cmd);
         }
 
         fn validate_client_responses(&self, count: usize) {
@@ -1099,36 +1128,34 @@ pub mod test {
         }
 
         fn step(&mut self, t: usize, state: &mut NetworkState) {
-            let &mut NetworkState {
-                ref mut input_bufs, ref mut output_bufs,
-            } = state;
-
             let mut clock = Clock::wall();
-            for (node_id, mut inputs) in input_bufs.drain() {
-                debug!("Inputs for {:?}: {:?}", node_id, inputs);
-                if node_id == self.client_id {
-                    self.client_buf.extend(inputs.into_iter().map(|(_, m)| m));
+            while let Some((src, dest, input)) = state.dequeue_one() {
+                debug!("Inputs: {:?} -> {:?}: {:?}", src, dest, input);
+                if dest == self.client_id {
+                    self.client_buf.push_back(input);
                 } else {
-                    if let Some(ref mut n) = self.nodes.get_mut(&node_id) {
-                        let mut output = OutBufs { node_id: node_id, ports: output_bufs, epoch: self.epoch, clock: &mut clock };
+                    if let Some(ref mut n) = self.nodes.get_mut(&dest) {
+                        let mut output = OutBufs { node_id: dest, ports: state, epoch: self.epoch, clock: &mut clock };
 
-                        for (src, c)  in inputs {
-                            debug!("Feed node {:?} with {:?}", node_id, c);
-                            apply_cmd(n, &c, src.token(), &mut output);
-                        }
-                        n.borrow_log().quiesce();
+                        debug!("Feed node {:?} with {:?}", dest, input);
+                        apply_cmd(n, &input, src.token(), &mut output);
 
-                        while n.process_replication(&mut output) {
-                            debug!("iterated replication for node {:?}", node_id);
-                        }
                     } else {
-                        warn!("Dropping message for node: {:?}: {:?}", node_id, inputs);
+                        warn!("Dropping message for node: {:?}: {:?}", dest, input);
                     }
                 }
             }
 
-            mem::swap(input_bufs, output_bufs);
+            for (nid, n) in self.nodes.iter_mut() {
+                n.borrow_log().quiesce();
 
+                let mut output = OutBufs { node_id: *nid, ports: state, epoch: self.epoch, clock: &mut clock };
+                while n.process_replication(&mut output) {
+                    debug!("iterated replication for node {:?}", nid);
+                }
+            }
+
+            state.flip();
         }
     }
 }
