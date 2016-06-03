@@ -802,7 +802,7 @@ pub mod test {
     fn simulate_three_node_system_vec() {
         env_logger::init().unwrap_or(());
         let mut sim = NetworkSim::<VecLog>::new(3);
-        sim.run_for(10, |t, sim, state| {
+        sim.run_for(10, "simulate_three_node_system_vec", |t, sim, state| {
             if t == 0 {
                 sim.client_operation(state, b"hello_world".to_vec());
             }
@@ -815,7 +815,7 @@ pub mod test {
     fn simulate_three_node_system_streaming_vec() {
         env_logger::init().unwrap_or(());
         let mut sim = NetworkSim::<VecLog>::new(3);
-        sim.run_for(15, |t, sim, state| {
+        sim.run_for(15, "simulate_three_node_system_streaming_vec", |t, sim, state| {
             if t < 3 {
                 sim.client_operation(state, format!("hello_world at {}", t).into_bytes())
             }
@@ -829,7 +829,7 @@ pub mod test {
         env_logger::init().unwrap_or(());
         let mut sim = NetworkSim::<VecLog>::new(3);
         let mut produced_messages = Vec::new();
-        sim.run_for(15, |t, sim, state| {
+        sim.run_for(15, "simulate_three_node_system_with_consumer", |t, sim, state| {
             if t == 0 {
                 sim.consume_from(state, Seqno::zero())
             }
@@ -1006,10 +1006,10 @@ pub mod test {
                 .collect()
         }
 
-        fn run_for<F: FnMut(usize, &mut Self, &mut NetworkState)>(&mut self, end_of_time: usize, mut f: F) {
+        fn run_for<F: FnMut(usize, &mut Self, &mut NetworkState)>(&mut self, end_of_time: usize, test_name:&str, mut f: F) {
             let mut epoch = None;
-            let ts = time::get_time();
-            let mut tracer = Tracer::new(&PathBuf::from(format!("target/run-trace-{}.{:09}.jsons", ts.sec, ts.nsec)));
+            let path = PathBuf::from(format!("target/run-trace-{}.jsons", test_name));
+            let mut tracer = Tracer::new(&path);
 
             let mut state = NetworkState {
                 clock: Clock::manual(0),
