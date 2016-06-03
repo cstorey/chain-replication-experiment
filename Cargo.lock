@@ -9,7 +9,7 @@ dependencies = [
  "env_logger 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "etcd 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "hex-slice 0.1.0 (git+https://github.com/cstorey/hex-slice)",
- "hybrid-clocks 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hybrid-clocks 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "log4rs 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "mio 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -190,7 +190,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "hybrid-clocks"
-version = "0.2.1"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "byteorder 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
