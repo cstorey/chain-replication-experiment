@@ -542,7 +542,7 @@ pub mod test {
     use spki_sexp;
     use std::collections::{VecDeque, HashMap, BTreeMap};
     use mio::Token;
-    use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
+    use hybrid_clocks::{Clock, ManualClock, Timestamp, WallT};
     use std::mem;
     use std::iter;
     use std::sync::{Arc,Mutex};
@@ -851,20 +851,12 @@ pub mod test {
         node_id: NodeId,
         epoch: Epoch,
         ports: &'a mut NetworkState,
-        clock: &'a mut Clock<Wall>,
     }
 
     impl<'a> OutBufs<'a> {
         fn enqueue(&mut self, dest: NodeId, cmd: ReplCommand) {
             let &mut OutBufs { node_id, .. } = self;
             self.ports.enqueue(node_id, dest, cmd);
-        }
-
-
-        fn commit_observed(&mut self, seq: Seqno) {
-            let now = self.clock.now();
-            let epoch = self.epoch;
-            self.forward_downstream(now, epoch, PeerMsg::CommitTo(seq));
         }
     }
 
@@ -910,8 +902,9 @@ pub mod test {
     #[derive(Debug)]
     struct NetworkState {
         tracer: Tracer,
-        input_bufs: HashMap<NodeId, VecDeque<(NodeId, ReplCommand)>>,
-        output_bufs: HashMap<NodeId, VecDeque<(NodeId, ReplCommand)>>,
+        clock: Clock<ManualClock>,
+        input_bufs: HashMap<NodeId, VecDeque<(NodeId, Timestamp<u64>, ReplCommand)>>,
+        output_bufs: HashMap<NodeId, VecDeque<(NodeId, Timestamp<u64>, ReplCommand)>>,
     }
 
     impl NetworkState {
@@ -920,7 +913,8 @@ pub mod test {
         }
 
         fn enqueue(&mut self, src:NodeId, dst: NodeId, data: ReplCommand) {
-            self.output_bufs.entry(dst).or_insert_with(VecDeque::new).push_back((src, data));
+            let sent = self.clock.now();
+            self.output_bufs.entry(dst).or_insert_with(VecDeque::new).push_back((src, sent, data));
             trace!("enqueue:{:?}->{:?}; {:?}", src, dst, self);
         }
 
@@ -933,8 +927,15 @@ pub mod test {
                 trace!("dequeue_one: empty?");
                 return None
             };
-            queue.pop_front().map(|(src, it)| (src, dest, it))
+            if let Some((src, sent, it)) = queue.pop_front() {
+                let recv = self.clock.now();
+                self.tracer.recv(sent, recv, &src, &dest, format!("{:?}", it));
+                Some((src, dest, it))
+            } else {
+                None
+            }
         }
+
         fn flip(&mut self) {
             trace!("flip before:{:?}", self);
             {
@@ -954,7 +955,7 @@ pub mod test {
             let f = File::create(p).expect("open file");
             Tracer { f: f }
         }
-        fn state(&mut self, t: usize, process: &NodeId, state: String) {
+        fn state(&mut self, t: Timestamp<u64>, process: &NodeId, state: String) {
             use std::io::Write;
             let mut m = BTreeMap::new();
             use serde_json::value::to_value;
@@ -965,13 +966,14 @@ pub mod test {
             serde_json::to_writer(&mut self.f, &m).expect("write json");
             self.f.write_all(b"\n").expect("write nl");
         }
-        fn send(&mut self, t: usize, src: &NodeId, dst: &NodeId, data: String) {
+
+        fn recv(&mut self, sent: Timestamp<u64>, recvd: Timestamp<u64>, src: &NodeId, dst: &NodeId, data: String) {
             use std::io::Write;
             use serde_json::value::to_value;
             let mut m = BTreeMap::new();
-            m.insert("type".to_string(), to_value("send"));
-            m.insert("sent".to_string(), to_value(&t));
-            m.insert("recv".to_string(), to_value(&(t+1)));
+            m.insert("type".to_string(), to_value("recv"));
+            m.insert("sent".to_string(), to_value(&sent));
+            m.insert("recv".to_string(), to_value(&recvd));
             m.insert("src".to_string(), to_value(&format!("{:?}", src)));
             m.insert("dst".to_string(), to_value(&format!("{:?}", dst)));
             m.insert("data".to_string(), to_value(&data));
@@ -1010,12 +1012,14 @@ pub mod test {
             let mut tracer = Tracer::new(&PathBuf::from(format!("target/run-trace-{}.{:09}.jsons", ts.sec, ts.nsec)));
 
             let mut state = NetworkState {
+                clock: Clock::manual(0),
                 tracer: tracer,
                 input_bufs: HashMap::new(),
                 output_bufs: HashMap::new(),
             };
 
             for t in 0..end_of_time {
+                state.clock.set_time(t as u64);
                 if epoch != Some(self.epoch) {
                     let configs = self.configs();
                     for (id, n) in self.nodes.iter_mut() {
@@ -1026,22 +1030,18 @@ pub mod test {
                     epoch = Some(self.epoch);
                 }
 
+                let now = state.clock.now();
+                for (id, n) in self.nodes.iter() {
+                    state.tracer.state(now, id, format!("{:?}", n));
+                }
+
                 debug!("time: {:?}/{:?}", t, end_of_time);
                 f(t, self, &mut state);
-                self.step(t, &mut state);
+                if state.is_quiescent() { break; }
+
+                self.step(&mut state);
                 debug!("network state {:?}; quiet:{:?}; : {:?}", t, state.is_quiescent(), state);
 
-                for (id, n) in self.nodes.iter() {
-                    state.tracer.state(t, id, format!("{:?}", n));
-                }
-
-                for (dst, inputs) in state.input_bufs.iter() {
-                    for (i, &(ref src, ref msg)) in inputs.iter().enumerate() {
-                        state.tracer.send(t, /*i,*/ src, dst, format!("{:?}", msg));
-                    }
-                }
-
-                if state.is_quiescent() { break; }
             }
 
             assert!(state.is_quiescent());
@@ -1127,15 +1127,14 @@ pub mod test {
             }).collect()
         }
 
-        fn step(&mut self, t: usize, state: &mut NetworkState) {
-            let mut clock = Clock::wall();
+        fn step(&mut self, state: &mut NetworkState) {
             while let Some((src, dest, input)) = state.dequeue_one() {
                 debug!("Inputs: {:?} -> {:?}: {:?}", src, dest, input);
                 if dest == self.client_id {
                     self.client_buf.push_back(input);
                 } else {
                     if let Some(ref mut n) = self.nodes.get_mut(&dest) {
-                        let mut output = OutBufs { node_id: dest, ports: state, epoch: self.epoch, clock: &mut clock };
+                        let mut output = OutBufs { node_id: dest, ports: state, epoch: self.epoch };
 
                         debug!("Feed node {:?} with {:?}", dest, input);
                         apply_cmd(n, &input, src.token(), &mut output);
@@ -1149,7 +1148,7 @@ pub mod test {
             for (nid, n) in self.nodes.iter_mut() {
                 n.borrow_log().quiesce();
 
-                let mut output = OutBufs { node_id: *nid, ports: state, epoch: self.epoch, clock: &mut clock };
+                let mut output = OutBufs { node_id: *nid, ports: state, epoch: self.epoch };
                 while n.process_replication(&mut output) {
                     debug!("iterated replication for node {:?}", nid);
                 }

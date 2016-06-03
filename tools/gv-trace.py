@@ -25,21 +25,22 @@ def parse(f):
 
         if data['type'] == 'state':
             pid = data['process']
-            time = data['time']
+            time = tuple(data['time'])
             proc_tls[pid][time] = data['state']
             ts.add(time)
             processes.add(pid)
 
-        elif data['type'] == 'send':
+        elif data['type'] == 'recv':
             messages.append(data)
             processes.add(data['src'])
             processes.add(data['dst'])
+            ts.add(tuple(data['sent']))
+            ts.add(tuple(data['recv']))
 
     graph = graphviz.Digraph()# rankdir="TD", splines="line");
    
     nodes = graphviz.Digraph('cluster_proc_tls', graph_attr=dict(label=''));
     for p in sorted(processes):
-        print >> sys.stderr, repr(p)
         nid = b32e(p)
         nodes.node("proc_%s" % nid, label=p, group=nid)
 
@@ -66,7 +67,11 @@ def parse(f):
         prev_tid = tid
 
     for m in messages:
-        graph.edge('state_%s_%s' % (b32e(m['src']), b32e(m['sent'])), 'state_%s_%s' % (b32e(m['dst']), b32e(m['recv'])), constraint="false", label=trunc(m['data']), labeltooltip=m['data'], labelURL='#')
+	src = 'state_%s_%s' % (b32e(m['src']), b32e(tuple(m['sent'])))
+	dst = 'state_%s_%s' % (b32e(m['dst']), b32e(tuple(m['recv'])))
+        graph.edge(src, dst, constraint="false",
+	    label=trunc(m['data']), labeltooltip=m['data'], labelURL='#',
+	    headlabel=repr(m['recv']), taillabel=repr(m['sent']))
         
 
 
