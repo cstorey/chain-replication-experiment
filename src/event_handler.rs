@@ -4,7 +4,7 @@ use super::ChainRepl;
 use data::OpResp;
 use crexp_client_proto::messages as client;
 
-use line_conn::{SexpPeer, LineConn, ClientProto, ConsumerProto, PeerClientProto, LineConnEvents};
+use line_conn::{ClientProto, ConsumerProto, LineConn, LineConnEvents, PeerClientProto, SexpPeer};
 use downstream_conn::Downstream;
 use hybrid_clocks::{Timestamp, WallT};
 
@@ -37,17 +37,18 @@ impl EventHandler {
         }
     }
 
-    pub fn process_rules<E: LineConnEvents>(
-        &mut self,
-                                                 event_loop: &mut mio::EventLoop<ChainRepl>,
-                                                 now: &Timestamp<WallT>,
-                                                 events: &mut E)
-                                                 -> bool {
+    pub fn process_rules<E: LineConnEvents>(&mut self,
+                                            event_loop: &mut mio::EventLoop<ChainRepl>,
+                                            now: &Timestamp<WallT>,
+                                            events: &mut E)
+                                            -> bool {
         match self {
             &mut EventHandler::Client(ref mut conn) => conn.process_rules(event_loop, events),
             &mut EventHandler::Consumer(ref mut conn) => conn.process_rules(event_loop, events),
             &mut EventHandler::Upstream(ref mut conn) => conn.process_rules(event_loop, events),
-            &mut EventHandler::Downstream(ref mut conn) => conn.process_rules(event_loop, now, events),
+            &mut EventHandler::Downstream(ref mut conn) => {
+                conn.process_rules(event_loop, now, events)
+            }
         }
     }
 

@@ -1,5 +1,5 @@
 use std::fmt;
-use rocksdb::{DB, DBIterator, Writable, Options, WriteBatch, WriteOptions, Direction, IteratorMode};
+use rocksdb::{DB, DBIterator, Direction, IteratorMode, Options, Writable, WriteBatch, WriteOptions};
 use rocksdb::ffi::DBCFHandle;
 use tempdir::TempDir;
 use data::Seqno;
@@ -7,7 +7,7 @@ use replica::Log;
 use time::PreciseTime;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::{Mutex, Condvar};
+use std::sync::{Condvar, Mutex};
 use std::iter;
 
 // Approximate structure of the log.
@@ -94,13 +94,13 @@ impl RocksdbLog {
         }
     }
 
-     fn meta(db: &DB) -> DBCFHandle {
-         db.cf_handle(META).expect("open meta cf").clone()
-     }
+    fn meta(db: &DB) -> DBCFHandle {
+        db.cf_handle(META).expect("open meta cf").clone()
+    }
 
-     fn data(db: &DB) -> DBCFHandle {
-         db.cf_handle(DATA).expect("open meta cf").clone()
-     }
+    fn data(db: &DB) -> DBCFHandle {
+        db.cf_handle(DATA).expect("open meta cf").clone()
+    }
 
     fn do_read_seqno(db: &DB, name: &str) -> Option<Seqno> {
         match db.get_cf(Self::meta(&db), name.as_bytes()) {
@@ -163,8 +163,7 @@ impl RocksdbLog {
         drop(db);
     }
 
-    pub fn quiesce(&self) {
-    }
+    pub fn quiesce(&self) {}
 }
 
 impl Log for RocksdbLog {
@@ -185,8 +184,10 @@ impl Log for RocksdbLog {
     fn read_from(&self, seqno: Seqno) -> RocksdbCursor {
         let key = Seqno::tokey(&seqno);
         let datacf = Self::data(&self.db);
-        let iter = self.db.iterator_cf(datacf, IteratorMode::From(&key.as_ref(), Direction::Forward))
-            .expect("iterator_cf");
+        let iter = self.db
+                       .iterator_cf(datacf,
+                                    IteratorMode::From(&key.as_ref(), Direction::Forward))
+                       .expect("iterator_cf");
         RocksdbCursor(iter)
     }
 
@@ -209,7 +210,9 @@ impl Log for RocksdbLog {
         let t0 = PreciseTime::now();
         let batch = WriteBatch::new();
         batch.put_cf(Self::data(&self.db), &key.as_ref(), &data_bytes).expect("Persist operation");
-        batch.put_cf(Self::meta(&self.db), META_PREPARED.as_bytes(), &key.as_ref())
+        batch.put_cf(Self::meta(&self.db),
+                     META_PREPARED.as_bytes(),
+                     &key.as_ref())
              .expect("Persist prepare point");
         self.db.write(batch).expect("Write batch");
         let t1 = PreciseTime::now();
@@ -253,13 +256,13 @@ pub mod test {
     use data::Seqno;
     use quickcheck::{Arbitrary, Gen, TestResult};
     use std::sync::mpsc::channel;
-    use std::sync::atomic::{AtomicUsize,Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::fmt;
     use replication_log::RocksdbLog;
     use replica::Log;
     use std::collections::BTreeMap;
     use std::sync::Arc;
-    use std::hash::{Hash, SipHasher, Hasher};
+    use std::hash::{Hash, Hasher, SipHasher};
     use std::iter;
     use std::rc::Rc;
     use std::cell::RefCell;
@@ -278,9 +281,9 @@ pub mod test {
         fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 
             fmt.debug_struct("VecLog")
-                .field("mark/prepared", &self.log.borrow().len())
-                .field("mark/committed", &self.commit_point)
-                .finish()
+               .field("mark/prepared", &self.log.borrow().len())
+               .field("mark/committed", &self.commit_point)
+               .finish()
         }
     }
 
@@ -294,7 +297,9 @@ pub mod test {
             self.log.borrow().iter().enumerate().rev().map(|(i, _)| Seqno::new(i as u64)).next()
         }
 
-        fn read_committed(&self) -> Option<Seqno> { self.commit_point }
+        fn read_committed(&self) -> Option<Seqno> {
+            self.commit_point
+        }
 
         fn read_from(&self, pos: Seqno) -> Self::Cursor {
             VecCursor(pos.offset() as usize, self.log.clone())
@@ -353,10 +358,13 @@ pub mod test {
 
     impl TestLog for VecLog {
         fn new() -> Self {
-            VecLog { log: Rc::new(RefCell::new(Vec::new())), commit_point: None }
+            VecLog {
+                log: Rc::new(RefCell::new(Vec::new())),
+                commit_point: None,
+            }
         }
-        fn quiesce(&self) { }
-        fn stop(self) { }
+        fn quiesce(&self) {}
+        fn stop(self) {}
     }
 
     #[derive(Debug,PartialEq,Eq,Clone, Hash)]
@@ -372,16 +380,22 @@ pub mod test {
                 &LogCommand::PrepareNext(ref op) => {
                     let seq = model.seqno();
                     model.prepare(seq, op)
-                },
-                &LogCommand::CommitTo(ref s) => { model.commit_to(s.clone()); },
+                }
+                &LogCommand::CommitTo(ref s) => {
+                    model.commit_to(s.clone());
+                }
                 &LogCommand::ReadFrom(_) => (),
             }
         }
         pub fn satisfies_precondition(&self, model: &VecLog) -> bool {
             match self {
-                &LogCommand::CommitTo(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
-                &LogCommand::ReadFrom(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
-                    _ => true,
+                &LogCommand::CommitTo(ref s) => {
+                    model.read_prepared().map(|p| &p >= s).unwrap_or(false)
+                }
+                &LogCommand::ReadFrom(ref s) => {
+                    model.read_prepared().map(|p| &p >= s).unwrap_or(false)
+                }
+                _ => true,
             }
         }
     }
@@ -402,12 +416,15 @@ pub mod test {
             trace!("LogCommand#shrink {:x}: {:?}", h, self);
             match self {
                 &LogCommand::PrepareNext(ref op) => {
-                    Box::new(
-                            op.shrink().map(LogCommand::PrepareNext)
-                            .inspect(move |it| trace!("LogCommand#shrink {:x}: => {:?}", h, it))) }
-                &LogCommand::CommitTo(ref s) => Box::new(
-                        s.shrink().map(LogCommand::CommitTo)
-                            .inspect(move |it| trace!("LogCommand#shrink {:x}: => {:?}", h, it))),
+                    Box::new(op.shrink()
+                               .map(LogCommand::PrepareNext)
+                               .inspect(move |it| trace!("LogCommand#shrink {:x}: => {:?}", h, it)))
+                }
+                &LogCommand::CommitTo(ref s) => {
+                    Box::new(s.shrink()
+                              .map(LogCommand::CommitTo)
+                              .inspect(move |it| trace!("LogCommand#shrink {:x}: => {:?}", h, it)))
+                }
                 &LogCommand::ReadFrom(ref s) => Box::new(s.shrink().map(LogCommand::ReadFrom)),
             }
         }
@@ -439,13 +456,14 @@ pub mod test {
                 let seq = actual.seqno();
                 actual.prepare(seq, op);
                 CommandReturn::Done
-            },
+            }
             &LogCommand::CommitTo(ref s) => {
                 actual.commit_to(s.clone());
                 CommandReturn::Done
-            },
-            &LogCommand::ReadFrom(ref s) => CommandReturn::Read(
-                    actual.read_from(s.clone()).map(|(_, v)| v).collect()),
+            }
+            &LogCommand::ReadFrom(ref s) => {
+                CommandReturn::Read(actual.read_from(s.clone()).map(|(_, v)| v).collect())
+            }
         }
     }
 
@@ -455,38 +473,45 @@ pub mod test {
             (&LogCommand::PrepareNext(_), &CommandReturn::Done) => {
                 // Assert that seqno has advanced
                 true
-            },
+            }
             (&LogCommand::CommitTo(_), &CommandReturn::Done) => {
                 // Well, this happens at some time in the future.
                 true
-            },
-            (&LogCommand::ReadFrom(ref seq), &CommandReturn::Read(ref val)) => {
-                &model.read_from(seq.clone()).map(|(_, v)|v).collect::<Vec<_>>() == val
-            },
+            }
+            (&LogCommand::ReadFrom(ref seq),
+             &CommandReturn::Read(ref val)) => {
+                &model.read_from(seq.clone()).map(|(_, v)| v).collect::<Vec<_>>() == val
+            }
             (cmd, ret) => {
-                warn!("Unexpected command / return combination: {:?} -> {:?}", cmd, ret);
+                warn!("Unexpected command / return combination: {:?} -> {:?}",
+                      cmd,
+                      ret);
                 false
             }
         }
     }
 
-    pub fn arbitrary_given<G: Gen, T: Arbitrary, F:Fn(&T) -> bool> (g: &mut G, f: F) -> T {
-        (0..).map(|_| T::arbitrary(g))
-                    .skip_while(|cmd| !f(cmd))
-                    .next().expect("Some valid command")
+    pub fn arbitrary_given<G: Gen, T: Arbitrary, F: Fn(&T) -> bool>(g: &mut G, f: F) -> T {
+        (0..)
+            .map(|_| T::arbitrary(g))
+            .skip_while(|cmd| !f(cmd))
+            .next()
+            .expect("Some valid command")
     }
 
     impl Arbitrary for LogCommands {
         fn arbitrary<G: Gen>(g: &mut G) -> LogCommands {
             let mut model_log = VecLog::new();
-            let slots : Vec<()> = Arbitrary::arbitrary(g);
-            let mut commands : Vec<LogCommand> = Vec::new();
+            let slots: Vec<()> = Arbitrary::arbitrary(g);
+            let mut commands: Vec<LogCommand> = Vec::new();
 
             for _ in slots {
-                let cmd = arbitrary_given(g, |cmd: &LogCommand| cmd.satisfies_precondition(&model_log));
+                let cmd = arbitrary_given(g, |cmd: &LogCommand| {
+                    cmd.satisfies_precondition(&model_log)
+                });
                 next_state(&mut model_log, &cmd);
                 commands.push(cmd);
-            };
+            }
             LogCommands(commands)
         }
         fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
@@ -496,12 +521,15 @@ pub mod test {
         }
     }
     fn validate_commands(cmds: &LogCommands) -> bool {
-            let model_log = VecLog::new();
-            cmds.0.iter().scan(model_log, |model_log, cmd| {
+        let model_log = VecLog::new();
+        cmds.0
+            .iter()
+            .scan(model_log, |model_log, cmd| {
                 let ret = cmd.satisfies_precondition(&model_log);
                 next_state(model_log, &cmd);
                 Some(ret)
-            }).all(|p| p)
+            })
+            .all(|p| p)
     }
 
     fn should_be_correct_prop(cmds: LogCommands) -> TestResult {
@@ -656,7 +684,9 @@ pub mod test {
 
         debug!("observed: {:?}; expect: {:?}", read_commit, expected_commit);
         debug!("read_commit: {:?}; read_prepared:{:?}, expect: {:?}",
-            read_commit, read_prepared, expected_commit);
+               read_commit,
+               read_prepared,
+               expected_commit);
         assert!(read_commit <= read_prepared);
         assert!(read_commit <= expected_commit);
         assert_eq!(expected_commit, read_commit);
@@ -678,8 +708,8 @@ pub mod test {
     mod rocksdb {
         use quickcheck::{self, TestResult};
         use replication_log::RocksdbLog;
-        use super::{test_can_commit_prepared_values_prop, test_can_read_prepared_values_prop,
-                    LogCommand};
+        use super::{LogCommand, test_can_commit_prepared_values_prop,
+                    test_can_read_prepared_values_prop};
         use env_logger;
         #[cfg(feature = "benches")]
         use test::Bencher;
@@ -707,8 +737,8 @@ pub mod test {
     mod vec {
         use quickcheck::{self, TestResult};
         use super::VecLog;
-        use super::{test_can_commit_prepared_values_prop, test_can_read_prepared_values_prop,
-                    LogCommand};
+        use super::{LogCommand, test_can_commit_prepared_values_prop,
+                    test_can_read_prepared_values_prop};
         use env_logger;
         #[cfg(feature = "benches")]
         use test::Bencher;
@@ -741,8 +771,6 @@ pub mod test {
 }
 
 #[cfg(feature = "benches")]
-mod bench_is_enabled {
-}
+mod bench_is_enabled {}
 #[cfg(test)]
-mod test_is_enabled {
-}
+mod test_is_enabled {}

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::ops::{Index,IndexMut};
+use std::ops::{Index, IndexMut};
 use std::iter;
 use std::usize;
-use rand::{weak_rng,XorShiftRng};
+use rand::{XorShiftRng, weak_rng};
 use rand::distributions::{IndependentSample, Range};
 use mio;
 
@@ -30,11 +30,12 @@ impl<T> Slab<T> {
     pub fn insert_with<F: FnOnce(mio::Token) -> T>(&mut self, f: F) -> Option<mio::Token> {
         let &mut Slab { ref range, ref mut rng, ref mut contents } = self;
         let idx = iter::repeat(())
-            .map(|()| range.ind_sample(rng))
-            .skip_while(|&idx| contents.contains_key(&mio::Token(idx)))
-            .map(mio::Token)
-            .next().expect("random index");
-        
+                      .map(|()| range.ind_sample(rng))
+                      .skip_while(|&idx| contents.contains_key(&mio::Token(idx)))
+                      .map(mio::Token)
+                      .next()
+                      .expect("random index");
+
         let val = f(idx);
         contents.insert(idx, val);
         Some(idx)

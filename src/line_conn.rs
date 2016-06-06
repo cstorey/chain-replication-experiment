@@ -7,9 +7,9 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use super::ChainRepl;
-use data::{OpResp, PeerMsg, ReplicationMessage, Seqno, Buf};
+use data::{Buf, OpResp, PeerMsg, ReplicationMessage, Seqno};
 use config::Epoch;
-use crexp_client_proto::messages::{ProducerReq,ProducerResp, ConsumerReq, ConsumerResp};
+use crexp_client_proto::messages::{ConsumerReq, ConsumerResp, ProducerReq, ProducerResp};
 use hybrid_clocks::{Timestamp, WallT};
 
 const DEFAULT_BUFSZ: usize = 1 << 12;
@@ -22,7 +22,10 @@ pub trait Reader<T> {
     fn feed(&mut self, slice: &[u8]);
     fn new(mio::Token) -> Self;
 
-    fn process<P: Protocol<Recv=T>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool ;
+    fn process<P: Protocol<Recv = T>, E: LineConnEvents>(&mut self,
+                                                         token: mio::Token,
+                                                         events: &mut E)
+                                                         -> bool;
 }
 
 pub trait Protocol : fmt::Debug{
@@ -111,9 +114,9 @@ impl<T, P> LineConn<T, P>
           T: Reader<P::Recv> + Encoder<P::Send> + fmt::Debug
 {
     pub fn process_rules<E: LineConnEvents>(&mut self,
-                                                 event_loop: &mut mio::EventLoop<ChainRepl>,
-                                                 events: &mut E)
-                                                 -> bool {
+                                            event_loop: &mut mio::EventLoop<ChainRepl>,
+                                            events: &mut E)
+                                            -> bool {
 
         if self.sock_status.is_readable() {
             self.read();
@@ -238,14 +241,23 @@ impl Reader<ReplicationMessage> for SexpPeer {
         self.packets.feed(slice)
     }
 
-    fn process<P: Protocol<Recv=ReplicationMessage>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
+    fn process<P: Protocol<Recv = ReplicationMessage>, E: LineConnEvents>(&mut self,
+                                                                          token: mio::Token,
+                                                                          events: &mut E)
+                                                                          -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream, } => events.hello_downstream(token, ts, epoch),
-                ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op), .. } => events.operation(token, epoch, seqno, op.into()),
-                ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. } => events.commit(token, epoch, seqno),
+                ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream, } => {
+                    events.hello_downstream(token, ts, epoch)
+                }
+                ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, op), .. } => {
+                    events.operation(token, epoch, seqno, op.into())
+                }
+                ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. } => {
+                    events.commit(token, epoch, seqno)
+                }
             }
             changed = true;
         }
@@ -262,7 +274,10 @@ impl Reader<OpResp> for SexpPeer {
         self.packets.feed(slice)
     }
 
-    fn process<P: Protocol<Recv=OpResp>, E: LineConnEvents>(&mut self, _token: mio::Token, events: &mut E) -> bool {
+    fn process<P: Protocol<Recv = OpResp>, E: LineConnEvents>(&mut self,
+                                                              _token: mio::Token,
+                                                              events: &mut E)
+                                                              -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
@@ -287,12 +302,15 @@ impl Reader<ProducerReq> for SexpPeer {
         self.packets.feed(slice)
     }
 
-    fn process<P: Protocol<Recv=ProducerReq>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
+    fn process<P: Protocol<Recv = ProducerReq>, E: LineConnEvents>(&mut self,
+                                                                   token: mio::Token,
+                                                                   events: &mut E)
+                                                                   -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ProducerReq::Publish(data)  => events.client_request(token, data.into()),
+                ProducerReq::Publish(data) => events.client_request(token, data.into()),
             }
             changed = true;
         }
@@ -310,12 +328,15 @@ impl Reader<ConsumerReq> for SexpPeer {
     }
 
     // No requests yet
-    fn process<P: Protocol<Recv=ConsumerReq>, E: LineConnEvents>(&mut self, token: mio::Token, events: &mut E) -> bool {
+    fn process<P: Protocol<Recv = ConsumerReq>, E: LineConnEvents>(&mut self,
+                                                                   token: mio::Token,
+                                                                   events: &mut E)
+                                                                   -> bool {
         let mut changed = false;
         // trace!("{:?}: Read buffer: {:?}", self.socket.peer_addr(), self.read_buf);
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
-                ConsumerReq::ConsumeFrom(mark) => events.consume_requested(token, mark.into())
+                ConsumerReq::ConsumeFrom(mark) => events.consume_requested(token, mark.into()),
             }
             changed = true;
         }

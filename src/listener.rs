@@ -46,14 +46,15 @@ impl Listener {
     }
 
     pub fn process_rules<E: ListenerEvents>(&mut self,
-                                                 event_loop: &mut mio::EventLoop<ChainRepl>,
-                                                 events: &mut E)
-                                                 -> bool {
+                                            event_loop: &mut mio::EventLoop<ChainRepl>,
+                                            events: &mut E)
+                                            -> bool {
 
         let mut changed = false;
         if self.sock_status.is_readable() {
             trace!("the listener socket is ready to accept a connection: role:{:?}; active:{:?}",
-                    self.role, self.active);
+                   self.role,
+                   self.active);
             match self.listener.accept() {
                 Ok(Some(socket)) => {
                     trace!("New connection: {:?}", socket);

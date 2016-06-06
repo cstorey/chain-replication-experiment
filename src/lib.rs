@@ -36,7 +36,7 @@ use slob::Slab;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::mem;
-use hybrid_clocks::{Clock,Wall, Timestamp, WallT};
+use hybrid_clocks::{Clock, Timestamp, Wall, WallT};
 
 mod slob;
 mod line_conn;
@@ -49,24 +49,24 @@ mod replication_log;
 mod replica;
 mod consumer;
 
-use line_conn::{SexpPeer, LineConn, LineConnEvents};
+use line_conn::{LineConn, LineConnEvents, SexpPeer};
 use downstream_conn::Downstream;
-use listener::{Listener,ListenerEvents};
+use listener::{Listener, ListenerEvents};
 use event_handler::EventHandler;
 
-use data::{Seqno, OpResp, PeerMsg, NodeViewConfig, Buf};
+use data::{Buf, NodeViewConfig, OpResp, PeerMsg, Seqno};
 use crexp_client_proto::messages as client;
 use config::{ConfigurationView, Epoch};
 
 pub use config::ConfigClient;
-pub use replica::{ReplModel,ReplProxy};
+pub use replica::{ReplModel, ReplProxy};
 pub use replication_log::RocksdbLog;
 pub use data::Role;
 
 
 #[derive(Debug)]
 pub enum ChainReplMsg {
-   NewClientConn(Role, TcpStream),
+    NewClientConn(Role, TcpStream),
 }
 
 struct ChainReplEvents<'a> {
@@ -153,26 +153,26 @@ impl ChainRepl {
         info!("Listen on {:?} for {:?}", addr, role);
         let &mut ChainRepl { ref mut listeners, ref mut node_config, .. } = self;
         let token = listeners.insert_with(|token| {
-                                   let l = Listener::new(addr, token, role.clone());
-                                   match role {
-                                       Role::Upstream => {
-                                           node_config.peer_addr = Some(format!("{}",
-                                                                                l.listen_addr()))
-                                       }
-                                       Role::ProducerClient => {
-                                           node_config.producer_addr = Some(format!("{}",
+                                 let l = Listener::new(addr, token, role.clone());
+                                 match role {
+                                     Role::Upstream => {
+                                         node_config.peer_addr = Some(format!("{}",
+                                                                              l.listen_addr()))
+                                     }
+                                     Role::ProducerClient => {
+                                         node_config.producer_addr = Some(format!("{}",
                                                                                   l.listen_addr()))
-                                       }
-                                       Role::ConsumerClient => {
-                                           node_config.consumer_addr = Some(format!("{}",
+                                     }
+                                     Role::ConsumerClient => {
+                                         node_config.consumer_addr = Some(format!("{}",
                                                                                   l.listen_addr()))
-                                       }
-                                   }
+                                     }
+                                 }
 
-                                   trace!("Listener: {:?}", l);
-                                   l
-                               })
-                               .expect("insert listener");
+                                 trace!("Listener: {:?}", l);
+                                 l
+                             })
+                             .expect("insert listener");
         listeners[token].initialize(event_loop, token);
     }
 
@@ -181,11 +181,15 @@ impl ChainRepl {
                           epoch: Epoch,
                           target: Option<SocketAddr>) {
         match (self.downstream_slot, target) {
-            (Some(_), Some(target)) => self.downstream().expect("downstream").reconnect_to(target, epoch),
+            (Some(_), Some(target)) => {
+                self.downstream().expect("downstream").reconnect_to(target, epoch)
+            }
             (None, Some(target)) => {
                 let token = self.connections
                                 .insert_with(|token| {
-                                    EventHandler::Downstream(Downstream::new(Some(target), token, epoch))
+                                    EventHandler::Downstream(Downstream::new(Some(target),
+                                                                             token,
+                                                                             epoch))
                                 })
                                 .expect("insert downstream");
                 &self.connections[token].initialize(event_loop, token);
@@ -194,7 +198,7 @@ impl ChainRepl {
             (Some(_), None) => {
                 self.downstream().expect("downstream").disconnect();
                 self.downstream_slot = None;
-            },
+            }
             (None, None) => (),
         }
     }
@@ -219,9 +223,15 @@ impl ChainRepl {
         let token = self.connections
                         .insert_with(|token| {
                             match role {
-                                Role::ProducerClient => EventHandler::Client(LineConn::peer(socket, token)),
-                                Role::ConsumerClient => EventHandler::Consumer(LineConn::peer(socket, token)),
-                                Role::Upstream => EventHandler::Upstream(LineConn::peer(socket, token))
+                                Role::ProducerClient => {
+                                    EventHandler::Client(LineConn::peer(socket, token))
+                                }
+                                Role::ConsumerClient => {
+                                    EventHandler::Consumer(LineConn::peer(socket, token))
+                                }
+                                Role::Upstream => {
+                                    EventHandler::Upstream(LineConn::peer(socket, token))
+                                }
                             }
                         })
                         .expect("token insert");
@@ -244,9 +254,13 @@ impl ChainRepl {
             p.set_active(should_listen);
         }
 
-        let ds = view.should_connect_downstream().map(|ds| ds.peer_addr
-                    .as_ref().expect("Cannot reconnect to downstream with no peer listener")
-                    .parse().expect("peer address"));
+        let ds = view.should_connect_downstream().map(|ds| {
+            ds.peer_addr
+              .as_ref()
+              .expect("Cannot reconnect to downstream with no peer listener")
+              .parse()
+              .expect("peer address")
+        });
         info!("Push to downstream on {:?}", ds);
         self.set_downstream(event_loop, view.epoch, ds);
 
@@ -266,8 +280,7 @@ impl ChainRepl {
         })
     }
 
-    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>)
-                                             -> bool {
+    fn process_rules(&mut self, event_loop: &mut mio::EventLoop<Self>) -> bool {
         let mut changed = false;
 
         if let Some(view) = self.new_view.take() {
@@ -290,7 +303,9 @@ impl ChainRepl {
                 let &mut ChainRepl { ref mut queue, ref mut clock, ref mut model,
                     ref mut connections, ref mut listeners, .. } = self;
                 let mut events = ChainReplEvents {
-                    changes: queue, clock: clock, model: model,
+                    changes: queue,
+                    clock: clock,
+                    model: model,
                 };
                 for conn in listeners.iter_mut() {
                     changed |= conn.process_rules(event_loop, &mut events);
@@ -453,10 +468,12 @@ impl mio::Handler for ChainRepl {
             Notification::Shutdown => {
                 info!("Shutting down");
                 event_loop.shutdown();
-            },
+            }
             Notification::RespondTo(token, resp) => self.respond_to(token, resp),
             Notification::Forward(epoch, msg) => self.forward_downstream(epoch, msg),
-            Notification::ConsumerMessage(token, seq, msg) => self.consumer_message(token, seq, msg),
+            Notification::ConsumerMessage(token, seq, msg) => {
+                self.consumer_message(token, seq, msg)
+            }
         }
         self.converge_state(event_loop);
     }

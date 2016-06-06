@@ -10,7 +10,7 @@ use std::io::ErrorKind;
 use super::ChainRepl;
 use data::{OpResp, PeerMsg, ReplicationMessage};
 use config::Epoch;
-use line_conn::{Encoder, Reader, SexpPeer, Protocol, LineConnEvents};
+use line_conn::{Encoder, LineConnEvents, Protocol, Reader, SexpPeer};
 use hybrid_clocks::{Timestamp, WallT};
 
 #[derive(Debug)]
@@ -47,7 +47,11 @@ impl Downstream<SexpPeer> {
 }
 
 impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T> {
-    pub fn with_codec(target: Option<SocketAddr>, token: mio::Token, epoch: Epoch, codec: T) -> Self {
+    pub fn with_codec(target: Option<SocketAddr>,
+                      token: mio::Token,
+                      epoch: Epoch,
+                      codec: T)
+                      -> Self {
         debug!("Connecting to {:?}", target);
         let conn = Downstream {
             token: token,
@@ -129,10 +133,10 @@ impl<T: Reader<OpResp> + Encoder<ReplicationMessage> + fmt::Debug> Downstream<T>
     }
 
     pub fn process_rules<E: LineConnEvents>(&mut self,
-                                                 event_loop: &mut mio::EventLoop<ChainRepl>,
-                                                 now: &Timestamp<WallT>,
-                                                 events: &mut E)
-                                                 -> bool {
+                                            event_loop: &mut mio::EventLoop<ChainRepl>,
+                                            now: &Timestamp<WallT>,
+                                            events: &mut E)
+                                            -> bool {
         trace!("the downstream socket is {:?}", self.sock_status);
 
         if self.sock_status.is_readable() {

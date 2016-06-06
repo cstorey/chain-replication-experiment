@@ -10,9 +10,9 @@ extern crate vastatrix;
 use time::Duration;
 use std::net::ToSocketAddrs;
 use std::collections::HashSet;
-use clap::{Arg, App};
+use clap::{App, Arg};
 
-use vastatrix::{ChainRepl, Role, ConfigClient, ReplModel, ReplProxy, RocksdbLog};
+use vastatrix::{ChainRepl, ConfigClient, ReplModel, ReplProxy, RocksdbLog, Role};
 
 const LOG_FILE: &'static str = "log.toml";
 
@@ -33,8 +33,8 @@ fn main() {
     let log = RocksdbLog::new();
     let replication = ReplModel::new(log);
 
-    let mut service = ChainRepl::new(
-            ReplProxy::build(replication, ChainRepl::get_notifier(&mut event_loop)));
+    let mut service = ChainRepl::new(ReplProxy::build(replication,
+                                                      ChainRepl::get_notifier(&mut event_loop)));
 
     if let Some(listen_addr) = matches.value_of("bind") {
         let listen_addrs = listen_addr.to_socket_addrs()
