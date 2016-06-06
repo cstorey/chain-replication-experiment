@@ -1333,11 +1333,24 @@ pub mod test {
             }
 
             let acked_seqnos = self.acked_seqnos().into_iter().collect::<HashSet<Seqno>>();
+            let consumed_seqnos = self.consumed_messages()
+                                      .into_iter()
+                                      .map(|(s, _)| s)
+                                      .collect::<HashSet<Seqno>>();
             for (n, log) in logs_by_node.iter() {
                 let log_seqnos = log.keys().cloned().collect::<HashSet<Seqno>>();
-                let diff = acked_seqnos.difference(&log_seqnos).cloned().collect::<Vec<Seqno>>();
-                debug!("Acked but not in log for {:?}: {:?}", n, diff);
-                assert_eq!(diff, vec![]);
+
+                let acked_diff = acked_seqnos.difference(&log_seqnos)
+                                             .cloned()
+                                             .collect::<Vec<Seqno>>();
+                debug!("Acked but not in log for {:?}: {:?}", n, acked_diff);
+                assert_eq!(acked_diff, vec![]);
+
+                let consumed_diff = consumed_seqnos.difference(&log_seqnos)
+                                                   .cloned()
+                                                   .collect::<Vec<Seqno>>();
+                debug!("Consumed but not in log for {:?}: {:?}", n, consumed_diff);
+                assert_eq!(consumed_diff, vec![]);
             }
         }
 
