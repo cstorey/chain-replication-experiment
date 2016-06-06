@@ -849,6 +849,7 @@ pub mod test {
 
     struct OutBufs<'a> {
         node_id: NodeId,
+        view: ConfigurationView<NodeId>,
         epoch: Epoch,
         ports: &'a mut NetworkState,
     }
@@ -867,16 +868,22 @@ pub mod test {
         }
 
         fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
-            let &mut OutBufs { node_id, .. } = self;
-            let downstream_id = NodeId(node_id.0 + 1); // TODO: Use a "view" object
+            if let Some(downstream_id) = self.view.next {
+                self.enqueue(downstream_id,
+                             ReplCommand::Forward(ReplicationMessage {
+                                 epoch: epoch,
+                                 ts: now,
+                                 msg: msg,
+                             }));
+            } else {
+                warn!("OutBufs#forward_downstream no next in view; node: {:?}, view: {:?}; msg: {:?}",
+                      self.node_id,
+                      self.view,
+                      msg);
 
-            self.enqueue(downstream_id,
-                ReplCommand::Forward(ReplicationMessage {
-                    epoch: epoch,
-                    ts: now,
-                    msg: msg,
-                }));
+            }
         }
+
         fn consumer_message(&mut self, token: Token, seqno: Seqno, msg: Buf) {
             let &mut OutBufs { node_id, .. } = self;
             self.enqueue(NodeId(token.as_usize()), ReplCommand::ConsumerMsg(seqno, msg))
@@ -997,9 +1004,16 @@ pub mod test {
             }
         }
 
-        fn configs(&self) -> BTreeMap<NodeId, ConfigurationView<()>> {
+        fn config_of(&self, node_id: NodeId) -> ConfigurationView<NodeId> {
             let node_count = self.node_count;
-            let members = self.nodes.iter().map(|(&id, _)| (id, ())).collect::<BTreeMap<_, _>>();
+            let members = self.nodes.iter().map(|(&id, _)| (id, id)).collect::<BTreeMap<_, _>>();
+            ConfigurationView::of_membership(self.epoch, &node_id, members.clone())
+                .expect("in view")
+        }
+
+        fn configs(&self) -> BTreeMap<NodeId, ConfigurationView<NodeId>> {
+            let node_count = self.node_count;
+            let members = self.nodes.iter().map(|(&id, _)| (id, id)).collect::<BTreeMap<_, _>>();
             members.keys()
                 .map(|&id| (id,
                             ConfigurationView::of_membership(self.epoch, &id, members.clone()).expect("in view")))
@@ -1128,13 +1142,15 @@ pub mod test {
         }
 
         fn step(&mut self, state: &mut NetworkState) {
+            let views = self.configs();
             while let Some((src, dest, input)) = state.dequeue_one() {
                 debug!("Inputs: {:?} -> {:?}: {:?}", src, dest, input);
                 if dest == self.client_id {
                     self.client_buf.push_back(input);
                 } else {
+                    let view = views[&dest].clone();
                     if let Some(ref mut n) = self.nodes.get_mut(&dest) {
-                        let mut output = OutBufs { node_id: dest, ports: state, epoch: self.epoch };
+                        let mut output = OutBufs { node_id: dest, view: view, ports: state, epoch: self.epoch };
 
                         debug!("Feed node {:?} with {:?}", dest, input);
                         apply_cmd(n, &input, src.token(), &mut output);
@@ -1148,7 +1164,8 @@ pub mod test {
             for (nid, n) in self.nodes.iter_mut() {
                 n.borrow_log().quiesce();
 
-                let mut output = OutBufs { node_id: *nid, ports: state, epoch: self.epoch };
+                let view = views[nid].clone();
+                let mut output = OutBufs { node_id: *nid, view: view, ports: state, epoch: self.epoch };
                 while n.process_replication(&mut output) {
                     debug!("iterated replication for node {:?}", nid);
                 }
