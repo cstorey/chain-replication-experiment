@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::{Index,IndexMut};
 use std::iter;
+use std::usize;
 use rand::{weak_rng,XorShiftRng};
 use rand::distributions::{IndependentSample, Range};
 use mio;
@@ -14,13 +15,13 @@ pub struct Slab<T> {
 struct SlabIterMut<'a, T: 'a>(::std::collections::hash_map::IterMut<'a, mio::Token, T>);
 
 impl<T> Slab<T> {
-    pub fn new(entries: usize) -> Self {
-        Self::new_starting_at(mio::Token(0), entries)
+    pub fn new() -> Self {
+        Self::new_range(usize::MIN, usize::MAX)
     }
-    pub fn new_starting_at(from: mio::Token, entries: usize) -> Self {
+    pub fn new_range(min: usize, max: usize) -> Self {
         let rng = weak_rng();
         Slab {
-            range: Range::new(from.as_usize(), from.as_usize()+entries),
+            range: Range::new(min, max),
             rng: rng,
             contents: HashMap::new(),
         }

@@ -131,13 +131,12 @@ pub struct ChainRepl {
 }
 
 const MAX_LISTENERS: usize = 4;
-const MAX_CONNS: usize = 1024;
 
 impl ChainRepl {
     pub fn new(model: ReplProxy<RocksdbLog>) -> ChainRepl {
         ChainRepl {
-            listeners: Slab::new(MAX_LISTENERS),
-            connections: Slab::new_starting_at(mio::Token(MAX_LISTENERS), MAX_CONNS),
+            listeners: Slab::new_range(0, MAX_LISTENERS),
+            connections: Slab::new_range(MAX_LISTENERS, ::std::usize::MAX),
             downstream_slot: None,
             node_config: Default::default(),
             new_view: None,
