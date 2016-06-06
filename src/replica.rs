@@ -997,14 +997,6 @@ pub mod test {
         }
     }
 
-    #[derive(Debug, Copy, Clone,Hash, Eq,PartialEq,Ord,PartialOrd)]
-    struct NodeId(usize);
-    impl NodeId {
-        fn token(&self) -> Token {
-            Token(self.0)
-        }
-    }
-
     struct NetworkSim<L> {
         nodes: BTreeMap<NodeId, ReplModel<L>>,
         node_count: usize,
@@ -1073,55 +1065,57 @@ pub mod test {
         }
     }
 
+    #[cfg(feature = "serde_macros")]
+    include!("replica_test_data.in.rs");
+
+    #[cfg(not(feature = "serde_macros"))]
+    include!(concat!(env!("OUT_DIR"), "/replica_test_data.rs"));
+
     #[derive(Debug)]
     struct Tracer {
-        f: File,
+        entries: Vec<TraceEvent>,
     }
+
     impl Tracer {
-        fn new(p: &Path) -> Tracer {
-            let f = File::create(p).expect("open file");
-            Tracer { f: f }
+        fn new() -> Tracer {
+            Tracer { entries: Vec::new() }
         }
         fn state(&mut self, t: Timestamp<u64>, process: &NodeId, state: String) {
-            use std::io::Write;
-            let mut m = BTreeMap::new();
-            use serde_json::value::to_value;
-            m.insert("type".to_string(), to_value("state"));
-            m.insert("time".to_string(), to_value(&t));
-            m.insert("process".to_string(), to_value(&format!("{:?}", process)));
-            m.insert("state".to_string(), to_value(&state));
-            serde_json::to_writer(&mut self.f, &m).expect("write json");
-            self.f.write_all(b"\n").expect("write nl");
+
+            let m = ProcessState {
+                time: t,
+                process: *process,
+                state: state,
+            };
+            self.entries.push(TraceEvent::ProcessState(m));
         }
 
         fn recv(&mut self,
                 sent: Timestamp<u64>,
-                recvd: Timestamp<u64>,
+                recv: Timestamp<u64>,
                 src: &NodeId,
                 dst: &NodeId,
                 data: String) {
-            use std::io::Write;
-            use serde_json::value::to_value;
-            let mut m = BTreeMap::new();
-            m.insert("type".to_string(), to_value("recv"));
-            m.insert("sent".to_string(), to_value(&sent));
-            m.insert("recv".to_string(), to_value(&recvd));
-            m.insert("src".to_string(), to_value(&format!("{:?}", src)));
-            m.insert("dst".to_string(), to_value(&format!("{:?}", dst)));
-            m.insert("data".to_string(), to_value(&data));
-            serde_json::to_writer(&mut self.f, &m).expect("write json");
-            self.f.write_all(b"\n").expect("write nl");
+            let m = MessageRecv {
+                sent: sent,
+                recv: recv,
+                src: *src,
+                dst: *dst,
+                data: data,
+            };
+            self.entries.push(TraceEvent::MessageRecv(m));
         }
 
         fn node_crashed(&mut self, t: Timestamp<u64>, process: &NodeId) {
-            use std::io::Write;
-            let mut m = BTreeMap::new();
-            use serde_json::value::to_value;
-            m.insert("type".to_string(), to_value("node_crash"));
-            m.insert("time".to_string(), to_value(&t));
-            m.insert("process".to_string(), to_value(&format!("{:?}", process)));
-            serde_json::to_writer(&mut self.f, &m).expect("write json");
-            self.f.write_all(b"\n").expect("write nl");
+            let m = NodeCrashed {
+                time: t,
+                process: *process,
+            };
+            self.entries.push(TraceEvent::NodeCrashed(m));
+        }
+        fn persist_to(&self, path: &Path) {
+            let mut f = File::create(path).expect("create file");
+            serde_json::to_writer(&mut f, &self.entries).expect("write json");
         }
     }
 
@@ -1165,7 +1159,7 @@ pub mod test {
                                                                   mut f: F) {
             let mut epoch = None;
             let path = PathBuf::from(format!("target/run-trace-{}.jsons", test_name));
-            let mut tracer = Tracer::new(&path);
+            let mut tracer = Tracer::new();
 
             let mut state = NetworkState {
                 clock: Clock::manual(0),
@@ -1204,7 +1198,7 @@ pub mod test {
                        state);
 
             }
-
+            state.tracer.persist_to(&path);
             assert!(state.is_quiescent());
         }
 

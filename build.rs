@@ -19,7 +19,7 @@ fn process() {
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
 
-    for m in ["data", "config_data"].iter() {
+    for m in ["data", "config_data", "replica_test_data"].iter() {
         let mut registry = syntex::Registry::new();
         serde_codegen::register(&mut registry);
 

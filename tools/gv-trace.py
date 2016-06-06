@@ -22,25 +22,27 @@ def parse(f):
     processes = set()
     node_crashes = {}
 
-    for line in f:
-        data = json.loads(line)
-
-        if data['type'] == 'state':
-            pid = data['process']
-            time = tuple(data['time'])
-            proc_tls[pid][time] = data['state']
+    records = json.load(f)
+    for data in records:
+        if 'ProcessState' in data:
+            s = data['ProcessState'];
+            pid = s['process']
+            time = tuple(s['time'])
+            proc_tls[pid][time] = s['state']
             ts.add(time)
             processes.add(pid)
 
-        elif data['type'] == 'recv':
-            messages.append(data)
-            processes.add(data['src'])
-            processes.add(data['dst'])
-            ts.add(tuple(data['sent']))
-            ts.add(tuple(data['recv']))
-        elif data['type'] == 'node_crash':
-            proc = data['process'];
-            t = tuple(data['time'])
+        elif 'MessageRecv' in data:
+            r = data['MessageRecv']
+            messages.append(r)
+            processes.add(r['src'])
+            processes.add(r['dst'])
+            ts.add(tuple(r['sent']))
+            ts.add(tuple(r['recv']))
+        elif 'NodeCrashed' in data:
+            c = data['NodeCrashed']
+            proc = c['process'];
+            t = tuple(c['time'])
             processes.add(proc)
             ts.add(t)
             node_crashes[proc] = t
@@ -51,8 +53,8 @@ def parse(f):
    
     nodes = graphviz.Digraph('cluster_proc_tls', graph_attr=dict(label=''));
     for p in sorted(processes):
-        nid = b32e(p)
-        nodes.node("proc_%s" % nid, label=p, group=nid)
+        nid = b32e(str(p))
+        nodes.node("proc_%s" % nid, label=str(p), group=nid)
 
     graph.subgraph(nodes)
  
@@ -62,15 +64,15 @@ def parse(f):
         tid = b32e(t)
         for p in processes:
             tl = proc_tls[p]
-            pid = b32e(p)
+            pid = b32e(str(p))
             crash_time = node_crashes.get(p, (sys.maxint,))
-            print >> sys.stderr, (prev_tid, tid, crash_time)
+            # print >> sys.stderr, (prev_tid, tid, crash_time)
             if t == crash_time:
                 graph.node('state_%s_%s' % (pid, tid), label = 'CRASHED', color='red', shape='box', group=pid)
             elif t in tl and tl[t] != prevs.get(p, None):
                 graph.node('state_%s_%s' % (pid, tid), label = str(t), group=pid, tooltip=tl[t])
                 prevs[p] = tl[t]
-            else:
+            elif t < crash_time:
                 graph.node('state_%s_%s' % (pid, tid), group=pid, shape="point")
 
             if t > crash_time:
