@@ -20,6 +20,8 @@ def parse(f):
     messages = []
     ts = set()
     processes = set()
+    node_crashes = {}
+
     for line in f:
         data = json.loads(line)
 
@@ -36,6 +38,14 @@ def parse(f):
             processes.add(data['dst'])
             ts.add(tuple(data['sent']))
             ts.add(tuple(data['recv']))
+        elif data['type'] == 'node_crash':
+            proc = data['process'];
+            t = tuple(data['time'])
+            processes.add(proc)
+            ts.add(t)
+            node_crashes[proc] = t
+        else:
+            print >> sys.stderr, "unrecognised type: %(type)s" % data
 
     graph = graphviz.Digraph()# rankdir="TD", splines="line");
    
@@ -50,17 +60,22 @@ def parse(f):
     prevs = {}
     for t in sorted(ts):
         tid = b32e(t)
-        print >> sys.stderr, (prev_tid, tid)
         for p in processes:
             tl = proc_tls[p]
             pid = b32e(p)
-            if t in tl and tl[t] != prevs.get(p, None):
+            crash_time = node_crashes.get(p, (sys.maxint,))
+            print >> sys.stderr, (prev_tid, tid, crash_time)
+            if t == crash_time:
+                graph.node('state_%s_%s' % (pid, tid), label = 'CRASHED', color='red', shape='box', group=pid)
+            elif t in tl and tl[t] != prevs.get(p, None):
                 graph.node('state_%s_%s' % (pid, tid), label = str(t), group=pid, tooltip=tl[t])
                 prevs[p] = tl[t]
             else:
                 graph.node('state_%s_%s' % (pid, tid), group=pid, shape="point")
 
-            if prev_tid:
+            if t > crash_time:
+                pass
+            elif prev_tid:
                 graph.edge('state_%s_%s' % (pid, prev_tid), 'state_%s_%s' % (pid, tid), weight='2', arrowhead="none", color="gray75")
             else:
                 graph.edge('proc_%s' % (pid,), 'state_%s_%s' % (pid, tid), weight='2', arrowhead="none", color="gray75")

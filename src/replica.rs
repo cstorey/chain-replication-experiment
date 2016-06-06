@@ -88,7 +88,7 @@ impl ReplRole {
         }
     }
     fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
-        trace!("ReplRole: process_downstream_response: {:?}", reply);
+        trace!("ReplModel: process_downstream_response: {:?}", reply);
         let next = match self {
             &mut ReplRole::Forwarder(ref mut f) => {
                 f.process_downstream_response(out, reply);
@@ -138,6 +138,20 @@ impl ReplRole {
             &mut ReplRole::Forwarder(ref mut f) => f.reset(),
             _ => (),
         }
+    }
+
+    fn move_handshaker<T: Clone>(&mut self, view: &ConfigurationView<T>) {
+        let epoch = view.epoch;
+        let it = match self {
+            &mut ReplRole::Forwarder(ref f) => f.to_handshaker(epoch),
+            &mut ReplRole::Terminus(ref t) => t.to_handshaker(epoch),
+            &mut ReplRole::Handshaking(ref h) => h.to_handshaker(epoch),
+        };
+        *self = ReplRole::Handshaking(it);
+    }
+
+    fn move_terminus(&mut self) {
+        *self = ReplRole::Terminus(Terminus::new());
     }
 }
 
@@ -243,6 +257,9 @@ impl Forwarder {
     fn reset(&mut self) {
         self.last_prepared_downstream = None
     }
+    fn to_handshaker(&self, epoch: Epoch) -> Handshaker {
+        Handshaker::new(epoch, self.pending_operations.clone())
+    }
 }
 
 impl Terminus {
@@ -284,14 +301,18 @@ impl Terminus {
         }
         changed
     }
+
+    fn to_handshaker(&self, epoch: Epoch) -> Handshaker {
+        Handshaker::new(epoch, HashMap::new())
+    }
 }
 
 impl Handshaker {
-    fn new(epoch: Epoch) -> Handshaker {
+    fn new(epoch: Epoch, pending: HashMap<Seqno, mio::Token>) -> Handshaker {
         Handshaker {
             epoch: epoch,
             is_sent: false,
-            pending_operations: HashMap::new(),
+            pending_operations: pending,
         }
     }
 
@@ -310,8 +331,8 @@ impl Handshaker {
                                                out: &mut O,
                                                reply: &OpResp)
                                                -> Option<ReplRole> {
-        trace!("Forwarder: {:?}", self);
-        trace!("Forwarder: process_downstream_response: {:?}", reply);
+        trace!("Handshaker: {:?}", self);
+        trace!("Handshaker: process_downstream_response: {:?}", reply);
 
         // Maybe the pending_gubbins should be moved up.
         match reply {
@@ -329,10 +350,11 @@ impl Handshaker {
             &OpResp::HelloIWant(ts, last_prepared_downstream) => {
                 info!("{}; Downstream has {:?}", ts, last_prepared_downstream);
                 info!("Handshaking: switched to forwarding from {:?}", self);
-
                 let pending = mem::replace(&mut self.pending_operations, HashMap::new());
                 trace!("Pending operations: {:?}", self);
-                Some(ReplRole::Forwarder(Forwarder::new(pending)))
+                let forwarder = Forwarder::new(pending);
+                info!("Handshaking: switched to {:?}", forwarder);
+                Some(ReplRole::Forwarder(forwarder))
             }
         }
     }
@@ -351,6 +373,10 @@ impl Handshaker {
         } else {
             false
         }
+    }
+
+    fn to_handshaker(&self, epoch: Epoch) -> Handshaker {
+        Handshaker::new(epoch, self.pending_operations.clone())
     }
 }
 
@@ -426,7 +452,7 @@ impl<L: Log> ReplModel<L> {
     }
 
     pub fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
-        trace!("ReplRole: process_downstream_response: {:?}", reply);
+        trace!("ReplModel: process_downstream_response: {:?}", reply);
         self.next.process_downstream_response(out, reply)
     }
 
@@ -490,13 +516,13 @@ impl<L: Log> ReplModel<L> {
         match (is_forwarder, &mut self.next) {
             (true, role) => {
                 info!("Handshaking: switched to greeting from {:?}", role);
-                *role = ReplRole::Handshaking(Handshaker::new(view.epoch));
+                role.move_handshaker(view);
             }
 
             (false, role @ &mut ReplRole::Forwarder(_)) |
             (false, role @ &mut ReplRole::Handshaking(_)) => {
                 info!("Switched to terminating from {:?}", role);
-                *role = ReplRole::Terminus(Terminus::new());
+                role.move_terminus()
             }
             _ => {
                 info!("No change of config");
@@ -904,6 +930,28 @@ pub mod test {
                    produced_messages)
     }
 
+    #[test]
+    fn simulate_tail_crash() {
+        env_logger::init().unwrap_or(());
+
+        let mut sim = NetworkSim::<VecLog>::new(3);
+        let mut produced_messages = Vec::new();
+        sim.run_for(15, "simulate_tail_crash", |t, sim, state| {
+            if t == 2 {
+                let tail = sim.tail_node();
+                sim.crash_node(state, tail)
+            }
+
+            if t < 3 {
+                let m = format!("hello_world at {}", t).into_bytes();
+                produced_messages.push(Buf::from(m.clone()));
+                sim.client_operation(state, m);
+            }
+        });
+        sim.validate_logs();
+        sim.validate_client_responses(3);
+    }
+
     struct OutBufs<'a> {
         node_id: NodeId,
         view: ConfigurationView<NodeId>,
@@ -1018,6 +1066,11 @@ pub mod test {
             }
             trace!("flip after :{:?}", self);
         }
+
+        fn crash_node(&mut self, node_id: NodeId) {
+            let t = self.clock.now();
+            self.tracer.node_crashed(t, &node_id);
+        }
     }
 
     #[derive(Debug)]
@@ -1056,6 +1109,17 @@ pub mod test {
             m.insert("src".to_string(), to_value(&format!("{:?}", src)));
             m.insert("dst".to_string(), to_value(&format!("{:?}", dst)));
             m.insert("data".to_string(), to_value(&data));
+            serde_json::to_writer(&mut self.f, &m).expect("write json");
+            self.f.write_all(b"\n").expect("write nl");
+        }
+
+        fn node_crashed(&mut self, t: Timestamp<u64>, process: &NodeId) {
+            use std::io::Write;
+            let mut m = BTreeMap::new();
+            use serde_json::value::to_value;
+            m.insert("type".to_string(), to_value("node_crash"));
+            m.insert("time".to_string(), to_value(&t));
+            m.insert("process".to_string(), to_value(&format!("{:?}", process)));
             serde_json::to_writer(&mut self.f, &m).expect("write json");
             self.f.write_all(b"\n").expect("write nl");
         }
@@ -1153,6 +1217,7 @@ pub mod test {
         }
 
         fn crash_node(&mut self, state: &mut NetworkState, node_id: NodeId) {
+            state.crash_node(node_id);
             if let Some(old) = self.nodes.remove(&node_id) {
                 info!("Crashing node: {:?}: {:?}", node_id, old);
                 self.epoch = self.epoch.succ();
@@ -1205,6 +1270,9 @@ pub mod test {
                                                      });
 
             debug!("Errors: {:?}", errors);
+            debug!("Ok: {:?}", ok);
+            // We should get some response for all items.
+            assert_eq!(ok.len() + errors.len(), count);
             // assert!(errors.is_empty());
 
             let seqs = ok.into_iter()
@@ -1216,7 +1284,8 @@ pub mod test {
                          })
                          .collect::<Vec<_>>();
 
-            assert_eq!(seqs.len(), count);
+            // For now, we'll assume that we either get okays or errors.
+            // assert_eq!(seqs.len(), count);
             assert!(seqs.iter().zip(seqs.iter().skip(1)).all(|(a, b)| a < b),
                     "is sorted");
         }
