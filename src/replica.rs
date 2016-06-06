@@ -607,7 +607,7 @@ pub mod test {
     use config::ConfigurationView;
     use env_logger;
     use spki_sexp;
-    use std::collections::{BTreeMap, HashMap, VecDeque};
+    use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
     use mio::Token;
     use hybrid_clocks::{Clock, ManualClock, Timestamp, WallT};
     use std::mem;
@@ -1237,31 +1237,51 @@ pub mod test {
             state.enqueue(self.client_id, tail, cmd);
         }
 
+        fn unexpected_responses(&self) -> Vec<&ReplCommand> {
+            self.client_buf
+                .iter()
+                .filter_map(|m| {
+                    match m {
+                        &ReplCommand::Response(_, _) |
+                        &ReplCommand::ConsumerMsg(_, _) => None,
+                        other => Some(other),
+                    }
+                })
+                .collect()
+        }
+
+        fn client_responses<'a>(&'a self) -> Vec<&'a OpResp> {
+            self.client_buf
+                .iter()
+                .filter_map(|m| {
+                    match m {
+                        &ReplCommand::Response(_, ref m) => Some(m),
+                        _ => None,
+                    }
+                })
+                .collect()
+        }
+
+        fn acked_seqnos(&self) -> Vec<Seqno> {
+            self.client_responses()
+                .into_iter()
+                .filter_map(|m| {
+                    match m {
+                        &OpResp::Ok(_, ref seq, _) => Some(seq),
+                        _ => None,
+                    }
+                })
+                .cloned()
+                .collect()
+        }
+
         fn validate_client_responses(&self, count: usize) {
             debug!("Client responses: {:?}", self.client_buf);
 
-            assert_eq!(self.client_buf
-                           .iter()
-                           .filter_map(|m| {
-                               match m {
-                                   &ReplCommand::Response(_, _) |
-                                   &ReplCommand::ConsumerMsg(_, _) => None,
-                                   other => Some(other),
-                               }
-                           })
-                           .collect::<Vec<&ReplCommand>>(),
-                       Vec::<&ReplCommand>::new());
+            assert_eq!(self.unexpected_responses(), Vec::<&ReplCommand>::new());
 
-            let (ok, errors): (Vec<_>, Vec<_>) = self.client_buf
-                                                     .iter()
-                                                     .filter_map(|m| {
-                                                         match m {
-                                                             &ReplCommand::Response(_, ref m) => {
-                                                                 Some(m)
-                                                             }
-                                                             _ => None,
-                                                         }
-                                                     })
+            let (ok, errors): (Vec<_>, Vec<_>) = self.client_responses()
+                                                     .into_iter()
                                                      .partition(|&m| {
                                                          match m {
                                                              &OpResp::Ok(_, _, _) => true,
@@ -1275,14 +1295,7 @@ pub mod test {
             assert_eq!(ok.len() + errors.len(), count);
             // assert!(errors.is_empty());
 
-            let seqs = ok.into_iter()
-                         .filter_map(|m| {
-                             match m {
-                                 &OpResp::Ok(_, ref seq, _) => Some(seq),
-                                 _ => None,
-                             }
-                         })
-                         .collect::<Vec<_>>();
+            let seqs = self.acked_seqnos();
 
             // For now, we'll assume that we either get okays or errors.
             // assert_eq!(seqs.len(), count);
@@ -1317,6 +1330,14 @@ pub mod test {
                            hash(log_b));
                     assert_eq!(log_a, log_b);
                 }
+            }
+
+            let acked_seqnos = self.acked_seqnos().into_iter().collect::<HashSet<Seqno>>();
+            for (n, log) in logs_by_node.iter() {
+                let log_seqnos = log.keys().cloned().collect::<HashSet<Seqno>>();
+                let diff = acked_seqnos.difference(&log_seqnos).cloned().collect::<Vec<Seqno>>();
+                debug!("Acked but not in log for {:?}: {:?}", n, diff);
+                assert_eq!(diff, vec![]);
             }
         }
 
