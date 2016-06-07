@@ -53,7 +53,7 @@ fn simulate_three_node_system_vec() {
     let mut sim = NetworkSim::<VecLog>::new(3);
     sim.run_for(10, "simulate_three_node_system_vec", |t, sim, state| {
         if t == 0 {
-            sim.client_operation(state, b"hello_world".to_vec());
+            sim.client_operation(state, b"hello_world".to_vec().into());
         }
     });
     sim.validate_client_responses(1);
@@ -68,7 +68,8 @@ fn simulate_three_node_system_streaming_vec() {
                 "simulate_three_node_system_streaming_vec",
                 |t, sim, state| {
                     if t < 3 {
-                        sim.client_operation(state, format!("hello_world at {}", t).into_bytes())
+                        sim.client_operation(state,
+                                             format!("hello_world at {}", t).into_bytes().into())
                     }
                 });
     sim.validate_logs();
@@ -87,8 +88,8 @@ fn simulate_three_node_system_with_consumer() {
                         sim.consume_from(state, Seqno::zero())
                     }
                     if t < 3 {
-                        let m = format!("hello_world at {}", t).into_bytes();
-                        produced_messages.push(Buf::from(m.clone()));
+                        let m = Buf::from(format!("hello_world at {}", t).into_bytes());
+                        produced_messages.push(m.clone());
                         sim.client_operation(state, m);
                     }
                 });
@@ -113,8 +114,8 @@ fn simulate_tail_crash() {
         }
 
         if t < 3 {
-            let m = format!("hello_world at {}", t).into_bytes();
-            produced_messages.push(Buf::from(m.clone()));
+            let m = Buf::from(format!("hello_world at {}", t).into_bytes());
+            produced_messages.push(m.clone());
             sim.client_operation(state, m);
         }
     });
@@ -380,7 +381,7 @@ impl<L: TestLog> NetworkSim<L> {
         }
     }
 
-    fn client_operation(&self, state: &mut NetworkState, val: Vec<u8>) {
+    fn client_operation(&self, state: &mut NetworkState, val: Buf) {
         let head = self.head_node();
         let cmd = ReplCommand::ClientOperation(val);
         state.enqueue(self.client_id, head, cmd);

@@ -36,7 +36,7 @@ enum TraceEvent<M> {
 
 #[derive(Debug,Eq,PartialEq,Clone, Serialize, Deserialize)]
 enum ReplCommand {
-    ClientOperation(Vec<u8>),
+    ClientOperation(Buf),
     ConsumeFrom(Seqno),
     Response(OpResp),
     Forward(ReplicationMessage),
