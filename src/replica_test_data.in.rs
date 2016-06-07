@@ -34,7 +34,7 @@ enum TraceEvent<M> {
     NodeCrashed(NodeCrashed),
 }
 
-#[derive(Debug,Eq,PartialEq,Clone, Serialize, Deserialize)]
+#[derive(Debug,Eq,PartialEq, Hash, Clone, Serialize, Deserialize)]
 enum ReplCommand {
     ClientOperation(Buf),
     ConsumeFrom(Seqno),

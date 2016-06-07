@@ -1,4 +1,3 @@
-
 use vastatrix::data::{Buf, OpResp, PeerMsg, ReplicationMessage, Seqno};
 use vastatrix::config::Epoch;
 use vastatrix::replica::{Log, Outputs, ReplModel};
@@ -10,7 +9,10 @@ use hybrid_clocks::{Clock, ManualClock, Timestamp, WallT};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::fs::File;
+use std::io::Write;
 use serde_json;
+
+use petgraph::Graph;
 
 #[cfg(feature = "serde_macros")]
 include!("replica_test_data.in.rs");
@@ -360,9 +362,85 @@ impl<L: TestLog> NetworkSim<L> {
 
         }
         state.tracer.persist_to(&path);
+        debug!("messages: {:#?}", state.tracer.messages());
         assert!(state.is_quiescent());
 
-        debug!("messages: {:#?}", state.tracer.messages());
+        let tracer = state.tracer;
+
+        Self::infer_causality(tracer.messages());
+    }
+
+    fn infer_causality(messages: Vec<&MessageRecv<ReplCommand>>) {
+        let mut g = Graph::new();
+        let mut nodes = HashMap::new();
+
+        for (x, y) in messages.iter()
+                              .enumerate()
+                              .flat_map(|(yi, y)| messages[..yi].iter().map(move |x| (x, y)))
+                              .filter(|&(ref x, ref y)| x.sent < y.recv) {
+            debug!("Compare: {:?}", x);
+            debug!("   with: {:?}", y);
+            let causedp = if x.dst == y.src {
+                Self::peer_message_causal(&x.data, &y.data)
+            } else {
+                Self::self_message_causal(&x.data, &y.data)
+            };
+
+            let xn = *nodes.entry(*x).or_insert_with(|| g.add_node(format!("{:#?}", x)));
+            let yn = *nodes.entry(*y).or_insert_with(|| g.add_node(format!("{:#?}", y)));
+            debug!("causedp: {:?}; {:?}->{:?}", causedp, xn, yn);
+            if causedp {
+                g.update_edge(xn, yn, 1usize);
+            }
+        }
+        let mut of = File::create("target/causality.dot").expect("file create");
+
+        writeln!(&mut of, "{}", ::petgraph::dot::Dot::new(&g)).expect("writeln!");
+    }
+
+    fn peer_message_causal(x: &ReplCommand, y: &ReplCommand) -> bool {
+        match (x, y) {
+            (&ReplCommand::ClientOperation(ref data0),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(_, ref data1), .. })) => {
+                data0 == data1
+            }
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) |
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Response(OpResp::Ok(_, s1, _))) |
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Response(OpResp::Err(_, s1, _))) |
+            (&ReplCommand::Response(OpResp::Err(_, s0, _)),
+             &ReplCommand::Response(OpResp::Err(_, s1, _))) |
+            (&ReplCommand::Response(OpResp::Ok(_, s0, _)),
+             &ReplCommand::Response(OpResp::Ok(_, s1, _))) => s0 == s1,
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::HelloDownstream, epoch: _, .. }),
+                 &ReplCommand::Response(OpResp::HelloIWant(_, _)))
+                => true,
+            (&ReplCommand::Response(OpResp::HelloIWant(_, s0)),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) => {
+                s0 <= s1
+            }
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s0), .. }),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s1), .. })) => {
+                s0 >= s1
+            }
+            (_, _) => false,
+        }
+    }
+
+    fn self_message_causal(x: &ReplCommand, y: &ReplCommand) -> bool {
+        match (x, y) {
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s1), .. })) => {
+                s0 <= s1
+            }
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) => {
+                s0.succ() == s1
+            }
+            (_, _) => false,
+        }
     }
 
     fn tail_node(&self) -> NodeId {

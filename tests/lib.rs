@@ -10,6 +10,7 @@ extern crate serde;
 extern crate serde_json;
 extern crate spki_sexp;
 extern crate hybrid_clocks;
+extern crate petgraph;
 
 mod replica;
 mod replication_log;

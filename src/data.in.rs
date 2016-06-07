@@ -20,7 +20,7 @@ pub enum Operation {
     Get
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum OpResp {
     Ok(Epoch, Seqno, Option<Buf>),
     HelloIWant(Timestamp<WallT>, Seqno),
@@ -102,13 +102,13 @@ pub struct NodeViewConfig {
     pub consumer_addr: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PeerMsg {
     HelloDownstream,
     Prepare (Seqno, Buf),
     CommitTo (Seqno),
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ReplicationMessage {
     pub epoch: Epoch,
     pub ts: Timestamp<WallT>,
