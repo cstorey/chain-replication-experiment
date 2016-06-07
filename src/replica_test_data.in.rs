@@ -2,10 +2,10 @@ use serde::bytes::ByteBuf;
 use serde::{de,ser};
 
 #[derive(Debug, Copy, Clone,Hash, Eq,PartialEq,Ord,PartialOrd, Serialize, Deserialize)]
-struct NodeId(usize);
-impl NodeId {
-    fn token(&self) -> Token {
-        Token(self.0)
+pub struct NodeId(usize);
+impl From<usize> for NodeId {
+    fn from(id: usize) -> NodeId {
+        NodeId(id)
     }
 }
 
@@ -31,7 +31,7 @@ struct NodeCrashed {
 }
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
-pub enum TraceEvent {
+enum TraceEvent {
     ProcessState(ProcessState),   
     MessageRecv(MessageRecv),   
     NodeCrashed(NodeCrashed),   

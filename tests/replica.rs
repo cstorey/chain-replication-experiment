@@ -9,7 +9,6 @@ use vastatrix::config::ConfigurationView;
 use env_logger;
 use spki_sexp;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use mio::Token;
 use hybrid_clocks::{Clock, ManualClock, Timestamp, WallT};
 use std::mem;
 use std::iter;
@@ -21,10 +20,10 @@ use time;
 
 #[derive(Debug)]
 pub enum OutMessage {
-    Response(Token, OpResp),
+    Response(NodeId, OpResp),
     Forward(ReplicationMessage),
     LogCommitted(Seqno),
-    ConsumerMessage(Token, Seqno, Buf),
+    ConsumerMessage(NodeId, Seqno, Buf),
 }
 
 #[derive(Debug)]
@@ -43,8 +42,10 @@ impl Outs {
 }
 
 impl Outputs for Outs {
-    fn respond_to(&mut self, token: Token, resp: &OpResp) {
-        self.0.push_back(OutMessage::Response(token, resp.clone()))
+    type Dest = NodeId;
+
+    fn respond_to(&mut self, dest: Self::Dest, resp: &OpResp) {
+        self.0.push_back(OutMessage::Response(dest, resp.clone()))
     }
     fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
         self.0.push_back(OutMessage::Forward(ReplicationMessage {
@@ -53,16 +54,16 @@ impl Outputs for Outs {
             msg: msg,
         }))
     }
-    fn consumer_message(&mut self, token: Token, seqno: Seqno, msg: Buf) {
-        self.0.push_back(OutMessage::ConsumerMessage(token, seqno, msg))
+    fn consumer_message(&mut self, dest: Self::Dest, seqno: Seqno, msg: Buf) {
+        self.0.push_back(OutMessage::ConsumerMessage(dest, seqno, msg))
     }
 }
 
 #[derive(Debug,Eq,PartialEq,Clone)]
 enum ReplCommand {
-    ClientOperation(Token, Vec<u8>),
-    ConsumeFrom(Token, Seqno),
-    Response(Token, OpResp),
+    ClientOperation(NodeId, Vec<u8>),
+    ConsumeFrom(NodeId, Seqno),
+    Response(NodeId, OpResp),
     Forward(ReplicationMessage),
     ConsumerMsg(Seqno, Buf),
 }
@@ -76,7 +77,7 @@ struct FakeReplica {
     prepared: Option<Seqno>,
     committed: Option<Seqno>,
     responded: Option<Seqno>,
-    outstanding: HashMap<Token, isize>,
+    outstanding: HashMap<NodeId, isize>,
     log_committed: Option<Seqno>,
 }
 
@@ -98,7 +99,7 @@ impl Arbitrary for ReplCommand {
         let case = u64::arbitrary(g) % 1;
         let res = match case {
             0 => {
-                ReplCommand::ClientOperation(Token(Arbitrary::arbitrary(g)),
+                ReplCommand::ClientOperation(NodeId(Arbitrary::arbitrary(g)),
                                              Arbitrary::arbitrary(g))
             }
             _ => unimplemented!(),
@@ -108,9 +109,9 @@ impl Arbitrary for ReplCommand {
     fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
         match self {
             &ReplCommand::ClientOperation(ref token, ref op) => {
-                Box::new((token.as_usize(), op.clone())
+                Box::new((token.0, op.clone())
                              .shrink()
-                             .map(|(t, op)| ReplCommand::ClientOperation(Token(t), op)))
+                             .map(|(t, op)| ReplCommand::ClientOperation(NodeId(t), op)))
             }
             _ => unimplemented!(),
         }
@@ -124,7 +125,7 @@ fn precondition(_model: &FakeReplica, cmd: &ReplCommand) -> bool {
     }
 }
 
-fn postcondition<L: TestLog>(_actual: &ReplModel<L, NodeId>,
+fn postcondition<L: TestLog>(_actual: &ReplModel<L, NodeId, NodeId>,
                              model: &FakeReplica,
                              cmd: &ReplCommand,
                              observed: &Outs)
@@ -206,11 +207,11 @@ impl FakeReplica {
     }
 }
 
-fn apply_cmd<L: TestLog, O: Outputs>(actual: &mut ReplModel<L, NodeId>,
-                                     cmd: &ReplCommand,
-                                     token: Token,
-                                     outputs: &mut O)
-                                     -> () {
+fn apply_cmd<L: TestLog, O: Outputs<Dest = NodeId>>(actual: &mut ReplModel<L, NodeId, NodeId>,
+                                                    cmd: &ReplCommand,
+                                                    token: NodeId,
+                                                    outputs: &mut O)
+                                                    -> () {
     match cmd {
         &ReplCommand::ClientOperation(ref token, ref op) => {
             actual.process_client(outputs, *token, &op)
@@ -366,9 +367,10 @@ impl<'a> OutBufs<'a> {
 }
 
 impl<'a> Outputs for OutBufs<'a> {
-    fn respond_to(&mut self, token: Token, resp: &OpResp) {
-        let cmd = ReplCommand::Response(token, resp.clone());
-        self.enqueue(NodeId(token.as_usize()), cmd);
+    type Dest = NodeId;
+    fn respond_to(&mut self, dest: NodeId, resp: &OpResp) {
+        let cmd = ReplCommand::Response(dest, resp.clone());
+        self.enqueue(dest, cmd);
     }
 
     fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
@@ -389,15 +391,14 @@ impl<'a> Outputs for OutBufs<'a> {
         }
     }
 
-    fn consumer_message(&mut self, token: Token, seqno: Seqno, msg: Buf) {
+    fn consumer_message(&mut self, dest: NodeId, seqno: Seqno, msg: Buf) {
         let &mut OutBufs { node_id, .. } = self;
-        self.enqueue(NodeId(token.as_usize()),
-                     ReplCommand::ConsumerMsg(seqno, msg))
+        self.enqueue(dest, ReplCommand::ConsumerMsg(seqno, msg))
     }
 }
 
 struct NetworkSim<L> {
-    nodes: BTreeMap<NodeId, ReplModel<L, NodeId>>,
+    nodes: BTreeMap<NodeId, ReplModel<L, NodeId, NodeId>>,
     node_count: usize,
     epoch: Epoch,
     client_id: NodeId,
@@ -632,13 +633,13 @@ impl<L: TestLog> NetworkSim<L> {
 
     fn client_operation(&self, state: &mut NetworkState, val: Vec<u8>) {
         let head = self.head_node();
-        let cmd = ReplCommand::ClientOperation(self.client_id.token(), val);
+        let cmd = ReplCommand::ClientOperation(self.client_id, val);
         state.enqueue(self.client_id, head, cmd);
     }
 
     fn consume_from(&self, state: &mut NetworkState, seqno: Seqno) {
         let tail = self.tail_node();
-        let cmd = ReplCommand::ConsumeFrom(self.client_id.token(), seqno);
+        let cmd = ReplCommand::ConsumeFrom(self.client_id, seqno);
 
         state.enqueue(self.client_id, tail, cmd);
     }
@@ -787,7 +788,7 @@ impl<L: TestLog> NetworkSim<L> {
                     };
 
                     debug!("Feed node {:?} with {:?}", dest, input);
-                    apply_cmd(n, &input, src.token(), &mut output);
+                    apply_cmd(n, &input, src, &mut output);
 
                 } else {
                     warn!("Dropping message for node: {:?}: {:?}", dest, input);

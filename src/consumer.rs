@@ -48,7 +48,11 @@ impl Consumer {
         Ok(())
     }
 
-    pub fn process<L: Log, O: Outputs>(&mut self, out: &mut O, token: mio::Token, log: &L) -> bool {
+    pub fn process<L: Log, O: Outputs<Dest = D>, D: Clone>(&mut self,
+                                                           out: &mut O,
+                                                           token: O::Dest,
+                                                           log: &L)
+                                                           -> bool {
         let mut changed = false;
         let next = self.low_water_mark;
         let committed = log.read_committed();
@@ -62,7 +66,7 @@ impl Consumer {
                        i,
                        op,
                        self.low_water_mark);
-                out.consumer_message(token, i, op.into());
+                out.consumer_message(token.clone(), i, op.into());
                 self.sent = Some(i);
                 self.low_water_mark = Some(i.succ());
                 changed = true

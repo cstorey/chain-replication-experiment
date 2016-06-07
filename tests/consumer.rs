@@ -2,7 +2,7 @@
 use vastatrix::consumer::Consumer;
 use vastatrix::data::Seqno;
 use vastatrix::replica::Log;
-use replica::{OutMessage, Outs};
+use replica::{NodeId, OutMessage, Outs};
 use replication_log::{LogCommand, TestLog, VecLog, arbitrary_given, hash};
 use mio;
 use quickcheck::{self, Arbitrary, Gen, TestResult};
@@ -119,7 +119,7 @@ fn can_totally_do_the_thing_prop<L: TestLog>(cmds: Commands) -> TestResult {
     let mut actual = Consumer::new();
     let mut log = VecLog::new();
 
-    let token = mio::Token(0);
+    let token = NodeId::from(0usize);
     let mut observed = Outs::new();
 
     let mut min_seq = None;

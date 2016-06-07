@@ -69,7 +69,7 @@ pub enum ChainReplMsg {
 struct ChainReplEvents<'a> {
     changes: &'a mut VecDeque<ChainReplMsg>,
     clock: &'a mut Clock<Wall>,
-    model: &'a mut ReplProxy<RocksdbLog, NodeViewConfig>,
+    model: &'a mut ReplProxy<RocksdbLog, NodeViewConfig, mio::Token>,
 }
 
 impl<'a> ListenerEvents for ChainReplEvents<'a> {
@@ -123,14 +123,14 @@ pub struct ChainRepl {
     node_config: NodeViewConfig,
     new_view: Option<ConfigurationView<NodeViewConfig>>,
     queue: VecDeque<ChainReplMsg>,
-    model: ReplProxy<RocksdbLog, NodeViewConfig>,
+    model: ReplProxy<RocksdbLog, NodeViewConfig, mio::Token>,
     clock: Clock<Wall>,
 }
 
 const MAX_LISTENERS: usize = 4;
 
 impl ChainRepl {
-    pub fn new(model: ReplProxy<RocksdbLog, NodeViewConfig>) -> ChainRepl {
+    pub fn new(model: ReplProxy<RocksdbLog, NodeViewConfig, mio::Token>) -> ChainRepl {
         ChainRepl {
             listeners: Slab::new_range(0, MAX_LISTENERS),
             connections: Slab::new_range(MAX_LISTENERS, ::std::usize::MAX),
@@ -420,6 +420,8 @@ impl Notifier {
 }
 
 impl replica::Outputs for Notifier {
+    type Dest = mio::Token;
+
     fn respond_to(&mut self, token: mio::Token, resp: &OpResp) {
         trace!("respond_to: {:?} -> {:?}", token, resp);
         self.notify(Notification::RespondTo(token, resp.clone()))

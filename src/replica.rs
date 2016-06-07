@@ -3,6 +3,7 @@ use std::fmt;
 use std::mem;
 use std::thread;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use mio;
 
@@ -13,32 +14,32 @@ use Notifier;
 use hybrid_clocks::{Clock, Timestamp, Wall, WallT};
 
 #[derive(Debug)]
-struct Forwarder<A> {
+struct Forwarder<A, D> {
     last_prepared_downstream: Option<Seqno>,
     last_committed_downstream: Option<Seqno>,
     last_acked_downstream: Option<Seqno>,
-    pending_operations: HashMap<Seqno, mio::Token>,
+    pending_operations: HashMap<Seqno, D>,
     downstream: A,
 }
 
 #[derive(Debug)]
-struct Terminus {
-    consumers: HashMap<mio::Token, Consumer>,
+struct Terminus<D: Hash + Eq> {
+    consumers: HashMap<D, Consumer>,
 }
 
 #[derive(Debug)]
-struct Handshaker<A> {
+struct Handshaker<A, D> {
     epoch: Epoch,
     is_sent: bool,
-    pending_operations: HashMap<Seqno, mio::Token>,
+    pending_operations: HashMap<Seqno, D>,
     downstream: A,
 }
 
 #[derive(Debug)]
-enum ReplRole<A> {
-    Handshaking(Handshaker<A>),
-    Forwarder(Forwarder<A>),
-    Terminus(Terminus),
+enum ReplRole<A, D: Hash + Eq> {
+    Handshaking(Handshaker<A, D>),
+    Forwarder(Forwarder<A, D>),
+    Terminus(Terminus<D>),
 }
 
 pub trait Log: fmt::Debug {
@@ -52,15 +53,16 @@ pub trait Log: fmt::Debug {
 }
 
 pub trait Outputs {
-    fn respond_to(&mut self, mio::Token, &OpResp);
+    /// Internal reference to a connection.
+    type Dest;
+    fn respond_to(&mut self, Self::Dest, &OpResp);
     fn forward_downstream(&mut self, Timestamp<WallT>, Epoch, PeerMsg);
-    fn consumer_message(&mut self, mio::Token, Seqno, Buf);
+    fn consumer_message(&mut self, Self::Dest, Seqno, Buf);
 }
 
-type ReplOp<L, A> = Box<FnMut(&mut ReplModel<L, A>, &mut Notifier) + Send>;
 #[derive(Debug)]
-pub struct ReplModel<L, A> {
-    next: ReplRole<A>,
+pub struct ReplModel<L, A, D: Eq + Hash> {
+    next: ReplRole<A, D>,
     log: L,
     clock: Clock<Wall>,
     current_epoch: Epoch,
@@ -69,13 +71,13 @@ pub struct ReplModel<L, A> {
     is_head: bool,
 }
 
-impl<A: fmt::Debug + Clone> ReplRole<A> {
-    fn process_operation<O: Outputs>(&mut self,
-                                     output: &mut O,
-                                     token: mio::Token,
-                                     epoch: Epoch,
-                                     seqno: Seqno,
-                                     op: &[u8]) {
+impl<A: fmt::Debug + Clone, D: fmt::Debug + Eq + Hash + Clone> ReplRole<A, D> {
+    fn process_operation<O: Outputs<Dest = D>>(&mut self,
+                                               output: &mut O,
+                                               token: O::Dest,
+                                               epoch: Epoch,
+                                               seqno: Seqno,
+                                               op: &[u8]) {
         trace!("role: process_operation: {:?}/{:?}", epoch, seqno);
         match self {
             &mut ReplRole::Forwarder(ref mut f) => {
@@ -89,7 +91,7 @@ impl<A: fmt::Debug + Clone> ReplRole<A> {
             }
         }
     }
-    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
+    fn process_downstream_response<O: Outputs<Dest = D>>(&mut self, out: &mut O, reply: &OpResp) {
         trace!("ReplModel: process_downstream_response: {:?}", reply);
         let next = match self {
             &mut ReplRole::Forwarder(ref mut f) => {
@@ -104,12 +106,12 @@ impl<A: fmt::Debug + Clone> ReplRole<A> {
         }
     }
 
-    fn process_replication<L: Log, O: Outputs>(&mut self,
-                                               clock: &mut Clock<Wall>,
-                                               epoch: Epoch,
-                                               log: &L,
-                                               out: &mut O)
-                                               -> bool {
+    fn process_replication<L: Log, O: Outputs<Dest = D>>(&mut self,
+                                                         clock: &mut Clock<Wall>,
+                                                         epoch: Epoch,
+                                                         log: &L,
+                                                         out: &mut O)
+                                                         -> bool {
         trace!("ReplRole: process_replication");
         match self {
             &mut ReplRole::Forwarder(ref mut f) => f.process_replication(clock, epoch, log, out),
@@ -119,11 +121,11 @@ impl<A: fmt::Debug + Clone> ReplRole<A> {
         }
     }
 
-    pub fn consume_requested<O: Outputs>(&mut self,
-                                         out: &mut O,
-                                         token: mio::Token,
-                                         epoch: Epoch,
-                                         mark: Seqno) {
+    pub fn consume_requested<O: Outputs<Dest = D>>(&mut self,
+                                                   out: &mut O,
+                                                   token: O::Dest,
+                                                   epoch: Epoch,
+                                                   mark: Seqno) {
         match self {
             &mut ReplRole::Terminus(ref mut t) => t.consume_requested(out, token, epoch, mark),
             other => {
@@ -156,8 +158,8 @@ impl<A: fmt::Debug + Clone> ReplRole<A> {
     }
 }
 
-impl<A: fmt::Debug + Clone> Forwarder<A> {
-    fn new(downstream: A, pending: HashMap<Seqno, mio::Token>) -> Forwarder<A> {
+impl<A: fmt::Debug + Clone, D: fmt::Debug + Clone + Eq + Hash> Forwarder<A, D> {
+    fn new(downstream: A, pending: HashMap<Seqno, D>) -> Forwarder<A, D> {
         Forwarder {
             last_prepared_downstream: None,
             last_acked_downstream: None,
@@ -167,17 +169,17 @@ impl<A: fmt::Debug + Clone> Forwarder<A> {
         }
     }
 
-    fn process_operation<O: Outputs>(&mut self,
-                                     _output: &mut O,
-                                     token: mio::Token,
-                                     _epoch: Epoch,
-                                     seqno: Seqno,
-                                     _op: &[u8]) {
+    fn process_operation<O: Outputs<Dest = D>>(&mut self,
+                                               _output: &mut O,
+                                               token: O::Dest,
+                                               _epoch: Epoch,
+                                               seqno: Seqno,
+                                               _op: &[u8]) {
         trace!("Forwarder: process_operation: {:?}/{:?}", _epoch, seqno);
         self.pending_operations.insert(seqno, token);
     }
 
-    fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
+    fn process_downstream_response<O: Outputs<Dest = D>>(&mut self, out: &mut O, reply: &OpResp) {
         trace!("Forwarder: {:?}", self);
         trace!("Forwarder: process_downstream_response: {:?}", reply);
         match reply {
@@ -201,12 +203,12 @@ impl<A: fmt::Debug + Clone> Forwarder<A> {
         }
     }
 
-    fn process_replication<L: Log, O: Outputs>(&mut self,
-                                               clock: &mut Clock<Wall>,
-                                               epoch: Epoch,
-                                               log: &L,
-                                               out: &mut O)
-                                               -> bool {
+    fn process_replication<L: Log, O: Outputs<Dest = D>>(&mut self,
+                                                         clock: &mut Clock<Wall>,
+                                                         epoch: Epoch,
+                                                         log: &L,
+                                                         out: &mut O)
+                                                         -> bool {
         debug!("pre  Repl: Ours: {:?}; downstream prepared: {:?}; committed: {:?}; acked: {:?}",
                log.seqno(),
                self.last_prepared_downstream,
@@ -259,30 +261,30 @@ impl<A: fmt::Debug + Clone> Forwarder<A> {
     fn reset(&mut self) {
         self.last_prepared_downstream = None
     }
-    fn to_handshaker(&self, epoch: Epoch, downstream: A) -> Handshaker<A> {
+    fn to_handshaker(&self, epoch: Epoch, downstream: A) -> Handshaker<A, D> {
         Handshaker::new(epoch, downstream, self.pending_operations.clone())
     }
 }
 
-impl Terminus {
-    fn new() -> Terminus {
+impl<D: fmt::Debug + Clone + Eq + Hash> Terminus<D> {
+    fn new() -> Terminus<D> {
         Terminus { consumers: HashMap::new() }
     }
 
-    fn process_operation<O: Outputs>(&mut self,
-                                     output: &mut O,
-                                     token: mio::Token,
-                                     epoch: Epoch,
-                                     seqno: Seqno,
-                                     op: &[u8]) {
+    fn process_operation<O: Outputs<Dest = D>>(&mut self,
+                                               output: &mut O,
+                                               token: O::Dest,
+                                               epoch: Epoch,
+                                               seqno: Seqno,
+                                               op: &[u8]) {
         trace!("Terminus: process_operation: {:?}/{:?}", epoch, seqno);
         output.respond_to(token, &OpResp::Ok(epoch, seqno, None))
     }
-    pub fn consume_requested<O: Outputs>(&mut self,
-                                         _out: &mut O,
-                                         token: mio::Token,
-                                         epoch: Epoch,
-                                         mark: Seqno) {
+    pub fn consume_requested<O: Outputs<Dest = D>>(&mut self,
+                                                   _out: &mut O,
+                                                   token: O::Dest,
+                                                   epoch: Epoch,
+                                                   mark: Seqno) {
         debug!("Terminus: consume_requested: {:?} from {:?}@{:?}",
                token,
                mark,
@@ -291,26 +293,29 @@ impl Terminus {
         consumer.consume_requested(mark).expect("consume");
     }
 
-    fn process_replication<L: Log, O: Outputs>(&mut self,
-                                               _clock: &mut Clock<Wall>,
-                                               _epoch: Epoch,
-                                               log: &L,
-                                               out: &mut O)
-                                               -> bool {
+    fn process_replication<L: Log, O: Outputs<Dest = D>>(&mut self,
+                                                         _clock: &mut Clock<Wall>,
+                                                         _epoch: Epoch,
+                                                         log: &L,
+                                                         out: &mut O)
+                                                         -> bool {
         let mut changed = false;
-        for (&token, cons) in self.consumers.iter_mut() {
-            changed |= cons.process(out, token, log)
+        for (token, cons) in self.consumers.iter_mut() {
+            changed |= cons.process(out, token.clone(), log)
         }
         changed
     }
 
-    fn to_handshaker<A: fmt::Debug + Clone>(&self, epoch: Epoch, downstream: A) -> Handshaker<A> {
+    fn to_handshaker<A: fmt::Debug + Clone>(&self,
+                                            epoch: Epoch,
+                                            downstream: A)
+                                            -> Handshaker<A, D> {
         Handshaker::new(epoch, downstream, HashMap::new())
     }
 }
 
-impl<A: fmt::Debug + Clone> Handshaker<A> {
-    fn new(epoch: Epoch, downstream: A, pending: HashMap<Seqno, mio::Token>) -> Handshaker<A> {
+impl<A: fmt::Debug + Clone, D: Eq + Hash + fmt::Debug + Clone> Handshaker<A, D> {
+    fn new(epoch: Epoch, downstream: A, pending: HashMap<Seqno, D>) -> Handshaker<A, D> {
         Handshaker {
             epoch: epoch,
             is_sent: false,
@@ -319,21 +324,21 @@ impl<A: fmt::Debug + Clone> Handshaker<A> {
         }
     }
 
-    fn process_operation<O: Outputs>(&mut self,
-                                     _output: &mut O,
-                                     token: mio::Token,
-                                     _epoch: Epoch,
-                                     seqno: Seqno,
-                                     _op: &[u8]) {
+    fn process_operation<O: Outputs<Dest = D>>(&mut self,
+                                               _output: &mut O,
+                                               token: D,
+                                               _epoch: Epoch,
+                                               seqno: Seqno,
+                                               _op: &[u8]) {
         trace!("Handshaker: process_operation: {:?}/{:?}", _epoch, seqno);
         self.pending_operations.insert(seqno, token);
     }
 
 
-    fn process_downstream_response<O: Outputs>(&mut self,
-                                               out: &mut O,
-                                               reply: &OpResp)
-                                               -> Option<ReplRole<A>> {
+    fn process_downstream_response<O: Outputs<Dest = D>>(&mut self,
+                                                         out: &mut O,
+                                                         reply: &OpResp)
+                                                         -> Option<ReplRole<A, D>> {
         trace!("Handshaker: {:?}", self);
         trace!("Handshaker: process_downstream_response: {:?}", reply);
 
@@ -360,12 +365,12 @@ impl<A: fmt::Debug + Clone> Handshaker<A> {
         }
     }
 
-    fn process_replication<L: Log, O: Outputs>(&mut self,
-                                               clock: &mut Clock<Wall>,
-                                               epoch: Epoch,
-                                               _log: &L,
-                                               out: &mut O)
-                                               -> bool {
+    fn process_replication<L: Log, O: Outputs<Dest = D>>(&mut self,
+                                                         clock: &mut Clock<Wall>,
+                                                         epoch: Epoch,
+                                                         _log: &L,
+                                                         out: &mut O)
+                                                         -> bool {
         // We should probaby remember that we have sent this...
         if !self.is_sent {
             out.forward_downstream(clock.now(), epoch, PeerMsg::HelloDownstream);
@@ -376,16 +381,16 @@ impl<A: fmt::Debug + Clone> Handshaker<A> {
         }
     }
 
-    fn to_handshaker(&self, epoch: Epoch, downstream: A) -> Handshaker<A> {
+    fn to_handshaker(&self, epoch: Epoch, downstream: A) -> Handshaker<A, D> {
         Handshaker::new(epoch, downstream, self.pending_operations.clone())
     }
-    fn to_forwarder(&self) -> Forwarder<A> {
+    fn to_forwarder(&self) -> Forwarder<A, D> {
         Forwarder::new(self.downstream.clone(), self.pending_operations.clone())
     }
 }
 
-impl<L: Log, A: fmt::Debug + Clone> ReplModel<L, A> {
-    pub fn new(log: L) -> ReplModel<L, A> {
+impl<L: Log, A: fmt::Debug + Clone, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, A, D> {
+    pub fn new(log: L) -> ReplModel<L, A, D> {
         ReplModel {
             log: log,
             current_epoch: Default::default(),
@@ -409,7 +414,9 @@ impl<L: Log, A: fmt::Debug + Clone> ReplModel<L, A> {
         self.log.seqno()
     }
 
-    fn run_from(&mut self, rx: Receiver<ReplOp<L, A>>, mut tx: Notifier) {
+    fn run_from(&mut self, rx: Receiver<ReplOp<L, A, D>>, mut tx: Notifier)
+        where Notifier: Outputs<Dest = D>
+    {
         loop {
             let mut cmd = rx.recv().expect("recv model command");
             cmd(self, &mut tx);
@@ -422,19 +429,22 @@ impl<L: Log, A: fmt::Debug + Clone> ReplModel<L, A> {
 
     // If we can avoid coupling the ingest clock to the replicator; we can
     // factor this out into the client proxy handler.
-    pub fn process_client<O: Outputs>(&mut self, output: &mut O, token: mio::Token, op: &[u8]) {
+    pub fn process_client<O: Outputs<Dest = D>>(&mut self,
+                                                output: &mut O,
+                                                token: O::Dest,
+                                                op: &[u8]) {
         let seqno = self.next_seqno();
         let epoch = self.current_epoch;
         assert!(self.is_head);
         self.process_operation(output, token, seqno, epoch, op)
     }
 
-    pub fn process_operation<O: Outputs>(&mut self,
-                                         output: &mut O,
-                                         token: mio::Token,
-                                         seqno: Seqno,
-                                         epoch: Epoch,
-                                         op: &[u8]) {
+    pub fn process_operation<O: Outputs<Dest = D>>(&mut self,
+                                                   output: &mut O,
+                                                   token: O::Dest,
+                                                   seqno: Seqno,
+                                                   epoch: Epoch,
+                                                   op: &[u8]) {
         debug!("process_operation: {:?}/{:?}", epoch, seqno);
 
         if epoch != self.current_epoch {
@@ -454,12 +464,14 @@ impl<L: Log, A: fmt::Debug + Clone> ReplModel<L, A> {
         self.next.process_operation(output, token, epoch, seqno, &op)
     }
 
-    pub fn process_downstream_response<O: Outputs>(&mut self, out: &mut O, reply: &OpResp) {
+    pub fn process_downstream_response<O: Outputs<Dest = D>>(&mut self,
+                                                             out: &mut O,
+                                                             reply: &OpResp) {
         trace!("ReplModel: process_downstream_response: {:?}", reply);
         self.next.process_downstream_response(out, reply)
     }
 
-    pub fn process_replication<O: Outputs>(&mut self, out: &mut O) -> bool {
+    pub fn process_replication<O: Outputs<Dest = D>>(&mut self, out: &mut O) -> bool {
         trace!("process_replication: {:?}", self);
         let mut res = self.next
                           .process_replication(&mut self.clock, self.current_epoch, &self.log, out);
@@ -498,11 +510,11 @@ impl<L: Log, A: fmt::Debug + Clone> ReplModel<L, A> {
         }
     }
 
-    pub fn hello_downstream<O: Outputs>(&mut self,
-                                        out: &mut O,
-                                        token: mio::Token,
-                                        at: Timestamp<WallT>,
-                                        epoch: Epoch) {
+    pub fn hello_downstream<O: Outputs<Dest = D>>(&mut self,
+                                                  out: &mut O,
+                                                  token: O::Dest,
+                                                  at: Timestamp<WallT>,
+                                                  epoch: Epoch) {
         debug!("{}; hello_downstream: {:?}; {:?}", at, token, epoch);
 
         let msg = OpResp::HelloIWant(at, self.log.seqno());
@@ -510,7 +522,10 @@ impl<L: Log, A: fmt::Debug + Clone> ReplModel<L, A> {
         out.respond_to(token, &msg)
     }
 
-    pub fn consume_requested<O: Outputs>(&mut self, out: &mut O, token: mio::Token, mark: Seqno) {
+    pub fn consume_requested<O: Outputs<Dest = D>>(&mut self,
+                                                   out: &mut O,
+                                                   token: O::Dest,
+                                                   mark: Seqno) {
         self.next.consume_requested(out, token, self.current_epoch, mark)
     }
 
@@ -551,13 +566,19 @@ impl<L: Log, A: fmt::Debug + Clone> ReplModel<L, A> {
     }
 }
 
-pub struct ReplProxy<L: Log + Send + 'static, A: Send + 'static> {
+type ReplOp<L, A, D> = Box<FnMut(&mut ReplModel<L, A, D>, &mut Notifier) + Send>;
+
+pub struct ReplProxy<L: Log + Send + 'static, A: Send + 'static, D: Send + 'static + Eq + Hash> {
     _inner_thread: thread::JoinHandle<()>,
-    tx: Sender<ReplOp<L, A>>,
+    tx: Sender<ReplOp<L, A, D>>,
 }
 
-impl<L: Log + Send + 'static, A: Send + 'static + fmt::Debug + Clone> ReplProxy<L, A> {
-    pub fn build(mut inner: ReplModel<L, A>, notifications: Notifier) -> Self {
+impl<L: Log + Send + 'static,
+    A: Send + 'static + fmt::Debug + Clone,
+    D: Send + 'static + Eq + Hash + fmt::Debug + Clone>
+    ReplProxy<L, A, D> where Notifier: Outputs<Dest=D> {
+    pub fn build(mut inner: ReplModel<L, A, D>, notifications: Notifier) -> Self
+     {
         let (tx, rx) = channel();
         let inner_thread = thread::Builder::new()
                                .name("replmodel".to_string())
@@ -569,15 +590,15 @@ impl<L: Log + Send + 'static, A: Send + 'static + fmt::Debug + Clone> ReplProxy<
         }
     }
 
-    fn invoke<F: FnMut(&mut ReplModel<L, A>, &mut Notifier) + Send + 'static>(&mut self, f: F) {
+    fn invoke<F: FnMut(&mut ReplModel<L, A, D>, &mut Notifier) + Send + 'static>(&mut self, f: F) {
         self.tx.send(Box::new(f)).expect("send to inner thread")
     }
 
-    pub fn process_operation(&mut self, token: mio::Token, epoch: Epoch, seqno: Seqno, op: Buf) {
-        self.invoke(move |m, tx| m.process_operation(tx, token, seqno, epoch, &op))
+    pub fn process_operation(&mut self, token: D, epoch: Epoch, seqno: Seqno, op: Buf) {
+        self.invoke(move |m, tx| m.process_operation(tx, token.clone(), seqno, epoch, &op))
     }
-    pub fn client_operation(&mut self, token: mio::Token, op: Buf) {
-        self.invoke(move |m, tx| m.process_client(tx, token, &op))
+    pub fn client_operation(&mut self, token: D, op: Buf) {
+        self.invoke(move |m, tx| m.process_client(tx, token.clone(), &op))
     }
     pub fn commit_observed(&mut self, _epoch: Epoch, seq: Seqno) {
         self.invoke(move |m, _| m.commit_observed(seq))
@@ -588,11 +609,11 @@ impl<L: Log + Send + 'static, A: Send + 'static + fmt::Debug + Clone> ReplProxy<
     pub fn new_configuration(&mut self, view: ConfigurationView<A>) {
         self.invoke(move |m, _| m.reconfigure(&view))
     }
-    pub fn hello_downstream(&mut self, token: mio::Token, at: Timestamp<WallT>, epoch: Epoch) {
-        self.invoke(move |m, tx| m.hello_downstream(tx, token, at, epoch))
+    pub fn hello_downstream(&mut self, token: D, at: Timestamp<WallT>, epoch: Epoch) {
+        self.invoke(move |m, tx| m.hello_downstream(tx, token.clone(), at, epoch))
     }
-    pub fn consume_requested(&mut self, token: mio::Token, mark: Seqno) {
-        self.invoke(move |m, tx| m.consume_requested(tx, token, mark))
+    pub fn consume_requested(&mut self, token: D, mark: Seqno) {
+        self.invoke(move |m, tx| m.consume_requested(tx, token.clone(), mark))
     }
     pub fn reset(&mut self) {
         self.invoke(move |m, _| m.reset())
