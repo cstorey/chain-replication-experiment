@@ -14,12 +14,12 @@ struct ProcessState {
 }
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
-struct MessageRecv {
+struct MessageRecv<M> {
     sent: Timestamp<u64>,
     recv: Timestamp<u64>,
     src: NodeId,
     dst: NodeId,
-    data: String,
+    data: M,
 }
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
 struct NodeCrashed {
@@ -28,8 +28,17 @@ struct NodeCrashed {
 }
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]
-enum TraceEvent {
-    ProcessState(ProcessState),   
-    MessageRecv(MessageRecv),   
-    NodeCrashed(NodeCrashed),   
+enum TraceEvent<M> {
+    ProcessState(ProcessState),
+    MessageRecv(MessageRecv<M>),
+    NodeCrashed(NodeCrashed),
+}
+
+#[derive(Debug,Eq,PartialEq,Clone, Serialize, Deserialize)]
+enum ReplCommand {
+    ClientOperation(Vec<u8>),
+    ConsumeFrom(Seqno),
+    Response(OpResp),
+    Forward(ReplicationMessage),
+    ConsumerMsg(Seqno, Buf),
 }

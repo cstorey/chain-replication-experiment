@@ -87,7 +87,7 @@ def parse(f):
 	src = 'state_%s_%s' % (b32e(m['src']), b32e(tuple(m['sent'])))
 	dst = 'state_%s_%s' % (b32e(m['dst']), b32e(tuple(m['recv'])))
         graph.edge(src, dst, constraint="false",
-	    label=trunc(m['data']), labeltooltip=m['data'], labelURL='#',
+	    label=trunc(str(m['data'])), labeltooltip=str(m['data']), labelURL='#',
 	    headlabel=repr(m['recv']), taillabel=repr(m['sent']))
         
 

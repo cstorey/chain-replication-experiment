@@ -12,14 +12,11 @@ use std::path::{Path, PathBuf};
 use std::fs::File;
 use serde_json;
 
-#[derive(Debug,Eq,PartialEq,Clone)]
-enum ReplCommand {
-    ClientOperation(Vec<u8>),
-    ConsumeFrom(Seqno),
-    Response(OpResp),
-    Forward(ReplicationMessage),
-    ConsumerMsg(Seqno, Buf),
-}
+#[cfg(feature = "serde_macros")]
+include!("replica_test_data.in.rs");
+
+#[cfg(not(feature = "serde_macros"))]
+include!(concat!(env!("OUT_DIR"), "/replica_test_data.rs"));
 
 #[derive(Debug,Eq,PartialEq,Clone)]
 struct Commands(Vec<ReplCommand>);
@@ -208,7 +205,7 @@ impl NetworkState {
         };
         if let Some((src, sent, it)) = queue.pop_front() {
             let recv = self.clock.now();
-            self.tracer.recv(sent, recv, &src, &dest, format!("{:?}", it));
+            self.tracer.recv(sent, recv, &src, &dest, it.clone());
             Some((src, dest, it))
         } else {
             None
@@ -230,15 +227,9 @@ impl NetworkState {
     }
 }
 
-#[cfg(feature = "serde_macros")]
-include!("replica_test_data.in.rs");
-
-#[cfg(not(feature = "serde_macros"))]
-include!(concat!(env!("OUT_DIR"), "/replica_test_data.rs"));
-
 #[derive(Debug)]
 struct Tracer {
-    entries: Vec<TraceEvent>,
+    entries: Vec<TraceEvent<ReplCommand>>,
 }
 
 impl Tracer {
@@ -260,7 +251,7 @@ impl Tracer {
             recv: Timestamp<u64>,
             src: &NodeId,
             dst: &NodeId,
-            data: String) {
+            data: ReplCommand) {
         let m = MessageRecv {
             sent: sent,
             recv: recv,
@@ -283,7 +274,7 @@ impl Tracer {
         serde_json::to_writer(&mut f, &self.entries).expect("write json");
     }
 
-    fn messages(&self) -> Vec<&MessageRecv> {
+    fn messages(&self) -> Vec<&MessageRecv<ReplCommand>> {
         self.entries
             .iter()
             .filter_map(|e| {
