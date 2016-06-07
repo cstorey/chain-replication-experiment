@@ -69,7 +69,7 @@ pub enum ChainReplMsg {
 struct ChainReplEvents<'a> {
     changes: &'a mut VecDeque<ChainReplMsg>,
     clock: &'a mut Clock<Wall>,
-    model: &'a mut ReplProxy<RocksdbLog>,
+    model: &'a mut ReplProxy<RocksdbLog, NodeViewConfig>,
 }
 
 impl<'a> ListenerEvents for ChainReplEvents<'a> {
@@ -123,14 +123,14 @@ pub struct ChainRepl {
     node_config: NodeViewConfig,
     new_view: Option<ConfigurationView<NodeViewConfig>>,
     queue: VecDeque<ChainReplMsg>,
-    model: ReplProxy<RocksdbLog>,
+    model: ReplProxy<RocksdbLog, NodeViewConfig>,
     clock: Clock<Wall>,
 }
 
 const MAX_LISTENERS: usize = 4;
 
 impl ChainRepl {
-    pub fn new(model: ReplProxy<RocksdbLog>) -> ChainRepl {
+    pub fn new(model: ReplProxy<RocksdbLog, NodeViewConfig>) -> ChainRepl {
         ChainRepl {
             listeners: Slab::new_range(0, MAX_LISTENERS),
             connections: Slab::new_range(MAX_LISTENERS, ::std::usize::MAX),

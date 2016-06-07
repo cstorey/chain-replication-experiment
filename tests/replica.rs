@@ -124,7 +124,7 @@ fn precondition(_model: &FakeReplica, cmd: &ReplCommand) -> bool {
     }
 }
 
-fn postcondition<L: TestLog>(_actual: &ReplModel<L>,
+fn postcondition<L: TestLog>(_actual: &ReplModel<L, NodeId>,
                              model: &FakeReplica,
                              cmd: &ReplCommand,
                              observed: &Outs)
@@ -206,7 +206,7 @@ impl FakeReplica {
     }
 }
 
-fn apply_cmd<L: TestLog, O: Outputs>(actual: &mut ReplModel<L>,
+fn apply_cmd<L: TestLog, O: Outputs>(actual: &mut ReplModel<L, NodeId>,
                                      cmd: &ReplCommand,
                                      token: Token,
                                      outputs: &mut O)
@@ -397,7 +397,7 @@ impl<'a> Outputs for OutBufs<'a> {
 }
 
 struct NetworkSim<L> {
-    nodes: BTreeMap<NodeId, ReplModel<L>>,
+    nodes: BTreeMap<NodeId, ReplModel<L, NodeId>>,
     node_count: usize,
     epoch: Epoch,
     client_id: NodeId,
@@ -516,6 +516,18 @@ impl Tracer {
         let mut f = File::create(path).expect("create file");
         serde_json::to_writer(&mut f, &self.entries).expect("write json");
     }
+
+    fn messages(&self) -> Vec<&MessageRecv> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                match e {
+                    &TraceEvent::MessageRecv(ref e) => Some(e),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
 }
 
 impl<L: TestLog> NetworkSim<L> {
@@ -598,6 +610,8 @@ impl<L: TestLog> NetworkSim<L> {
         }
         state.tracer.persist_to(&path);
         assert!(state.is_quiescent());
+
+        debug!("messages: {:#?}", state.tracer.messages());
     }
 
     fn tail_node(&self) -> NodeId {
