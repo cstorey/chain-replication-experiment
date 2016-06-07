@@ -155,12 +155,10 @@ impl Seqno {
         Seqno(BigEndian::read_u64(&key))
     }
 
-    #[cfg(test)]
     pub fn new(seq: u64) -> Seqno {
         Seqno(seq)
     }
 
-    #[cfg(test)]
     pub fn offset(&self) -> u64 {
         self.0 as u64
     }
@@ -196,7 +194,6 @@ impl de::Deserialize for Buf {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use quickcheck::{self, Arbitrary, Gen};
     use super::Seqno;

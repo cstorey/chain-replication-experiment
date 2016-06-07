@@ -19,11 +19,8 @@ extern crate rocksdb;
 extern crate byteorder;
 extern crate hex_slice;
 extern crate hybrid_clocks;
-
-#[cfg(test)]
 extern crate quickcheck;
-#[cfg(test)]
-extern crate env_logger;
+
 #[macro_use]
 extern crate quick_error;
 
@@ -42,12 +39,12 @@ mod slob;
 mod line_conn;
 mod downstream_conn;
 mod listener;
-mod config;
+pub mod config;
 mod event_handler;
-mod data;
-mod replication_log;
-mod replica;
-mod consumer;
+pub mod data;
+pub mod replication_log;
+pub mod replica;
+pub mod consumer;
 
 use line_conn::{LineConn, LineConnEvents, SexpPeer};
 use downstream_conn::Downstream;

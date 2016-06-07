@@ -7,6 +7,9 @@ version = "0.1.0"
 [[bin]]
 name = "chain-repl"
 
+[[test]]
+name = "lib"
+
 [build-dependencies]
 tempfile = "2.1.3"
 env_logger = "0.3.2"
@@ -35,6 +38,7 @@ slab = "0.1.3"
 tempdir = "0.3.4"
 time = "0.1.34"
 rand = "0.3.14"
+quickcheck = "0.2.24"
 
 [dependencies.crexp_client_proto]
 optional = false
@@ -70,7 +74,6 @@ optional = false
 
 [dev-dependencies]
 env_logger = "0.3.2"
-quickcheck = "0.2.24"
 
 [features]
 benches = []
