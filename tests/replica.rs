@@ -14,9 +14,9 @@ use serde_json;
 
 #[derive(Debug,Eq,PartialEq,Clone)]
 enum ReplCommand {
-    ClientOperation(NodeId, Vec<u8>),
-    ConsumeFrom(NodeId, Seqno),
-    Response(NodeId, OpResp),
+    ClientOperation(Vec<u8>),
+    ConsumeFrom(Seqno),
+    Response(OpResp),
     Forward(ReplicationMessage),
     ConsumerMsg(Seqno, Buf),
 }
@@ -26,29 +26,25 @@ struct Commands(Vec<ReplCommand>);
 
 fn apply_cmd<L: TestLog, O: Outputs<Dest = NodeId>>(actual: &mut ReplModel<L, NodeId>,
                                                     cmd: &ReplCommand,
-                                                    token: NodeId,
+                                                    src: NodeId,
                                                     outputs: &mut O)
                                                     -> () {
     match cmd {
-        &ReplCommand::ClientOperation(ref token, ref op) => {
-            actual.process_client(outputs, *token, &op)
-        }
+        &ReplCommand::ClientOperation(ref op) => actual.process_client(outputs, src, &op),
 
         &ReplCommand::Forward(
                 ReplicationMessage { epoch, msg: PeerMsg::Prepare(seq, ref data) , .. }) => {
-                actual.process_operation(outputs, token, seq, epoch, &data);
+                actual.process_operation(outputs, src, seq, epoch, &data);
             }
         &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(seq) , .. }) => {
             actual.commit_observed(seq);
         }
         &ReplCommand::Forward(
                 ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream , .. }) => {
-                actual.hello_downstream(outputs, token, ts, epoch);
+                actual.hello_downstream(outputs, src, ts, epoch);
             }
-        &ReplCommand::Response(_token, ref reply) => {
-            actual.process_downstream_response(outputs, reply)
-        }
-        &ReplCommand::ConsumeFrom(token, seq) => actual.consume_requested(outputs, token, seq),
+        &ReplCommand::Response(ref reply) => actual.process_downstream_response(outputs, reply),
+        &ReplCommand::ConsumeFrom(seq) => actual.consume_requested(outputs, src, seq),
         other => panic!("Unimplemented apply_cmd: {:?}", other),
     };
     actual.process_replication(outputs);
@@ -144,7 +140,7 @@ impl<'a> OutBufs<'a> {
 impl<'a> Outputs for OutBufs<'a> {
     type Dest = NodeId;
     fn respond_to(&mut self, dest: NodeId, resp: &OpResp) {
-        let cmd = ReplCommand::Response(dest, resp.clone());
+        let cmd = ReplCommand::Response(resp.clone());
         self.enqueue(dest, cmd);
     }
 
@@ -395,13 +391,13 @@ impl<L: TestLog> NetworkSim<L> {
 
     fn client_operation(&self, state: &mut NetworkState, val: Vec<u8>) {
         let head = self.head_node();
-        let cmd = ReplCommand::ClientOperation(self.client_id, val);
+        let cmd = ReplCommand::ClientOperation(val);
         state.enqueue(self.client_id, head, cmd);
     }
 
     fn consume_from(&self, state: &mut NetworkState, seqno: Seqno) {
         let tail = self.tail_node();
-        let cmd = ReplCommand::ConsumeFrom(self.client_id, seqno);
+        let cmd = ReplCommand::ConsumeFrom(seqno);
 
         state.enqueue(self.client_id, tail, cmd);
     }
@@ -411,7 +407,7 @@ impl<L: TestLog> NetworkSim<L> {
             .iter()
             .filter_map(|m| {
                 match m {
-                    &ReplCommand::Response(_, _) |
+                    &ReplCommand::Response(_) |
                     &ReplCommand::ConsumerMsg(_, _) => None,
                     other => Some(other),
                 }
@@ -424,7 +420,7 @@ impl<L: TestLog> NetworkSim<L> {
             .iter()
             .filter_map(|m| {
                 match m {
-                    &ReplCommand::Response(_, ref m) => Some(m),
+                    &ReplCommand::Response(ref m) => Some(m),
                     _ => None,
                 }
             })
