@@ -5,9 +5,7 @@ use tempdir::TempDir;
 use data::Seqno;
 use replica::Log;
 use time::PreciseTime;
-use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::{Condvar, Mutex};
 use std::iter;
 
 // Approximate structure of the log.

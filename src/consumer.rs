@@ -6,7 +6,6 @@
 
 use data::Seqno;
 use replica::{Log, Outputs};
-use mio;
 
 quick_error! {
     #[derive(Debug)]

@@ -1,13 +1,10 @@
 
 use vastatrix::data::Seqno;
 use quickcheck::{Arbitrary, Gen, TestResult};
-use std::sync::mpsc::channel;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::fmt;
 use vastatrix::replication_log::RocksdbLog;
 use vastatrix::replica::Log;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::hash::{Hash, Hasher, SipHasher};
 use std::iter;
 use std::rc::Rc;
@@ -178,14 +175,6 @@ pub struct LogCommands(Vec<LogCommand>);
 enum CommandReturn {
     Done,
     Read(Vec<Vec<u8>>),
-}
-
-impl LogCommands {
-    pub fn apply_to<L: Log>(&self, model: &mut L) {
-        for cmd in self.0.iter() {
-            cmd.apply_to(model);
-        }
-    }
 }
 
 fn next_state(model: &mut VecLog, cmd: &LogCommand) -> () {

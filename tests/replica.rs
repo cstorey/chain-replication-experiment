@@ -1,28 +1,22 @@
 
-use vastatrix::data::{Buf, OpResp, Operation, PeerMsg, ReplicationMessage, Seqno};
+use vastatrix::data::{Buf, OpResp, PeerMsg, ReplicationMessage, Seqno};
 use vastatrix::config::Epoch;
-use quickcheck::{self, Arbitrary, Gen, TestResult};
+use quickcheck::{Arbitrary, Gen};
 use vastatrix::replica::{Log, Outputs, ReplModel};
-use std::sync::mpsc::channel;
 use replication_log::{TestLog, VecLog, hash};
 use vastatrix::config::ConfigurationView;
 use env_logger;
-use spki_sexp;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use hybrid_clocks::{Clock, ManualClock, Timestamp, WallT};
 use std::mem;
-use std::iter;
-use std::sync::{Arc, Mutex};
 use std::path::{Path, PathBuf};
 use std::fs::File;
 use serde_json;
-use time;
 
 #[derive(Debug)]
 pub enum OutMessage {
     Response(NodeId, OpResp),
     Forward(NodeId, ReplicationMessage),
-    LogCommitted(Seqno),
     ConsumerMessage(NodeId, Seqno, Buf),
 }
 
@@ -130,46 +124,6 @@ fn precondition(_model: &FakeReplica, cmd: &ReplCommand) -> bool {
     }
 }
 
-fn postcondition<L: TestLog>(_actual: &ReplModel<L, NodeId>,
-                             model: &FakeReplica,
-                             cmd: &ReplCommand,
-                             observed: &Outs)
-                             -> bool {
-    debug!("observed: {:?}; model:{:?}", observed, model);
-    for msg in observed.0.iter() {
-        match msg {
-            &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _), .. }) => {
-                    assert_eq!(epoch, model.epoch);
-                    assert!(Some(seqno) > model.prepared);
-                }
-            &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. }) => {
-                    assert_eq!(epoch, model.epoch);
-                    assert!(Some(seqno) <= model.prepared);
-                    assert!(Some(seqno) <= model.log_committed);
-                }
-            &OutMessage::Forward(_dest, ReplicationMessage { epoch, .. }) => {
-                assert_eq!(epoch, model.epoch);
-            }
-            &OutMessage::Response(token, OpResp::Ok(epoch, seqno, _)) |
-            &OutMessage::Response(token, OpResp::Err(epoch, seqno, _)) => {
-                assert!(model.outstanding.contains_key(&token));
-                assert_eq!(epoch, model.epoch);
-                assert!(model.responded < Some(seqno));
-            }
-            &OutMessage::Response(token, _) => {
-                assert!(model.outstanding.contains_key(&token));
-            }
-            &OutMessage::LogCommitted(_seqno) => {}
-            &OutMessage::ConsumerMessage(_, _, _) => {}
-        };
-    }
-
-    match cmd {
-        &ReplCommand::ClientOperation(ref _token, ref _s) => true,
-        _ => unimplemented!(),
-    }
-}
-
 impl FakeReplica {
     fn next_state(&mut self, cmd: &ReplCommand) -> () {
         match cmd {
@@ -177,37 +131,6 @@ impl FakeReplica {
                 *self.outstanding.entry(*token).or_insert(0) += 1;
             }
             _ => unimplemented!(),
-        }
-    }
-
-    fn update_from_outputs(&mut self, observed: &Outs) -> () {
-        for msg in observed.0.iter() {
-            match msg {
-                &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _), .. }) => {
-                        self.epoch = epoch;
-                        self.prepared = Some(seqno);
-                    }
-                &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. }) => {
-                        self.epoch = epoch;
-                        self.committed = Some(seqno);
-                    }
-                &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: _, .. }) => {
-                    self.epoch = epoch;
-                }
-                &OutMessage::Response(token, OpResp::Ok(epoch, seqno, _)) |
-                &OutMessage::Response(token, OpResp::Err(epoch, seqno, _)) => {
-                    *self.outstanding.entry(token).or_insert(0) -= 1;
-                    self.epoch = epoch;
-                    self.responded = Some(seqno);
-                }
-                &OutMessage::Response(token, _) => {
-                    *self.outstanding.entry(token).or_insert(0) -= 1;
-                }
-                &OutMessage::LogCommitted(seqno) => {
-                    self.log_committed = Some(seqno);
-                }
-                &OutMessage::ConsumerMessage(_, _, _) => {}
-            };
         }
     }
 }
@@ -226,14 +149,14 @@ fn apply_cmd<L: TestLog, O: Outputs<Dest = NodeId>>(actual: &mut ReplModel<L, No
                 ReplicationMessage { epoch, msg: PeerMsg::Prepare(seq, ref data) , .. }) => {
                 actual.process_operation(outputs, token, seq, epoch, &data);
             }
-        &ReplCommand::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seq) , .. }) => {
+        &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(seq) , .. }) => {
             actual.commit_observed(seq);
         }
         &ReplCommand::Forward(
                 ReplicationMessage { epoch, ts, msg: PeerMsg::HelloDownstream , .. }) => {
                 actual.hello_downstream(outputs, token, ts, epoch);
             }
-        &ReplCommand::Response(token, ref reply) => {
+        &ReplCommand::Response(_token, ref reply) => {
             actual.process_downstream_response(outputs, reply)
         }
         &ReplCommand::ConsumeFrom(token, seq) => actual.consume_requested(outputs, token, seq),
@@ -331,7 +254,7 @@ fn simulate_three_node_system_with_consumer() {
     sim.validate_client_responses(produced_messages.len());
 
     debug!("consumed: {:?}", sim.consumed_messages());
-    assert_eq!(sim.consumed_messages().into_iter().map(|(s, v)| v).collect::<Vec<_>>(),
+    assert_eq!(sim.consumed_messages().into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
                produced_messages)
 }
 
@@ -359,7 +282,6 @@ fn simulate_tail_crash() {
 
 struct OutBufs<'a> {
     node_id: NodeId,
-    epoch: Epoch,
     ports: &'a mut NetworkState,
 }
 
@@ -391,7 +313,6 @@ impl<'a> Outputs for OutBufs<'a> {
     }
 
     fn consumer_message(&mut self, dest: &NodeId, seqno: Seqno, msg: Buf) {
-        let &mut OutBufs { node_id, .. } = self;
         self.enqueue(*dest, ReplCommand::ConsumerMsg(seqno, msg))
     }
 }
@@ -545,14 +466,7 @@ impl<L: TestLog> NetworkSim<L> {
         }
     }
 
-    fn config_of(&self, node_id: NodeId) -> ConfigurationView<NodeId> {
-        let node_count = self.node_count;
-        let members = self.nodes.iter().map(|(&id, _)| (id, id)).collect::<BTreeMap<_, _>>();
-        ConfigurationView::of_membership(self.epoch, &node_id, members.clone()).expect("in view")
-    }
-
     fn configs(&self) -> BTreeMap<NodeId, ConfigurationView<NodeId>> {
-        let node_count = self.node_count;
         let members = self.nodes.iter().map(|(&id, _)| (id, id)).collect::<BTreeMap<_, _>>();
         members.keys()
                .map(|&id| {
@@ -569,7 +483,7 @@ impl<L: TestLog> NetworkSim<L> {
                                                               mut f: F) {
         let mut epoch = None;
         let path = PathBuf::from(format!("target/run-trace-{}.jsons", test_name));
-        let mut tracer = Tracer::new();
+        let tracer = Tracer::new();
 
         let mut state = NetworkState {
             clock: Clock::manual(0),
@@ -780,7 +694,6 @@ impl<L: TestLog> NetworkSim<L> {
                     let mut output = OutBufs {
                         node_id: dest,
                         ports: state,
-                        epoch: self.epoch,
                     };
 
                     debug!("Feed node {:?} with {:?}", dest, input);
@@ -798,7 +711,6 @@ impl<L: TestLog> NetworkSim<L> {
             let mut output = OutBufs {
                 node_id: *nid,
                 ports: state,
-                epoch: self.epoch,
             };
             while n.process_replication(&mut output) {
                 debug!("iterated replication for node {:?}", nid);

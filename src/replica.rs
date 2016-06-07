@@ -1,11 +1,9 @@
 use std::cmp;
 use std::fmt;
-use std::mem;
 use std::thread;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use mio;
 
 use data::{Buf, OpResp, PeerMsg, Seqno};
 use config::{ConfigurationView, Epoch};
@@ -282,7 +280,7 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Terminus<D> {
                                                token: O::Dest,
                                                epoch: Epoch,
                                                seqno: Seqno,
-                                               op: &[u8]) {
+                                               _op: &[u8]) {
         trace!("Terminus: process_operation: {:?}/{:?}", epoch, seqno);
         output.respond_to(token, &OpResp::Ok(epoch, seqno, None))
     }

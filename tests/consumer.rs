@@ -4,9 +4,7 @@ use vastatrix::data::Seqno;
 use vastatrix::replica::Log;
 use replica::{NodeId, OutMessage, Outs};
 use replication_log::{LogCommand, TestLog, VecLog, arbitrary_given, hash};
-use mio;
 use quickcheck::{self, Arbitrary, Gen, TestResult};
-use std::cmp;
 
 #[derive(Debug, Clone, Hash)]
 enum ConsOp {

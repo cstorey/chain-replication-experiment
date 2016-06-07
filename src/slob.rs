@@ -12,12 +12,9 @@ pub struct Slab<T> {
     contents: HashMap<mio::Token, T>,
 }
 
-struct SlabIterMut<'a, T: 'a>(::std::collections::hash_map::IterMut<'a, mio::Token, T>);
+pub struct SlabIterMut<'a, T: 'a>(::std::collections::hash_map::IterMut<'a, mio::Token, T>);
 
 impl<T> Slab<T> {
-    pub fn new() -> Self {
-        Self::new_range(usize::MIN, usize::MAX)
-    }
     pub fn new_range(min: usize, max: usize) -> Self {
         let rng = weak_rng();
         Slab {
