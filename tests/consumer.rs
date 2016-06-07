@@ -1,10 +1,59 @@
+use std::collections::VecDeque;
 
 use vastatrix::consumer::Consumer;
-use vastatrix::data::Seqno;
-use vastatrix::replica::Log;
-use replica::{NodeId, OutMessage, Outs};
+use vastatrix::data::{Buf, OpResp, PeerMsg, ReplicationMessage, Seqno};
+use vastatrix::replica::{Log, Outputs};
+use vastatrix::config::Epoch;
+use replica::NodeId;
 use replication_log::{LogCommand, TestLog, VecLog, arbitrary_given, hash};
 use quickcheck::{self, Arbitrary, Gen, TestResult};
+use hybrid_clocks::{Timestamp, WallT};
+
+#[derive(Debug)]
+pub enum OutMessage {
+    Response(OpResp),
+    Forward(ReplicationMessage),
+    ConsumerMessage(Seqno, Buf),
+}
+
+#[derive(Debug)]
+pub struct Outs(VecDeque<(NodeId, OutMessage)>);
+impl Outs {
+    pub fn new() -> Outs {
+        Outs(VecDeque::new())
+    }
+    pub fn inner(self) -> VecDeque<(NodeId, OutMessage)> {
+        self.0
+    }
+
+    pub fn borrow(&self) -> &VecDeque<(NodeId, OutMessage)> {
+        &self.0
+    }
+}
+
+impl Outputs for Outs {
+    type Dest = NodeId;
+
+    fn respond_to(&mut self, dest: Self::Dest, resp: &OpResp) {
+        self.0.push_back((dest, OutMessage::Response(resp.clone())))
+    }
+    fn forward_downstream(&mut self,
+                          downstream_id: &NodeId,
+                          now: Timestamp<WallT>,
+                          epoch: Epoch,
+                          msg: PeerMsg) {
+        self.0.push_back((*downstream_id,
+                          OutMessage::Forward(ReplicationMessage {
+            epoch: epoch,
+            ts: now,
+            msg: msg,
+        })))
+    }
+    fn consumer_message(&mut self, dest: &Self::Dest, seqno: Seqno, msg: Buf) {
+        self.0.push_back((*dest, OutMessage::ConsumerMessage(seqno, msg)))
+    }
+}
+
 
 #[derive(Debug, Clone, Hash)]
 enum ConsOp {
@@ -138,7 +187,7 @@ fn can_totally_do_the_thing_prop<L: TestLog>(cmds: Commands) -> TestResult {
                                             .rev()
                                             .filter_map(|x| {
                                                 match x {
-                                                    &OutMessage::ConsumerMessage(_, seq, _) => {
+                                                    &(_, OutMessage::ConsumerMessage(seq, _)) => {
                                                         Some(seq)
                                                     }
                                                     _ => None,
@@ -182,7 +231,7 @@ fn can_totally_do_the_thing_prop<L: TestLog>(cmds: Commands) -> TestResult {
     let consumer_msgs = observed.into_iter()
                                 .filter_map(|x| {
                                     match x {
-                                        OutMessage::ConsumerMessage(_tok, seq, m) => {
+                                        (_, OutMessage::ConsumerMessage(seq, m)) => {
                                             Some((seq, hash(&m)))
                                         }
                                         _ => None,

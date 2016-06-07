@@ -13,51 +13,6 @@ use std::path::{Path, PathBuf};
 use std::fs::File;
 use serde_json;
 
-#[derive(Debug)]
-pub enum OutMessage {
-    Response(NodeId, OpResp),
-    Forward(NodeId, ReplicationMessage),
-    ConsumerMessage(NodeId, Seqno, Buf),
-}
-
-#[derive(Debug)]
-pub struct Outs(VecDeque<OutMessage>);
-impl Outs {
-    pub fn new() -> Outs {
-        Outs(VecDeque::new())
-    }
-    pub fn inner(self) -> VecDeque<OutMessage> {
-        self.0
-    }
-
-    pub fn borrow(&self) -> &VecDeque<OutMessage> {
-        &self.0
-    }
-}
-
-impl Outputs for Outs {
-    type Dest = NodeId;
-
-    fn respond_to(&mut self, dest: Self::Dest, resp: &OpResp) {
-        self.0.push_back(OutMessage::Response(dest, resp.clone()))
-    }
-    fn forward_downstream(&mut self,
-                          downstream_id: &NodeId,
-                          now: Timestamp<WallT>,
-                          epoch: Epoch,
-                          msg: PeerMsg) {
-        self.0.push_back(OutMessage::Forward(*downstream_id,
-                                             ReplicationMessage {
-                                                 epoch: epoch,
-                                                 ts: now,
-                                                 msg: msg,
-                                             }))
-    }
-    fn consumer_message(&mut self, dest: &Self::Dest, seqno: Seqno, msg: Buf) {
-        self.0.push_back(OutMessage::ConsumerMessage(*dest, seqno, msg))
-    }
-}
-
 #[derive(Debug,Eq,PartialEq,Clone)]
 enum ReplCommand {
     ClientOperation(NodeId, Vec<u8>),
