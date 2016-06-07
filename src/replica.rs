@@ -56,8 +56,8 @@ pub trait Outputs {
     /// Internal reference to a connection.
     type Dest;
     fn respond_to(&mut self, Self::Dest, &OpResp);
-    fn forward_downstream(&mut self, Timestamp<WallT>, Epoch, PeerMsg);
-    fn consumer_message(&mut self, Self::Dest, Seqno, Buf);
+    fn forward_downstream(&mut self, &Self::Dest, Timestamp<WallT>, Epoch, PeerMsg);
+    fn consumer_message(&mut self, &Self::Dest, Seqno, Buf);
 }
 
 #[derive(Debug)]
@@ -229,7 +229,10 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
                        i,
                        op,
                        self.last_prepared_downstream);
-                out.forward_downstream(clock.now(), epoch, PeerMsg::Prepare(i, op.into()));
+                out.forward_downstream(&self.downstream,
+                                       clock.now(),
+                                       epoch,
+                                       PeerMsg::Prepare(i, op.into()));
                 self.last_prepared_downstream = Some(i);
                 changed = true
             }
@@ -250,7 +253,10 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
                        max_to_commit_now,
                        our_committed);
 
-                out.forward_downstream(clock.now(), epoch, PeerMsg::CommitTo(max_to_commit_now));
+                out.forward_downstream(&self.downstream,
+                                       clock.now(),
+                                       epoch,
+                                       PeerMsg::CommitTo(max_to_commit_now));
                 self.last_committed_downstream = Some(max_to_commit_now);
                 changed = true
             }
@@ -368,9 +374,11 @@ impl<D: Eq + Hash + fmt::Debug + Clone> Handshaker<D> {
                                                          _log: &L,
                                                          out: &mut O)
                                                          -> bool {
-        // We should probaby remember that we have sent this...
         if !self.is_sent {
-            out.forward_downstream(clock.now(), epoch, PeerMsg::HelloDownstream);
+            out.forward_downstream(&self.downstream,
+                                   clock.now(),
+                                   epoch,
+                                   PeerMsg::HelloDownstream);
             self.is_sent = true;
             true
         } else {

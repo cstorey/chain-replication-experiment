@@ -178,8 +178,8 @@ impl ChainRepl {
                           epoch: Epoch,
                           target: Option<SocketAddr>) {
         match (self.downstream_slot, target) {
-            (Some(_), Some(target)) => {
-                self.downstream().expect("downstream").reconnect_to(target, epoch)
+            (Some(slot), Some(target)) => {
+                self.downstream(slot).expect("downstream").reconnect_to(target, epoch)
             }
             (None, Some(target)) => {
                 let token = self.connections
@@ -192,8 +192,8 @@ impl ChainRepl {
                 &self.connections[token].initialize(event_loop, token);
                 self.downstream_slot = Some(token)
             }
-            (Some(_), None) => {
-                self.downstream().expect("downstream").disconnect();
+            (Some(slot), None) => {
+                self.downstream(slot).expect("downstream").disconnect();
                 self.downstream_slot = None;
             }
             (None, None) => (),
@@ -270,8 +270,13 @@ impl ChainRepl {
         self.model.new_configuration(model_view)
     }
 
-    fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {
+    fn downstream<'a>(&'a mut self, dest: mio::Token) -> Option<&'a mut Downstream<SexpPeer>> {
         self.downstream_slot.map(move |slot| {
+            if slot != dest {
+                warn!("Unexpected destination from model: {:?} != {:?}",
+                      dest,
+                      slot);
+            }
             match &mut self.connections[slot] {
                 &mut EventHandler::Downstream(ref mut d) => d,
                 other => {
@@ -367,11 +372,11 @@ impl ChainRepl {
         }
     }
 
-    fn forward_downstream(&mut self, epoch: Epoch, msg: PeerMsg) {
-        trace!("forward_downstream: @{:?} -> {:?}", epoch, msg);
+    fn forward_downstream(&mut self, dest: mio::Token, epoch: Epoch, msg: PeerMsg) {
+        trace!("forward_downstream: {:?}@{:?} -> {:?}", dest, epoch, msg);
         let now = self.clock.now();
 
-        self.downstream().expect("downstream").send_to_downstream(now, epoch, msg)
+        self.downstream(dest).expect("downstream").send_to_downstream(now, epoch, msg)
     }
 
     fn consumer_message(&mut self, token: mio::Token, seqno: Seqno, msg: Buf) {
@@ -394,7 +399,7 @@ pub enum Notification {
     ViewChange(ConfigurationView<NodeViewConfig>),
     Shutdown,
     RespondTo(mio::Token, OpResp),
-    Forward(Epoch, PeerMsg),
+    Forward(mio::Token, Epoch, PeerMsg),
     ConsumerMessage(mio::Token, Seqno, Buf),
 }
 pub struct Notifier(mio::Sender<Notification>);
@@ -432,13 +437,21 @@ impl replica::Outputs for Notifier {
         self.notify(Notification::RespondTo(token, resp.clone()))
     }
 
-    fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
-        trace!("forward_downstream: @{}, {:?}:{:?}", now, epoch, msg);
-        self.notify(Notification::Forward(epoch, msg))
+    fn forward_downstream(&mut self,
+                          dest: &mio::Token,
+                          now: Timestamp<WallT>,
+                          epoch: Epoch,
+                          msg: PeerMsg) {
+        trace!("forward_downstream: @{}, {:?}@{:?}:{:?}",
+               now,
+               dest,
+               epoch,
+               msg);
+        self.notify(Notification::Forward(*dest, epoch, msg))
     }
 
-    fn consumer_message(&mut self, token: mio::Token, seqno: Seqno, msg: Buf) {
-        self.notify(Notification::ConsumerMessage(token, seqno, msg))
+    fn consumer_message(&mut self, token: &mio::Token, seqno: Seqno, msg: Buf) {
+        self.notify(Notification::ConsumerMessage(*token, seqno, msg))
     }
 }
 
@@ -474,7 +487,7 @@ impl mio::Handler for ChainRepl {
                 event_loop.shutdown();
             }
             Notification::RespondTo(token, resp) => self.respond_to(token, resp),
-            Notification::Forward(epoch, msg) => self.forward_downstream(epoch, msg),
+            Notification::Forward(dest, epoch, msg) => self.forward_downstream(dest, epoch, msg),
             Notification::ConsumerMessage(token, seq, msg) => {
                 self.consumer_message(token, seq, msg)
             }

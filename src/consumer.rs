@@ -66,7 +66,7 @@ impl Consumer {
                        i,
                        op,
                        self.low_water_mark);
-                out.consumer_message(token.clone(), i, op.into());
+                out.consumer_message(&token, i, op.into());
                 self.sent = Some(i);
                 self.low_water_mark = Some(i.succ());
                 changed = true

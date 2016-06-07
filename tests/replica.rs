@@ -21,7 +21,7 @@ use time;
 #[derive(Debug)]
 pub enum OutMessage {
     Response(NodeId, OpResp),
-    Forward(ReplicationMessage),
+    Forward(NodeId, ReplicationMessage),
     LogCommitted(Seqno),
     ConsumerMessage(NodeId, Seqno, Buf),
 }
@@ -47,15 +47,20 @@ impl Outputs for Outs {
     fn respond_to(&mut self, dest: Self::Dest, resp: &OpResp) {
         self.0.push_back(OutMessage::Response(dest, resp.clone()))
     }
-    fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
-        self.0.push_back(OutMessage::Forward(ReplicationMessage {
-            epoch: epoch,
-            ts: now,
-            msg: msg,
-        }))
+    fn forward_downstream(&mut self,
+                          downstream_id: &NodeId,
+                          now: Timestamp<WallT>,
+                          epoch: Epoch,
+                          msg: PeerMsg) {
+        self.0.push_back(OutMessage::Forward(*downstream_id,
+                                             ReplicationMessage {
+                                                 epoch: epoch,
+                                                 ts: now,
+                                                 msg: msg,
+                                             }))
     }
-    fn consumer_message(&mut self, dest: Self::Dest, seqno: Seqno, msg: Buf) {
-        self.0.push_back(OutMessage::ConsumerMessage(dest, seqno, msg))
+    fn consumer_message(&mut self, dest: &Self::Dest, seqno: Seqno, msg: Buf) {
+        self.0.push_back(OutMessage::ConsumerMessage(*dest, seqno, msg))
     }
 }
 
@@ -133,16 +138,16 @@ fn postcondition<L: TestLog>(_actual: &ReplModel<L, NodeId>,
     debug!("observed: {:?}; model:{:?}", observed, model);
     for msg in observed.0.iter() {
         match msg {
-            &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _), .. }) => {
+            &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _), .. }) => {
                     assert_eq!(epoch, model.epoch);
                     assert!(Some(seqno) > model.prepared);
                 }
-            &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. }) => {
+            &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. }) => {
                     assert_eq!(epoch, model.epoch);
                     assert!(Some(seqno) <= model.prepared);
                     assert!(Some(seqno) <= model.log_committed);
                 }
-            &OutMessage::Forward(ReplicationMessage { epoch, .. }) => {
+            &OutMessage::Forward(_dest, ReplicationMessage { epoch, .. }) => {
                 assert_eq!(epoch, model.epoch);
             }
             &OutMessage::Response(token, OpResp::Ok(epoch, seqno, _)) |
@@ -178,15 +183,15 @@ impl FakeReplica {
     fn update_from_outputs(&mut self, observed: &Outs) -> () {
         for msg in observed.0.iter() {
             match msg {
-                &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _), .. }) => {
+                &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: PeerMsg::Prepare(seqno, _), .. }) => {
                         self.epoch = epoch;
                         self.prepared = Some(seqno);
                     }
-                &OutMessage::Forward(ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. }) => {
+                &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: PeerMsg::CommitTo(seqno), .. }) => {
                         self.epoch = epoch;
                         self.committed = Some(seqno);
                     }
-                &OutMessage::Forward(ReplicationMessage { epoch, msg: _, .. }) => {
+                &OutMessage::Forward(_dest, ReplicationMessage { epoch, msg: _, .. }) => {
                     self.epoch = epoch;
                 }
                 &OutMessage::Response(token, OpResp::Ok(epoch, seqno, _)) |
@@ -354,7 +359,6 @@ fn simulate_tail_crash() {
 
 struct OutBufs<'a> {
     node_id: NodeId,
-    view: ConfigurationView<NodeId>,
     epoch: Epoch,
     ports: &'a mut NetworkState,
 }
@@ -373,27 +377,22 @@ impl<'a> Outputs for OutBufs<'a> {
         self.enqueue(dest, cmd);
     }
 
-    fn forward_downstream(&mut self, now: Timestamp<WallT>, epoch: Epoch, msg: PeerMsg) {
-        if let Some(downstream_id) = self.view.next {
-            self.enqueue(downstream_id,
-                         ReplCommand::Forward(ReplicationMessage {
-                             epoch: epoch,
-                             ts: now,
-                             msg: msg,
-                         }));
-        } else {
-            warn!("OutBufs#forward_downstream no next in view; node: {:?}, view: {:?}; msg: \
-                       {:?}",
-                  self.node_id,
-                  self.view,
-                  msg);
-
-        }
+    fn forward_downstream(&mut self,
+                          downstream_id: &NodeId,
+                          now: Timestamp<WallT>,
+                          epoch: Epoch,
+                          msg: PeerMsg) {
+        self.enqueue(*downstream_id,
+                     ReplCommand::Forward(ReplicationMessage {
+                         epoch: epoch,
+                         ts: now,
+                         msg: msg,
+                     }));
     }
 
-    fn consumer_message(&mut self, dest: NodeId, seqno: Seqno, msg: Buf) {
+    fn consumer_message(&mut self, dest: &NodeId, seqno: Seqno, msg: Buf) {
         let &mut OutBufs { node_id, .. } = self;
-        self.enqueue(dest, ReplCommand::ConsumerMsg(seqno, msg))
+        self.enqueue(*dest, ReplCommand::ConsumerMsg(seqno, msg))
     }
 }
 
@@ -772,17 +771,14 @@ impl<L: TestLog> NetworkSim<L> {
     }
 
     fn step(&mut self, state: &mut NetworkState) {
-        let views = self.configs();
         while let Some((src, dest, input)) = state.dequeue_one() {
             debug!("Inputs: {:?} -> {:?}: {:?}", src, dest, input);
             if dest == self.client_id {
                 self.client_buf.push_back(input);
             } else {
-                let view = views[&dest].clone();
                 if let Some(ref mut n) = self.nodes.get_mut(&dest) {
                     let mut output = OutBufs {
                         node_id: dest,
-                        view: view,
                         ports: state,
                         epoch: self.epoch,
                     };
@@ -799,10 +795,8 @@ impl<L: TestLog> NetworkSim<L> {
         for (nid, n) in self.nodes.iter_mut() {
             n.borrow_log().quiesce();
 
-            let view = views[nid].clone();
             let mut output = OutBufs {
                 node_id: *nid,
-                view: view,
                 ports: state,
                 epoch: self.epoch,
             };
