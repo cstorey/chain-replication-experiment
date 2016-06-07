@@ -1,7 +1,6 @@
 
 use vastatrix::data::{Buf, OpResp, PeerMsg, ReplicationMessage, Seqno};
 use vastatrix::config::Epoch;
-use quickcheck::{Arbitrary, Gen};
 use vastatrix::replica::{Log, Outputs, ReplModel};
 use replication_log::{TestLog, VecLog, hash};
 use vastatrix::config::ConfigurationView;
@@ -24,71 +23,6 @@ enum ReplCommand {
 
 #[derive(Debug,Eq,PartialEq,Clone)]
 struct Commands(Vec<ReplCommand>);
-
-#[derive(Debug,PartialEq,Eq,Clone)]
-struct FakeReplica {
-    epoch: Epoch,
-    prepared: Option<Seqno>,
-    committed: Option<Seqno>,
-    responded: Option<Seqno>,
-    outstanding: HashMap<NodeId, isize>,
-    log_committed: Option<Seqno>,
-}
-
-impl FakeReplica {
-    fn new() -> FakeReplica {
-        FakeReplica {
-            epoch: Default::default(),
-            prepared: Default::default(),
-            committed: Default::default(),
-            responded: Default::default(),
-            outstanding: HashMap::new(),
-            log_committed: Default::default(),
-        }
-    }
-}
-
-impl Arbitrary for ReplCommand {
-    fn arbitrary<G: Gen>(g: &mut G) -> ReplCommand {
-        let case = u64::arbitrary(g) % 1;
-        let res = match case {
-            0 => {
-                ReplCommand::ClientOperation(NodeId(Arbitrary::arbitrary(g)),
-                                             Arbitrary::arbitrary(g))
-            }
-            _ => unimplemented!(),
-        };
-        res
-    }
-    fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
-        match self {
-            &ReplCommand::ClientOperation(ref token, ref op) => {
-                Box::new((token.0, op.clone())
-                             .shrink()
-                             .map(|(t, op)| ReplCommand::ClientOperation(NodeId(t), op)))
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
-
-fn precondition(_model: &FakeReplica, cmd: &ReplCommand) -> bool {
-    match cmd {
-        &ReplCommand::ClientOperation(ref _token, ref _s) => true,
-        _ => unimplemented!(),
-    }
-}
-
-impl FakeReplica {
-    fn next_state(&mut self, cmd: &ReplCommand) -> () {
-        match cmd {
-            &ReplCommand::ClientOperation(ref token, ref _op) => {
-                *self.outstanding.entry(*token).or_insert(0) += 1;
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
 
 fn apply_cmd<L: TestLog, O: Outputs<Dest = NodeId>>(actual: &mut ReplModel<L, NodeId>,
                                                     cmd: &ReplCommand,
@@ -118,46 +52,6 @@ fn apply_cmd<L: TestLog, O: Outputs<Dest = NodeId>>(actual: &mut ReplModel<L, No
         other => panic!("Unimplemented apply_cmd: {:?}", other),
     };
     actual.process_replication(outputs);
-}
-
-impl Arbitrary for Commands {
-    fn arbitrary<G: Gen>(g: &mut G) -> Commands {
-        let slots: Vec<()> = Arbitrary::arbitrary(g);
-        let mut commands: Vec<ReplCommand> = Vec::new();
-        let mut model = FakeReplica::new();
-
-        for _ in slots {
-            let cmd = (0..)
-                          .map(|_| {
-                              let cmd: ReplCommand = Arbitrary::arbitrary(g);
-                              cmd
-                          })
-                          .skip_while(|cmd| !precondition(&model, cmd))
-                          .next()
-                          .expect("Some valid command");
-
-            model.next_state(&cmd);
-            commands.push(cmd);
-        }
-        Commands(commands)
-    }
-    fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
-        // TODO: Filter out invalid sequences.
-        let ret = Arbitrary::shrink(&self.0).map(Commands).filter(validate_commands);
-        Box::new(ret)
-    }
-}
-fn validate_commands(cmds: &Commands) -> bool {
-    let model = FakeReplica::new();
-
-    cmds.0
-        .iter()
-        .scan(model, |model, cmd| {
-            let ret = precondition(&model, cmd);
-            model.next_state(&cmd);
-            Some(ret)
-        })
-        .all(|p| p)
 }
 
 #[test]
