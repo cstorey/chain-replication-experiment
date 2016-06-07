@@ -69,7 +69,7 @@ pub enum ChainReplMsg {
 struct ChainReplEvents<'a> {
     changes: &'a mut VecDeque<ChainReplMsg>,
     clock: &'a mut Clock<Wall>,
-    model: &'a mut ReplProxy<RocksdbLog, NodeViewConfig, mio::Token>,
+    model: &'a mut ReplProxy<RocksdbLog, mio::Token>,
 }
 
 impl<'a> ListenerEvents for ChainReplEvents<'a> {
@@ -123,14 +123,14 @@ pub struct ChainRepl {
     node_config: NodeViewConfig,
     new_view: Option<ConfigurationView<NodeViewConfig>>,
     queue: VecDeque<ChainReplMsg>,
-    model: ReplProxy<RocksdbLog, NodeViewConfig, mio::Token>,
+    model: ReplProxy<RocksdbLog, mio::Token>,
     clock: Clock<Wall>,
 }
 
 const MAX_LISTENERS: usize = 4;
 
 impl ChainRepl {
-    pub fn new(model: ReplProxy<RocksdbLog, NodeViewConfig, mio::Token>) -> ChainRepl {
+    pub fn new(model: ReplProxy<RocksdbLog, mio::Token>) -> ChainRepl {
         ChainRepl {
             listeners: Slab::new_range(0, MAX_LISTENERS),
             connections: Slab::new_range(MAX_LISTENERS, ::std::usize::MAX),
@@ -260,9 +260,14 @@ impl ChainRepl {
         });
         info!("Push to downstream on {:?}", ds);
         self.set_downstream(event_loop, view.epoch, ds);
-
         info!("Reconfigure model: {:?}", view);
-        self.model.new_configuration(view)
+
+        let model_view = ConfigurationView {
+            epoch: view.epoch,
+            ord: view.ord,
+            next: self.downstream_slot,
+        };
+        self.model.new_configuration(model_view)
     }
 
     fn downstream<'a>(&'a mut self) -> Option<&'a mut Downstream<SexpPeer>> {

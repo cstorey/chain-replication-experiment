@@ -14,12 +14,12 @@ use Notifier;
 use hybrid_clocks::{Clock, Timestamp, Wall, WallT};
 
 #[derive(Debug)]
-struct Forwarder<A, D> {
+struct Forwarder<D> {
     last_prepared_downstream: Option<Seqno>,
     last_committed_downstream: Option<Seqno>,
     last_acked_downstream: Option<Seqno>,
     pending_operations: HashMap<Seqno, D>,
-    downstream: A,
+    downstream: D,
 }
 
 #[derive(Debug)]
@@ -28,17 +28,17 @@ struct Terminus<D: Hash + Eq> {
 }
 
 #[derive(Debug)]
-struct Handshaker<A, D> {
+struct Handshaker<D> {
     epoch: Epoch,
     is_sent: bool,
     pending_operations: HashMap<Seqno, D>,
-    downstream: A,
+    downstream: D,
 }
 
 #[derive(Debug)]
-enum ReplRole<A, D: Hash + Eq> {
-    Handshaking(Handshaker<A, D>),
-    Forwarder(Forwarder<A, D>),
+enum ReplRole<D: Hash + Eq> {
+    Handshaking(Handshaker<D>),
+    Forwarder(Forwarder<D>),
     Terminus(Terminus<D>),
 }
 
@@ -61,8 +61,8 @@ pub trait Outputs {
 }
 
 #[derive(Debug)]
-pub struct ReplModel<L, A, D: Eq + Hash> {
-    next: ReplRole<A, D>,
+pub struct ReplModel<L, D: Eq + Hash> {
+    next: ReplRole<D>,
     log: L,
     clock: Clock<Wall>,
     current_epoch: Epoch,
@@ -71,7 +71,7 @@ pub struct ReplModel<L, A, D: Eq + Hash> {
     is_head: bool,
 }
 
-impl<A: fmt::Debug + Clone, D: fmt::Debug + Eq + Hash + Clone> ReplRole<A, D> {
+impl<D: fmt::Debug + Eq + Hash + Clone> ReplRole<D> {
     fn process_operation<O: Outputs<Dest = D>>(&mut self,
                                                output: &mut O,
                                                token: O::Dest,
@@ -144,7 +144,7 @@ impl<A: fmt::Debug + Clone, D: fmt::Debug + Eq + Hash + Clone> ReplRole<A, D> {
         }
     }
 
-    fn move_handshaker(&mut self, epoch: Epoch, downstream: A) {
+    fn move_handshaker(&mut self, epoch: Epoch, downstream: D) {
         let it = match self {
             &mut ReplRole::Forwarder(ref f) => f.to_handshaker(epoch, downstream),
             &mut ReplRole::Terminus(ref t) => t.to_handshaker(epoch, downstream),
@@ -158,8 +158,8 @@ impl<A: fmt::Debug + Clone, D: fmt::Debug + Eq + Hash + Clone> ReplRole<A, D> {
     }
 }
 
-impl<A: fmt::Debug + Clone, D: fmt::Debug + Clone + Eq + Hash> Forwarder<A, D> {
-    fn new(downstream: A, pending: HashMap<Seqno, D>) -> Forwarder<A, D> {
+impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
+    fn new(downstream: D, pending: HashMap<Seqno, D>) -> Forwarder<D> {
         Forwarder {
             last_prepared_downstream: None,
             last_acked_downstream: None,
@@ -261,7 +261,7 @@ impl<A: fmt::Debug + Clone, D: fmt::Debug + Clone + Eq + Hash> Forwarder<A, D> {
     fn reset(&mut self) {
         self.last_prepared_downstream = None
     }
-    fn to_handshaker(&self, epoch: Epoch, downstream: A) -> Handshaker<A, D> {
+    fn to_handshaker(&self, epoch: Epoch, downstream: D) -> Handshaker<D> {
         Handshaker::new(epoch, downstream, self.pending_operations.clone())
     }
 }
@@ -306,16 +306,13 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Terminus<D> {
         changed
     }
 
-    fn to_handshaker<A: fmt::Debug + Clone>(&self,
-                                            epoch: Epoch,
-                                            downstream: A)
-                                            -> Handshaker<A, D> {
+    fn to_handshaker(&self, epoch: Epoch, downstream: D) -> Handshaker<D> {
         Handshaker::new(epoch, downstream, HashMap::new())
     }
 }
 
-impl<A: fmt::Debug + Clone, D: Eq + Hash + fmt::Debug + Clone> Handshaker<A, D> {
-    fn new(epoch: Epoch, downstream: A, pending: HashMap<Seqno, D>) -> Handshaker<A, D> {
+impl<D: Eq + Hash + fmt::Debug + Clone> Handshaker<D> {
+    fn new(epoch: Epoch, downstream: D, pending: HashMap<Seqno, D>) -> Handshaker<D> {
         Handshaker {
             epoch: epoch,
             is_sent: false,
@@ -338,7 +335,7 @@ impl<A: fmt::Debug + Clone, D: Eq + Hash + fmt::Debug + Clone> Handshaker<A, D> 
     fn process_downstream_response<O: Outputs<Dest = D>>(&mut self,
                                                          out: &mut O,
                                                          reply: &OpResp)
-                                                         -> Option<ReplRole<A, D>> {
+                                                         -> Option<ReplRole<D>> {
         trace!("Handshaker: {:?}", self);
         trace!("Handshaker: process_downstream_response: {:?}", reply);
 
@@ -381,16 +378,16 @@ impl<A: fmt::Debug + Clone, D: Eq + Hash + fmt::Debug + Clone> Handshaker<A, D> 
         }
     }
 
-    fn to_handshaker(&self, epoch: Epoch, downstream: A) -> Handshaker<A, D> {
+    fn to_handshaker(&self, epoch: Epoch, downstream: D) -> Handshaker<D> {
         Handshaker::new(epoch, downstream, self.pending_operations.clone())
     }
-    fn to_forwarder(&self) -> Forwarder<A, D> {
+    fn to_forwarder(&self) -> Forwarder<D> {
         Forwarder::new(self.downstream.clone(), self.pending_operations.clone())
     }
 }
 
-impl<L: Log, A: fmt::Debug + Clone, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, A, D> {
-    pub fn new(log: L) -> ReplModel<L, A, D> {
+impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
+    pub fn new(log: L) -> ReplModel<L, D> {
         ReplModel {
             log: log,
             current_epoch: Default::default(),
@@ -414,7 +411,7 @@ impl<L: Log, A: fmt::Debug + Clone, D: Eq + Hash + Clone + fmt::Debug> ReplModel
         self.log.seqno()
     }
 
-    fn run_from(&mut self, rx: Receiver<ReplOp<L, A, D>>, mut tx: Notifier)
+    fn run_from(&mut self, rx: Receiver<ReplOp<L, D>>, mut tx: Notifier)
         where Notifier: Outputs<Dest = D>
     {
         loop {
@@ -529,7 +526,7 @@ impl<L: Log, A: fmt::Debug + Clone, D: Eq + Hash + Clone + fmt::Debug> ReplModel
         self.next.consume_requested(out, token, self.current_epoch, mark)
     }
 
-    fn configure_forwarding(&mut self, view: &ConfigurationView<A>) {
+    fn configure_forwarding(&mut self, view: &ConfigurationView<D>) {
         let downstreamp = view.should_connect_downstream();
         match (downstreamp, &mut self.next) {
             (Some(downstream), role) => {
@@ -557,7 +554,7 @@ impl<L: Log, A: fmt::Debug + Clone, D: Eq + Hash + Clone + fmt::Debug> ReplModel
         self.current_epoch = epoch;
     }
 
-    pub fn reconfigure(&mut self, view: &ConfigurationView<A>) {
+    pub fn reconfigure(&mut self, view: &ConfigurationView<D>) {
         info!("Reconfiguring from: {:?}", view);
         self.set_epoch(view.epoch);
         self.configure_forwarding(view);
@@ -566,19 +563,17 @@ impl<L: Log, A: fmt::Debug + Clone, D: Eq + Hash + Clone + fmt::Debug> ReplModel
     }
 }
 
-type ReplOp<L, A, D> = Box<FnMut(&mut ReplModel<L, A, D>, &mut Notifier) + Send>;
+type ReplOp<L, D> = Box<FnMut(&mut ReplModel<L, D>, &mut Notifier) + Send>;
 
-pub struct ReplProxy<L: Log + Send + 'static, A: Send + 'static, D: Send + 'static + Eq + Hash> {
+pub struct ReplProxy<L: Log + Send + 'static, D: Send + 'static + Eq + Hash> {
     _inner_thread: thread::JoinHandle<()>,
-    tx: Sender<ReplOp<L, A, D>>,
+    tx: Sender<ReplOp<L, D>>,
 }
 
-impl<L: Log + Send + 'static,
-    A: Send + 'static + fmt::Debug + Clone,
-    D: Send + 'static + Eq + Hash + fmt::Debug + Clone>
-    ReplProxy<L, A, D> where Notifier: Outputs<Dest=D> {
-    pub fn build(mut inner: ReplModel<L, A, D>, notifications: Notifier) -> Self
-     {
+impl<L: Log + Send + 'static, D: Send + 'static + Eq + Hash + fmt::Debug + Clone> ReplProxy<L, D>
+    where Notifier: Outputs<Dest = D>
+{
+    pub fn build(mut inner: ReplModel<L, D>, notifications: Notifier) -> Self {
         let (tx, rx) = channel();
         let inner_thread = thread::Builder::new()
                                .name("replmodel".to_string())
@@ -590,7 +585,7 @@ impl<L: Log + Send + 'static,
         }
     }
 
-    fn invoke<F: FnMut(&mut ReplModel<L, A, D>, &mut Notifier) + Send + 'static>(&mut self, f: F) {
+    fn invoke<F: FnMut(&mut ReplModel<L, D>, &mut Notifier) + Send + 'static>(&mut self, f: F) {
         self.tx.send(Box::new(f)).expect("send to inner thread")
     }
 
@@ -606,7 +601,7 @@ impl<L: Log + Send + 'static,
     pub fn response_observed(&mut self, resp: OpResp) {
         self.invoke(move |m, tx| m.process_downstream_response(tx, &resp))
     }
-    pub fn new_configuration(&mut self, view: ConfigurationView<A>) {
+    pub fn new_configuration(&mut self, view: ConfigurationView<D>) {
         self.invoke(move |m, _| m.reconfigure(&view))
     }
     pub fn hello_downstream(&mut self, token: D, at: Timestamp<WallT>, epoch: Epoch) {

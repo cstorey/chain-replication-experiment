@@ -125,7 +125,7 @@ fn precondition(_model: &FakeReplica, cmd: &ReplCommand) -> bool {
     }
 }
 
-fn postcondition<L: TestLog>(_actual: &ReplModel<L, NodeId, NodeId>,
+fn postcondition<L: TestLog>(_actual: &ReplModel<L, NodeId>,
                              model: &FakeReplica,
                              cmd: &ReplCommand,
                              observed: &Outs)
@@ -207,7 +207,7 @@ impl FakeReplica {
     }
 }
 
-fn apply_cmd<L: TestLog, O: Outputs<Dest = NodeId>>(actual: &mut ReplModel<L, NodeId, NodeId>,
+fn apply_cmd<L: TestLog, O: Outputs<Dest = NodeId>>(actual: &mut ReplModel<L, NodeId>,
                                                     cmd: &ReplCommand,
                                                     token: NodeId,
                                                     outputs: &mut O)
@@ -398,7 +398,7 @@ impl<'a> Outputs for OutBufs<'a> {
 }
 
 struct NetworkSim<L> {
-    nodes: BTreeMap<NodeId, ReplModel<L, NodeId, NodeId>>,
+    nodes: BTreeMap<NodeId, ReplModel<L, NodeId>>,
     node_count: usize,
     epoch: Epoch,
     client_id: NodeId,
