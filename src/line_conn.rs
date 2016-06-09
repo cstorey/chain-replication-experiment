@@ -42,7 +42,7 @@ pub trait LineConnEvents {
     fn consume_requested(&mut self, source: mio::Token, mark: Seqno);
 
     fn okay(&mut self, epoch: Epoch, seqno: Seqno, data: Option<Buf>);
-    fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno);
+    fn hello_i_have(&mut self, at: Timestamp<WallT>, seqno: Option<Seqno>);
     fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String);
 }
 
@@ -283,7 +283,7 @@ impl Reader<OpResp> for SexpPeer {
         while let Some(msg) = self.packets.take().expect("Pull packet") {
             match msg {
                 OpResp::Ok(epoch, seqno, data) => events.okay(epoch, seqno, data),
-                OpResp::HelloIWant(ts, seqno) => events.hello_i_want(ts, seqno),
+                OpResp::HelloIHave(ts, seqno) => events.hello_i_have(ts, seqno),
                 OpResp::Err(epoch, seqno, data) => events.error(epoch, seqno, data),
             }
             changed = true;

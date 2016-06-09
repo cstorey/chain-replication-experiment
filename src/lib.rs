@@ -105,11 +105,11 @@ impl<'a> LineConnEvents for ChainReplEvents<'a> {
         self.model.response_observed(OpResp::Ok(epoch, seqno, data))
     }
 
-    fn hello_i_want(&mut self, at: Timestamp<WallT>, seqno: Seqno) {
+    fn hello_i_have(&mut self, at: Timestamp<WallT>, seqno: Option<Seqno>) {
         self.clock.observe(&at).expect("observe clock");
         let now = self.clock.now();
         debug!("recv hello_i_want: {} -> {}", at, now);
-        self.model.response_observed(OpResp::HelloIWant(now, seqno))
+        self.model.response_observed(OpResp::HelloIHave(now, seqno))
     }
     fn error(&mut self, epoch: Epoch, seqno: Seqno, data: String) {
         self.model.response_observed(OpResp::Err(epoch, seqno, data))

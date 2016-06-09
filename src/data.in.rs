@@ -23,7 +23,7 @@ pub enum Operation {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum OpResp {
     Ok(Epoch, Seqno, Option<Buf>),
-    HelloIWant(Timestamp<WallT>, Seqno),
+    HelloIHave(Timestamp<WallT>, Option<Seqno>),
     Err(Epoch, Seqno, String),
 }
 
@@ -35,7 +35,7 @@ impl Into<client::ProducerResp> for OpResp {
 		warn!("Ignored response val @{:?}: {:?}", seqno, val);
 		client::ProducerResp::Ok(seqno.into())
 	    },
-	    OpResp::HelloIWant(_, _) => unreachable!(),
+	    OpResp::HelloIHave(_, _) => unreachable!(),
 	    OpResp::Err(_, seqno, message) => client::ProducerResp::Err(seqno.into(), message),
 	}
     }

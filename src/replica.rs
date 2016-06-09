@@ -168,6 +168,9 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
             downstream: downstream,
         }
     }
+    fn downstream_prepared(self, seq: Option<Seqno>) -> Forwarder<D> {
+        Forwarder { last_prepared_downstream: seq, ..self }
+    }
 
     fn process_operation<O: Outputs<Dest = D>>(&mut self,
                                                _output: &mut O,
@@ -194,11 +197,11 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
                     warn!("Unexpected response for seqno: {:?}", seqno);
                 }
             }
-            &OpResp::HelloIWant(ts, last_prepared_downstream) => {
+            &OpResp::HelloIHave(ts, last_prepared_downstream) => {
                 info!("{}; Downstream has {:?}", ts, last_prepared_downstream);
                 // assert!(last_prepared_downstream <= self.seqno());
-                self.last_acked_downstream = Some(last_prepared_downstream);
-                self.last_prepared_downstream = Some(last_prepared_downstream);
+                self.last_acked_downstream = last_prepared_downstream;
+                self.last_prepared_downstream = last_prepared_downstream;
             }
         }
     }
@@ -360,10 +363,10 @@ impl<D: Eq + Hash + fmt::Debug + Clone> Handshaker<D> {
                 }
                 None
             }
-            &OpResp::HelloIWant(ts, last_prepared_downstream) => {
+            &OpResp::HelloIHave(ts, last_prepared_downstream) => {
                 info!("{}; Downstream has {:?}", ts, last_prepared_downstream);
                 info!("Handshaking: switched to forwarding from {:?}", self);
-                let forwarder = self.to_forwarder();
+                let forwarder = self.to_forwarder(last_prepared_downstream);
                 info!("Handshaking: switched to {:?}", forwarder);
                 Some(ReplRole::Forwarder(forwarder))
             }
@@ -391,8 +394,9 @@ impl<D: Eq + Hash + fmt::Debug + Clone> Handshaker<D> {
     fn to_handshaker(&self, epoch: Epoch, downstream: D) -> Handshaker<D> {
         Handshaker::new(epoch, downstream, self.pending_operations.clone())
     }
-    fn to_forwarder(&self) -> Forwarder<D> {
+    fn to_forwarder(&self, downstream_prepared: Option<Seqno>) -> Forwarder<D> {
         Forwarder::new(self.downstream.clone(), self.pending_operations.clone())
+            .downstream_prepared(downstream_prepared)
     }
 }
 
@@ -525,7 +529,7 @@ impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
                                                   epoch: Epoch) {
         debug!("{}; hello_downstream: {:?}; {:?}", at, token, epoch);
 
-        let msg = OpResp::HelloIWant(at, self.log.seqno().expect("Seqno"));
+        let msg = OpResp::HelloIHave(at, self.log.read_prepared().expect("read_prepared"));
         info!("Inform upstream about our current version, {:?}!", msg);
         out.respond_to(token, &msg)
     }
