@@ -1,9 +1,7 @@
 #[derive(Debug, Copy, Clone,Hash, Eq,PartialEq,Ord,PartialOrd, Serialize, Deserialize)]
-pub struct NodeId(usize);
-impl From<usize> for NodeId {
-    fn from(id: usize) -> NodeId {
-        NodeId(id)
-    }
+pub enum NodeId {
+    Client,
+    Replica(usize),
 }
 
 #[derive(Debug,PartialEq,Eq,PartialOrd,Ord,Hash,Clone, Serialize, Deserialize)]

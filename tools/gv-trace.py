@@ -7,7 +7,6 @@ import sys
 import base64
 
 b32e = base64.b32encode
-b32e = str
 
 def trunc(s):
     if len(s) > 20:
@@ -26,7 +25,7 @@ def parse(f):
     for data in records:
         if 'ProcessState' in data:
             s = data['ProcessState'];
-            pid = s['process']
+            pid = str(s['process'])
             time = tuple(s['time'])
             proc_tls[pid][time] = s['state']
             ts.add(time)
@@ -35,13 +34,13 @@ def parse(f):
         elif 'MessageRecv' in data:
             r = data['MessageRecv']
             messages.append(r)
-            processes.add(r['src'])
-            processes.add(r['dst'])
+            processes.add(str(r['src']))
+            processes.add(str(r['dst']))
             ts.add(tuple(r['sent']))
             ts.add(tuple(r['recv']))
         elif 'NodeCrashed' in data:
             c = data['NodeCrashed']
-            proc = c['process'];
+            proc = str(c['process'])
             t = tuple(c['time'])
             processes.add(proc)
             ts.add(t)
@@ -60,8 +59,9 @@ def parse(f):
  
     prev_tid = None
     prevs = {}
+    print >> sys.stderr, repr(('ts', sorted(ts)))
     for t in sorted(ts):
-        tid = b32e(t)
+        tid = b32e(str(t))
         for p in processes:
             tl = proc_tls[p]
             pid = b32e(str(p))
@@ -84,8 +84,8 @@ def parse(f):
         prev_tid = tid
 
     for m in messages:
-	src = 'state_%s_%s' % (b32e(m['src']), b32e(tuple(m['sent'])))
-	dst = 'state_%s_%s' % (b32e(m['dst']), b32e(tuple(m['recv'])))
+	src = 'state_%s_%s' % (b32e(str(m['src'])), b32e(str(tuple(m['sent']))))
+	dst = 'state_%s_%s' % (b32e(str(m['dst'])), b32e(str(tuple(m['recv']))))
         graph.edge(src, dst, constraint="false",
 	    label=trunc(str(m['data'])), labeltooltip=str(m['data']), labelURL='#',
 	    headlabel=repr(m['recv']), taillabel=repr(m['sent']))

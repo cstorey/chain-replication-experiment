@@ -166,7 +166,7 @@ fn can_totally_do_the_thing_prop<L: TestLog>(cmds: Commands) -> TestResult {
     let mut actual = Consumer::new();
     let mut log = VecLog::new();
 
-    let token = NodeId::from(0usize);
+    let token = NodeId::Replica(0usize);
     let mut observed = Outs::new();
 
     let mut min_seq = None;

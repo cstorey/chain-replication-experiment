@@ -294,13 +294,15 @@ impl<L: TestLog> NetworkSim<L> {
     fn new(node_count: usize) -> Self {
         let epoch = Epoch::from(0);
 
-        let nodes = (0..node_count).map(|id| (NodeId(id), ReplModel::new(L::new()))).collect();
+        let nodes = (0..node_count)
+                        .map(|id| (NodeId::Replica(id), ReplModel::new(L::new())))
+                        .collect();
 
         NetworkSim {
             nodes: nodes,
             node_count: node_count,
             epoch: epoch,
-            client_id: NodeId(node_count + 42),
+            client_id: NodeId::Client,
             client_buf: VecDeque::new(),
         }
     }
@@ -444,11 +446,11 @@ impl<L: TestLog> NetworkSim<L> {
     }
 
     fn tail_node(&self) -> NodeId {
-        NodeId(self.node_count - 1)
+        NodeId::Replica(self.node_count - 1)
     }
 
     fn head_node(&self) -> NodeId {
-        NodeId(0)
+        NodeId::Replica(0)
     }
 
     fn crash_node(&mut self, state: &mut NetworkState, node_id: NodeId) {
