@@ -7,9 +7,13 @@
 use data::Seqno;
 use replica::{Log, Outputs};
 
-quick_error! {
-    #[derive(Debug)]
-    pub enum Error {
+error_chain! {
+    types {
+        Error, ErrorKind, ChainErr, Result;
+    }
+    links {}
+    foreign_links {}
+    errors {
         InvalidRange(lwm: Option<Seqno>, sent: Option<Seqno>, mark: Seqno)
     }
 }
@@ -28,7 +32,7 @@ impl Consumer {
         }
     }
 
-    pub fn consume_requested(&mut self, mark: Seqno) -> Result<(), Error> {
+    pub fn consume_requested(&mut self, mark: Seqno) -> Result<()> {
         // It would be odd for a client to request an item they have not seen
         // in the current session.
         let lwm = match (self.low_water_mark, self.sent) {
@@ -37,7 +41,7 @@ impl Consumer {
             (Some(m), Some(s)) if mark >= m && mark <= s => Some(mark),
 
             (None, Some(_)) => unreachable!(),
-            (m, s) => return Err(Error::InvalidRange(m, s, mark)),
+            (m, s) => return Err(ErrorKind::InvalidRange(m, s, mark).into()),
         };
         debug!("consume_requested: {:?}; mark:{:?} => {:?}",
                self,

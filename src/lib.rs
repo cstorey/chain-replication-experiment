@@ -22,7 +22,7 @@ extern crate hybrid_clocks;
 extern crate quickcheck;
 
 #[macro_use]
-extern crate quick_error;
+extern crate error_chain;
 
 #[cfg(feature = "benches")]
 extern crate test;
