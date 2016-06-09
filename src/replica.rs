@@ -8,6 +8,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use data::{Buf, OpResp, PeerMsg, Seqno};
 use config::{ConfigurationView, Epoch};
 use consumer::Consumer;
+// For the error types. We should make Err an associated type.
+use replication_log;
 use Notifier;
 use hybrid_clocks::{Clock, Timestamp, Wall, WallT};
 
@@ -46,7 +48,7 @@ pub trait Log: fmt::Debug {
     fn read_prepared(&self) -> Option<Seqno>;
     fn read_committed(&self) -> Option<Seqno>;
     fn read_from<'a>(&'a self, Seqno) -> Self::Cursor;
-    fn prepare(&mut self, Seqno, &[u8]);
+    fn prepare(&mut self, Seqno, &[u8]) -> replication_log::Result<()>;
     fn commit_to(&mut self, Seqno) -> bool;
 }
 
@@ -462,7 +464,7 @@ impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
             return output.respond_to(token, &resp);
         }
 
-        self.log.prepare(seqno, &op);
+        self.log.prepare(seqno, &op).expect("prepare");
 
         self.next.process_operation(output, token, epoch, seqno, &op)
     }

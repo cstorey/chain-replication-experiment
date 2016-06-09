@@ -56,6 +56,18 @@ use std::iter;
 //  │ 9│  O
 //  └──┘        ◀─────R0.Prepare
 
+error_chain! {
+    types {
+        Error, ErrorKind, ChainErr, Result;
+    }
+    links {}
+    foreign_links {}
+    errors {
+        BadSequence(saw: Seqno, expected: Seqno)
+    }
+}
+
+
 pub struct RocksdbLog {
     dir: TempDir,
     db: Arc<DB>,
@@ -190,13 +202,13 @@ impl Log for RocksdbLog {
     }
 
 
-    fn prepare(&mut self, seqno: Seqno, data_bytes: &[u8]) {
+    fn prepare(&mut self, seqno: Seqno, data_bytes: &[u8]) -> Result<()> {
         trace!("Prepare {:?}", seqno);
         let key = Seqno::tokey(&seqno);
 
-        let current = self.seqno();
-        if !(current <= seqno) {
-            panic!("Hole in history: saw {:?}; have: {:?}", seqno, current);
+        let next = self.seqno();
+        if seqno != next {
+            return Err(ErrorKind::BadSequence(seqno, next).into());
         }
 
         // match self.db.get_cf(Self::data(&db), &key.as_ref()) {
@@ -220,6 +232,7 @@ impl Log for RocksdbLog {
         trace!("Watermarks: prepared: {:?}; committed: {:?}",
                self.read_seqno(META_PREPARED),
                self.read_seqno(META_COMMITTED));
+        Ok(())
     }
 
     fn commit_to(&mut self, seqno: Seqno) -> bool {

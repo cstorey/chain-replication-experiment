@@ -2,7 +2,7 @@
 use vastatrix::data::Seqno;
 use quickcheck::{Arbitrary, Gen, TestResult};
 use std::fmt;
-use vastatrix::replication_log::RocksdbLog;
+use vastatrix::replication_log::{ErrorKind, RocksdbLog, self as log};
 use vastatrix::replica::Log;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher, SipHasher};
@@ -48,9 +48,13 @@ impl Log for VecLog {
         VecCursor(pos.offset() as usize, self.log.clone())
     }
 
-    fn prepare(&mut self, pos: Seqno, op: &[u8]) {
-        assert_eq!(pos, self.seqno());
-        self.log.borrow_mut().push(op.to_vec())
+    fn prepare(&mut self, pos: Seqno, op: &[u8]) -> log::Result<()> {
+        let seqno = self.seqno();
+        if pos != seqno {
+            return Err(ErrorKind::BadSequence(pos, seqno).into());
+        }
+        self.log.borrow_mut().push(op.to_vec());
+        Ok(())
     }
     fn commit_to(&mut self, pos: Seqno) -> bool {
         if Some(pos) > self.commit_point {
@@ -122,7 +126,7 @@ impl LogCommand {
         match self {
             &LogCommand::PrepareNext(ref op) => {
                 let seq = model.seqno();
-                model.prepare(seq, op)
+                model.prepare(seq, op).expect("prepare")
             }
             &LogCommand::CommitTo(ref s) => {
                 model.commit_to(s.clone());
@@ -185,7 +189,7 @@ fn apply_cmd(actual: &mut RocksdbLog, cmd: &LogCommand) -> CommandReturn {
     match cmd {
         &LogCommand::PrepareNext(ref op) => {
             let seq = actual.seqno();
-            actual.prepare(seq, op);
+            actual.prepare(seq, op).expect("prepare");
             CommandReturn::Done
         }
         &LogCommand::CommitTo(ref s) => {
@@ -323,7 +327,7 @@ fn test_can_read_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> 
                 debug!("seqs: saw: {:?}, expected: {:?}", log.seqno(), seq);
                 if let Some(seq) = seq {
                     assert_eq!(log.seqno(), seq);
-                    log.prepare(seq, &op);
+                    log.prepare(seq, &op).expect("prepare");
                     let _ = prepared.insert(seq, op);
                 }
             }
@@ -390,7 +394,7 @@ fn test_can_commit_prepared_values_prop<L: TestLog>(vals: Vec<LogCommand>) -> Te
                 assert!(seq.is_some());
                 if let Some(seq) = seq {
                     assert_eq!(log.seqno(), seq);
-                    log.prepare(seq, &op);
+                    log.prepare(seq, &op).expect("prepare");
                     let _ = prepared.insert(seq, op);
                 }
             }
@@ -418,6 +422,19 @@ fn test_can_commit_prepared_values_prop<L: TestLog>(vals: Vec<LogCommand>) -> Te
     assert_eq!(expected_commit, read_commit);
 
     TestResult::passed()
+}
+
+fn check_invalid_prepare_returns_correct_error<L: TestLog>() {
+    let mut log = L::new();
+    let seq = Seqno::zero().succ().succ();
+    let err = log.prepare(seq, &[]).err().expect("error");
+
+
+    assert_eq!(match err.kind() {
+                   &ErrorKind::BadSequence(s, e) => Some((s, e)),
+                   _ => None,
+               },
+               Some((seq, Seqno::zero())));
 }
 
 #[cfg(feature = "benches")]
@@ -458,6 +475,10 @@ mod rocksdb {
     fn bench_prepare(b: &mut Bencher) {
         super::bench_prepare::<RocksdbLog>(b)
     }
+    #[test]
+    fn invalid_prepare_returns_correct_error() {
+        super::check_invalid_prepare_returns_correct_error::<RocksdbLog>();
+    }
 }
 
 mod vec {
@@ -486,6 +507,11 @@ mod vec {
     #[bench]
     fn bench_prepare(b: &mut Bencher) {
         super::bench_prepare::<VecLog>(b)
+    }
+
+    #[test]
+    fn invalid_prepare_returns_correct_error() {
+        super::check_invalid_prepare_returns_correct_error::<VecLog>();
     }
 }
 
