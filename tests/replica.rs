@@ -44,6 +44,7 @@ fn apply_cmd<L: TestLog, O: Outputs<Dest = NodeId>>(actual: &mut ReplModel<L, No
             }
         &ReplCommand::Response(ref reply) => actual.process_downstream_response(outputs, reply),
         &ReplCommand::ConsumeFrom(seq) => actual.consume_requested(outputs, src, seq),
+        &ReplCommand::ViewChange(ref config) => actual.reconfigure(config),
         other => panic!("Unimplemented apply_cmd: {:?}", other),
     };
     actual.process_replication(outputs);
@@ -336,13 +337,12 @@ impl<L: TestLog> NetworkSim<L> {
         for t in 0..end_of_time {
             state.clock.set_time(t as u64);
             if epoch != Some(self.epoch) {
-                let configs = self.configs();
-                for (id, n) in self.nodes.iter_mut() {
-                    let config = &configs[id];
-                    debug!("configure epoch: {:?}; node: {:?}", self.epoch, config);
-                    n.reconfigure(config)
-                }
                 epoch = Some(self.epoch);
+                let configs = self.configs();
+                for (id, config) in configs {
+                    debug!("configure epoch: {:?}; node: {:?}", self.epoch, config);
+                    state.enqueue(NodeId::Oracle, id, ReplCommand::ViewChange(config));
+                }
             }
 
             let now = state.clock.now();

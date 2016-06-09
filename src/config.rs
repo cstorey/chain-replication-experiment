@@ -32,13 +32,6 @@ pub struct ConfigClient<T> {
     watcher: thread::JoinHandle<()>,
 }
 
-#[derive(Clone,Debug, Default)]
-pub struct ConfigurationView<T> {
-    pub epoch: Epoch,
-    pub ord: usize,
-    pub next: Option<T>,
-}
-
 struct InnerClient<T> {
     etcd: etcd::Client,
     data: T,

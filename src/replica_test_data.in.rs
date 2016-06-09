@@ -1,6 +1,7 @@
 #[derive(Debug, Copy, Clone,Hash, Eq,PartialEq,Ord,PartialOrd, Serialize, Deserialize)]
 pub enum NodeId {
     Client,
+    Oracle,
     Replica(usize),
 }
 
@@ -32,11 +33,12 @@ enum TraceEvent<M> {
     NodeCrashed(NodeCrashed),
 }
 
-#[derive(Debug,Eq,PartialEq, Hash, Clone, Serialize, Deserialize)]
+#[derive(Debug,Eq, PartialEq, Hash, Clone, Serialize, Deserialize)]
 enum ReplCommand {
     ClientOperation(Buf),
     ConsumeFrom(Seqno),
     Response(OpResp),
     Forward(ReplicationMessage),
     ConsumerMsg(Seqno, Buf),
+    ViewChange(ConfigurationView<NodeId>),
 }
