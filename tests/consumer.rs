@@ -106,7 +106,7 @@ impl ConsOp {
     fn satisfies_precondition(&self, model: &VecLog) -> bool {
         let ret = match self {
             &ConsOp::Log(ref c) => c.satisfies_precondition(model),
-            &ConsOp::RequestMark(m) => Some(m) <= model.read_committed(),
+            &ConsOp::RequestMark(m) => Some(m) <= model.read_committed().expect("read_committed"),
             _ => true,
         };
         trace!("ConsOp#satisfies_precondition: {:?}/{:?} -> {:?}",
@@ -215,8 +215,11 @@ fn can_totally_do_the_thing_prop<L: TestLog>(cmds: Commands) -> TestResult {
 
     log.quiesce();
 
-    let expected_msgs = if let (Some(min), Some(committed)) = (min_seq, log.read_committed()) {
+    let expected_msgs = if let (Some(min), Some(committed)) = (min_seq,
+                                                               log.read_committed()
+                                                                  .expect("read_committed")) {
         log.read_from(min)
+           .expect("read_from")
            .take_while(|&(s, _)| s <= committed)
            .inspect(|&(s, ref v)| debug!("Read: {:?} -> {:?}", s, v))
            .map(|(s, v)| (s, hash(&v)))

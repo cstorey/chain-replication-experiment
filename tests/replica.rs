@@ -544,10 +544,13 @@ impl<L: TestLog> NetworkSim<L> {
         let logs_by_node = self.nodes
                                .iter()
                                .map(|(id, n)| {
-                                   let committed_seq = n.borrow_log().read_committed();
+                                   let committed_seq = n.borrow_log()
+                                                        .read_committed()
+                                                        .expect("read_committed");
                                    debug!("Committed @{:?}: {:?}", id, committed_seq);
                                    let committed = n.borrow_log()
                                                     .read_from(Seqno::zero())
+                                                    .expect("read_from")
                                                     .take_while(|&(s, _)| Some(s) <= committed_seq)
                                                     .map(|(s, val)| (s, hash(&val)))
                                                     .collect::<BTreeMap<_, _>>();

@@ -58,13 +58,15 @@ impl Consumer {
                                                            -> bool {
         let mut changed = false;
         let next = self.low_water_mark;
-        let committed = log.read_committed();
+        let committed = log.read_committed().expect("read_committed");
         trace!("Consumer#process: committed: {:?}; next: {:?}",
                committed,
                next);
 
         if let (Some(next), Some(committed)) = (next, committed) {
-            for (i, op) in log.read_from(next).take_while(|&(i, _)| i <= committed) {
+            for (i, op) in log.read_from(next)
+                              .expect("read_from")
+                              .take_while(|&(i, _)| i <= committed) {
                 debug!("Consume seq:{:?}/{:?}; ds/seqno: {:?}",
                        i,
                        op,

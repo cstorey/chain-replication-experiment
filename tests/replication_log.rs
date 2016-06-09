@@ -33,35 +33,35 @@ impl fmt::Debug for VecLog {
 impl Log for VecLog {
     type Cursor = VecCursor;
 
-    fn seqno(&self) -> Seqno {
-        Seqno::new(self.log.borrow().len() as u64)
+    fn seqno(&self) -> log::Result<Seqno> {
+        Ok(Seqno::new(self.log.borrow().len() as u64))
     }
-    fn read_prepared(&self) -> Option<Seqno> {
-        self.log.borrow().iter().enumerate().rev().map(|(i, _)| Seqno::new(i as u64)).next()
-    }
-
-    fn read_committed(&self) -> Option<Seqno> {
-        self.commit_point
+    fn read_prepared(&self) -> log::Result<Option<Seqno>> {
+        Ok(self.log.borrow().iter().enumerate().rev().map(|(i, _)| Seqno::new(i as u64)).next())
     }
 
-    fn read_from(&self, pos: Seqno) -> Self::Cursor {
-        VecCursor(pos.offset() as usize, self.log.clone())
+    fn read_committed(&self) -> log::Result<Option<Seqno>> {
+        Ok(self.commit_point)
+    }
+
+    fn read_from(&self, pos: Seqno) -> log::Result<Self::Cursor> {
+        Ok(VecCursor(pos.offset() as usize, self.log.clone()))
     }
 
     fn prepare(&mut self, pos: Seqno, op: &[u8]) -> log::Result<()> {
-        let seqno = self.seqno();
+        let seqno = try!(self.seqno());
         if pos != seqno {
             return Err(ErrorKind::BadSequence(pos, seqno).into());
         }
         self.log.borrow_mut().push(op.to_vec());
         Ok(())
     }
-    fn commit_to(&mut self, pos: Seqno) -> bool {
+    fn commit_to(&mut self, pos: Seqno) -> log::Result<bool> {
         if Some(pos) > self.commit_point {
             self.commit_point = Some(pos);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 }
@@ -93,7 +93,7 @@ pub trait TestLog : Log {
 
 impl TestLog for RocksdbLog {
     fn new() -> Self {
-        RocksdbLog::new()
+        RocksdbLog::new().expect("RocksdbLog::new")
     }
     fn quiesce(&self) {
         RocksdbLog::quiesce(self)
@@ -125,19 +125,23 @@ impl LogCommand {
     pub fn apply_to<L: Log>(&self, model: &mut L) {
         match self {
             &LogCommand::PrepareNext(ref op) => {
-                let seq = model.seqno();
+                let seq = model.seqno().expect("seqno");
                 model.prepare(seq, op).expect("prepare")
             }
             &LogCommand::CommitTo(ref s) => {
-                model.commit_to(s.clone());
+                model.commit_to(s.clone()).expect("commit_to");
             }
             &LogCommand::ReadFrom(_) => (),
         }
     }
     pub fn satisfies_precondition(&self, model: &VecLog) -> bool {
         match self {
-            &LogCommand::CommitTo(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
-            &LogCommand::ReadFrom(ref s) => model.read_prepared().map(|p| &p >= s).unwrap_or(false),
+            &LogCommand::CommitTo(ref s) => {
+                model.read_prepared().expect("read_prepared").map(|p| &p >= s).unwrap_or(false)
+            }
+            &LogCommand::ReadFrom(ref s) => {
+                model.read_prepared().expect("read_prepared").map(|p| &p >= s).unwrap_or(false)
+            }
             _ => true,
         }
     }
@@ -188,16 +192,19 @@ fn next_state(model: &mut VecLog, cmd: &LogCommand) -> () {
 fn apply_cmd(actual: &mut RocksdbLog, cmd: &LogCommand) -> CommandReturn {
     match cmd {
         &LogCommand::PrepareNext(ref op) => {
-            let seq = actual.seqno();
+            let seq = actual.seqno().expect("seqno");
             actual.prepare(seq, op).expect("prepare");
             CommandReturn::Done
         }
         &LogCommand::CommitTo(ref s) => {
-            actual.commit_to(s.clone());
+            actual.commit_to(s.clone()).expect("commit_to");
             CommandReturn::Done
         }
         &LogCommand::ReadFrom(ref s) => {
-            CommandReturn::Read(actual.read_from(s.clone()).map(|(_, v)| v).collect())
+            CommandReturn::Read(actual.read_from(s.clone())
+                                      .expect("read_from")
+                                      .map(|(_, v)| v)
+                                      .collect())
         }
     }
 }
@@ -215,7 +222,8 @@ fn postcondition(model: &RocksdbLog, cmd: &LogCommand, ret: &CommandReturn) -> b
         }
         (&LogCommand::ReadFrom(ref seq),
          &CommandReturn::Read(ref val)) => {
-            &model.read_from(seq.clone()).map(|(_, v)| v).collect::<Vec<_>>() == val
+            &model.read_from(seq.clone()).expect("read_from").map(|(_, v)| v).collect::<Vec<_>>() ==
+            val
         }
         (cmd, ret) => {
             warn!("Unexpected command / return combination: {:?} -> {:?}",
@@ -271,7 +279,7 @@ fn should_be_correct_prop(cmds: LogCommands) -> TestResult {
 
     let model_log = VecLog::new();
 
-    let mut actual_log = RocksdbLog::new();
+    let mut actual_log = RocksdbLog::new().expect("read_from");
 
     for cmd in cmds {
         if !cmd.satisfies_precondition(&model_log) {
@@ -320,19 +328,19 @@ fn test_can_read_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> 
         trace!("apply: {:?}", cmd);
         match cmd {
             LogCommand::PrepareNext(op) => {
-                assert_eq!(seq, log.read_prepared());
+                assert_eq!(seq, log.read_prepared().expect("read_prepared"));
 
                 seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero));
                 assert!(seq.is_some());
                 debug!("seqs: saw: {:?}, expected: {:?}", log.seqno(), seq);
                 if let Some(seq) = seq {
-                    assert_eq!(log.seqno(), seq);
+                    assert_eq!(log.seqno().expect("seqno"), seq);
                     log.prepare(seq, &op).expect("prepare");
                     let _ = prepared.insert(seq, op);
                 }
             }
             LogCommand::ReadFrom(ref read_seq) => {
-                let result = log.read_from(*read_seq).map(|(_, v)| v).next();
+                let result = log.read_from(*read_seq).expect("read_from").map(|(_, v)| v).next();
                 assert_eq!(result.as_ref(), prepared.get(read_seq))
             }
             LogCommand::CommitTo(_) => (),
@@ -393,13 +401,13 @@ fn test_can_commit_prepared_values_prop<L: TestLog>(vals: Vec<LogCommand>) -> Te
                 seq = Some(seq.as_ref().map(Seqno::succ).unwrap_or_else(Seqno::zero));
                 assert!(seq.is_some());
                 if let Some(seq) = seq {
-                    assert_eq!(log.seqno(), seq);
+                    assert_eq!(log.seqno().expect("seqno"), seq);
                     log.prepare(seq, &op).expect("prepare");
                     let _ = prepared.insert(seq, op);
                 }
             }
             LogCommand::CommitTo(ref commit) => {
-                let _ = log.commit_to(*commit);
+                let _ = log.commit_to(*commit).expect("commit_to");
             }
             LogCommand::ReadFrom(_) => (),
         }
@@ -407,8 +415,8 @@ fn test_can_commit_prepared_values_prop<L: TestLog>(vals: Vec<LogCommand>) -> Te
     debug!("Stopping Log");
     log.quiesce();
 
-    let read_commit = log.read_committed();
-    let read_prepared = log.read_prepared();
+    let read_commit = log.read_committed().expect("read_committed");
+    let read_prepared = log.read_prepared().expect("read_prepared");
     log.stop();
     debug!("Stopped Log");
 

@@ -29,7 +29,7 @@ fn main() {
 
     let mut event_loop = mio::EventLoop::new().expect("Create event loop");
 
-    let log = RocksdbLog::new();
+    let log = RocksdbLog::new().expect("RocksdbLog::new");
     let replication = ReplModel::new(log);
 
     let mut service = ChainRepl::new(ReplProxy::build(replication,

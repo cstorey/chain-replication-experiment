@@ -9,7 +9,7 @@ use data::{Buf, OpResp, PeerMsg, Seqno};
 use config::{ConfigurationView, Epoch};
 use consumer::Consumer;
 // For the error types. We should make Err an associated type.
-use replication_log;
+use replication_log as log;
 use Notifier;
 use hybrid_clocks::{Clock, Timestamp, Wall, WallT};
 
@@ -44,12 +44,12 @@ enum ReplRole<D: Hash + Eq> {
 
 pub trait Log: fmt::Debug {
     type Cursor : Iterator<Item=(Seqno, Vec<u8>)>;
-    fn seqno(&self) -> Seqno;
-    fn read_prepared(&self) -> Option<Seqno>;
-    fn read_committed(&self) -> Option<Seqno>;
-    fn read_from<'a>(&'a self, Seqno) -> Self::Cursor;
-    fn prepare(&mut self, Seqno, &[u8]) -> replication_log::Result<()>;
-    fn commit_to(&mut self, Seqno) -> bool;
+    fn seqno(&self) -> log::Result<Seqno>;
+    fn read_prepared(&self) -> log::Result<Option<Seqno>>;
+    fn read_committed(&self) -> log::Result<Option<Seqno>>;
+    fn read_from<'a>(&'a self, Seqno) -> log::Result<Self::Cursor>;
+    fn prepare(&mut self, Seqno, &[u8]) -> log::Result<()>;
+    fn commit_to(&mut self, Seqno) -> log::Result<bool>;
 }
 
 pub trait Outputs {
@@ -217,14 +217,16 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
 
         let mut changed = false;
         let send_next = self.last_prepared_downstream.map(|s| s.succ()).unwrap_or_else(Seqno::zero);
-        let max_to_prepare_now = log.seqno();
+        let max_to_prepare_now = log.seqno().expect("seqno");
         debug!("Window prepare {:?} - {:?}; prepared locally: {:?}",
                send_next,
                max_to_prepare_now,
                log.read_prepared());
 
         if send_next <= max_to_prepare_now {
-            for (i, op) in log.read_from(send_next).take_while(|&(i, _)| i <= max_to_prepare_now) {
+            for (i, op) in log.read_from(send_next)
+                              .expect("read_from")
+                              .take_while(|&(i, _)| i <= max_to_prepare_now) {
                 debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}",
                        i,
                        op,
@@ -245,7 +247,7 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
         if let (Some(ds_prepared), ds_committed, Some(our_committed)) =
                (self.last_prepared_downstream,
                 self.last_committed_downstream,
-                log.read_committed()) {
+                log.read_committed().expect("read_committed")) {
             let max_to_commit_now = cmp::min(ds_prepared, our_committed);
             if ds_committed.map(|c| c < max_to_commit_now).unwrap_or(true) {
                 debug!("Window commit {:?} - {:?}; committed locally: {:?}",
@@ -412,11 +414,11 @@ impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
     }
 
     pub fn seqno(&self) -> Seqno {
-        self.log.seqno()
+        self.log.seqno().expect("seqno")
     }
 
     fn next_seqno(&self) -> Seqno {
-        self.log.seqno()
+        self.log.seqno().expect("seqno")
     }
 
     fn run_from(&mut self, rx: Receiver<ReplOp<L, D>>, mut tx: Notifier)
@@ -498,7 +500,7 @@ impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
 
     fn flush(&mut self) -> bool {
         if self.is_head {
-            self.upstream_committed = self.log.read_prepared();
+            self.upstream_committed = self.log.read_prepared().expect("read_prepared");
             trace!("Auto committing to: {:?}", self.upstream_committed);
         } else {
             trace!("Flush to upstream commit point: {:?}",
@@ -509,7 +511,8 @@ impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
             Some(seqno) if self.commit_requested < self.upstream_committed => {
                 trace!("Commit for {:?}", seqno);
                 self.commit_requested = self.upstream_committed;
-                self.log.commit_to(seqno)
+                self.log.commit_to(seqno).expect("commit_to");
+                true
             }
             _ => false,
         }
@@ -522,7 +525,7 @@ impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
                                                   epoch: Epoch) {
         debug!("{}; hello_downstream: {:?}; {:?}", at, token, epoch);
 
-        let msg = OpResp::HelloIWant(at, self.log.seqno());
+        let msg = OpResp::HelloIWant(at, self.log.seqno().expect("Seqno"));
         info!("Inform upstream about our current version, {:?}!", msg);
         out.respond_to(token, &msg)
     }
