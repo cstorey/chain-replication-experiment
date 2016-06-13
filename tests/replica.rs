@@ -110,8 +110,8 @@ fn simulate_tail_crash() {
 
     let mut sim = NetworkSim::<VecLog>::new(3);
     let mut produced_messages = Vec::new();
-    sim.run_for(15, "simulate_tail_crash", |t, sim, state| {
-        if t == 2 {
+    sim.run_for(100, "simulate_tail_crash", |t, sim, state| {
+        if t == 5 {
             let tail = sim.tail_node();
             sim.crash_node(state, tail)
         }
@@ -356,14 +356,13 @@ impl<L: TestLog> NetworkSim<L> {
                 break;
             }
 
-            self.step(&mut state);
+            self.step(&mut state, &path);
             debug!("network state {:?}; quiet:{:?}; : {:?}",
                    t,
                    state.is_quiescent(),
                    state);
 
         }
-        state.tracer.persist_to(&path);
         debug!("messages: {:#?}", state.tracer.messages());
         assert!(state.is_quiescent());
 
@@ -417,11 +416,11 @@ impl<L: TestLog> NetworkSim<L> {
             (&ReplCommand::Response(OpResp::Ok(_, s0, _)),
              &ReplCommand::Response(OpResp::Ok(_, s1, _))) => s0 == s1,
             (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::HelloDownstream, epoch: _, .. }),
-                 &ReplCommand::Response(OpResp::HelloIWant(_, _)))
+                 &ReplCommand::Response(OpResp::HelloIHave(_, _)))
                 => true,
-            (&ReplCommand::Response(OpResp::HelloIWant(_, s0)),
+            (&ReplCommand::Response(OpResp::HelloIHave(_, s0)),
              &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) => {
-                s0 <= s1
+                s0 <= Some(s1)
             }
             (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s0), .. }),
              &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s1), .. })) => {
@@ -604,13 +603,14 @@ impl<L: TestLog> NetworkSim<L> {
             .collect()
     }
 
-    fn step(&mut self, state: &mut NetworkState) {
+    fn step(&mut self, state: &mut NetworkState, path: &Path) {
         while let Some((src, dest, input)) = state.dequeue_one() {
             debug!("Inputs: {:?} -> {:?}: {:?}", src, dest, input);
             if dest == self.client_id {
                 self.client_buf.push_back(input);
             } else {
                 if let Some(ref mut n) = self.nodes.get_mut(&dest) {
+                    state.tracer.persist_to(&path);
                     let mut output = OutBufs {
                         node_id: dest,
                         ports: state,

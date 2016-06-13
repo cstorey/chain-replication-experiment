@@ -25,6 +25,7 @@ struct Forwarder<D> {
 #[derive(Debug)]
 struct Terminus<D: Hash + Eq> {
     consumers: HashMap<D, Consumer>,
+    pending_operations: HashMap<Seqno, D>,
 }
 
 #[derive(Debug)]
@@ -154,7 +155,12 @@ impl<D: fmt::Debug + Eq + Hash + Clone> ReplRole<D> {
     }
 
     fn move_terminus(&mut self) {
-        *self = ReplRole::Terminus(Terminus::new());
+        let it = match self {
+            &mut ReplRole::Forwarder(ref f) => f.to_terminus(),
+            &mut ReplRole::Terminus(ref t) => t.to_terminus(),
+            &mut ReplRole::Handshaking(ref h) => h.to_terminus(),
+        };
+        *self = ReplRole::Terminus(it);
     }
 }
 
@@ -275,11 +281,17 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
     fn to_handshaker(&self, epoch: Epoch, downstream: D) -> Handshaker<D> {
         Handshaker::new(epoch, downstream, self.pending_operations.clone())
     }
+    fn to_terminus(&self) -> Terminus<D> {
+        Terminus::new(self.pending_operations.clone())
+    }
 }
 
 impl<D: fmt::Debug + Clone + Eq + Hash> Terminus<D> {
-    fn new() -> Terminus<D> {
-        Terminus { consumers: HashMap::new() }
+    fn new(pending: HashMap<Seqno, D>) -> Terminus<D> {
+        Terminus {
+            consumers: HashMap::new(),
+            pending_operations: pending,
+        }
     }
 
     fn process_operation<O: Outputs<Dest = D>>(&mut self,
@@ -306,10 +318,21 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Terminus<D> {
 
     fn process_replication<L: Log, O: Outputs<Dest = D>>(&mut self,
                                                          _clock: &mut Clock<Wall>,
-                                                         _epoch: Epoch,
+                                                         epoch: Epoch,
                                                          log: &L,
                                                          out: &mut O)
                                                          -> bool {
+        for (seqno, token) in self.pending_operations.drain() {
+            let reply = OpResp::Err(epoch,
+                                    seqno,
+                                    "Configuration changed whilst processing".to_string());
+            trace!("Found in-flight op {:?} for client token {:?}; respond as indeterminate",
+                   seqno,
+                   token);
+            out.respond_to(token, &reply);
+        }
+
+
         let mut changed = false;
         for (token, cons) in self.consumers.iter_mut() {
             changed |= cons.process(out, token.clone(), log)
@@ -319,6 +342,10 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Terminus<D> {
 
     fn to_handshaker(&self, epoch: Epoch, downstream: D) -> Handshaker<D> {
         Handshaker::new(epoch, downstream, HashMap::new())
+    }
+
+    fn to_terminus(&self) -> Terminus<D> {
+        Terminus::new(self.pending_operations.clone())
     }
 }
 
@@ -398,6 +425,10 @@ impl<D: Eq + Hash + fmt::Debug + Clone> Handshaker<D> {
         Forwarder::new(self.downstream.clone(), self.pending_operations.clone())
             .downstream_prepared(downstream_prepared)
     }
+
+    fn to_terminus(&self) -> Terminus<D> {
+        Terminus::new(self.pending_operations.clone())
+    }
 }
 
 impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
@@ -406,7 +437,7 @@ impl<L: Log, D: Eq + Hash + Clone + fmt::Debug> ReplModel<L, D> {
             log: log,
             current_epoch: Default::default(),
             clock: Clock::wall(),
-            next: ReplRole::Terminus(Terminus::new()),
+            next: ReplRole::Terminus(Terminus::new(HashMap::new())),
             upstream_committed: None,
             commit_requested: None,
             is_head: false,
