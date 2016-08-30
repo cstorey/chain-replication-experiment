@@ -15,7 +15,7 @@ extern crate rand;
 
 extern crate etcd;
 extern crate tempdir;
-extern crate rocksdb;
+extern crate lmdb_zero;
 extern crate byteorder;
 extern crate hex_slice;
 extern crate hybrid_clocks;

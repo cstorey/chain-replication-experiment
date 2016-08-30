@@ -550,6 +550,7 @@ impl<L: TestLog> NetworkSim<L> {
                                    let committed = n.borrow_log()
                                                     .read_from(Seqno::zero())
                                                     .expect("read_from")
+                                                    .map(|it| it.expect("read from item"))
                                                     .take_while(|&(s, _)| Some(s) <= committed_seq)
                                                     .map(|(s, val)| (s, hash(&val)))
                                                     .collect::<BTreeMap<_, _>>();

@@ -66,6 +66,7 @@ impl Consumer {
         if let (Some(next), Some(committed)) = (next, committed) {
             for (i, op) in log.read_from(next)
                               .expect("read_from")
+                              .map(|it| it.expect("read_from item"))
                               .take_while(|&(i, _)| i <= committed) {
                 debug!("Consume seq:{:?}/{:?}; ds/seqno: {:?}",
                        i,

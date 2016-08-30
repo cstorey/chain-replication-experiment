@@ -22,7 +22,6 @@ pub struct VecCursor(usize, Rc<RefCell<Vec<Vec<u8>>>>);
 
 impl fmt::Debug for VecLog {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-
         fmt.debug_struct("VecLog")
            .field("mark/prepared", &self.log.borrow().len())
            .field("mark/committed", &self.commit_point)
@@ -30,8 +29,22 @@ impl fmt::Debug for VecLog {
     }
 }
 
+#[derive(Debug)]
+pub enum CannotFail {}
+impl ::std::fmt::Display for CannotFail {
+    fn fmt(&self, _fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        Ok(())
+    }
+}
+impl ::std::error::Error for CannotFail {
+    fn description(&self) -> &'static str {
+        "cannot fail"
+    }
+}
+
 impl Log for VecLog {
     type Cursor = VecCursor;
+    type Error = CannotFail;
 
     fn seqno(&self) -> log::Result<Seqno> {
         Ok(Seqno::new(self.log.borrow().len() as u64))
@@ -67,9 +80,9 @@ impl Log for VecLog {
 }
 
 impl iter::Iterator for VecCursor {
-    type Item = (Seqno, Vec<u8>);
+    type Item = Result<(Seqno, Vec<u8>), CannotFail>;
     fn next(&mut self) -> Option<Self::Item> {
-        let res = self.1.borrow().get(self.0).map(|x| (Seqno::new(self.0 as u64), x.clone()));
+        let res = self.1.borrow().get(self.0).map(|x| Ok((Seqno::new(self.0 as u64), x.clone())));
         self.0 += 1;
         res
     }
@@ -203,6 +216,7 @@ fn apply_cmd(actual: &mut RocksdbLog, cmd: &LogCommand) -> CommandReturn {
         &LogCommand::ReadFrom(ref s) => {
             CommandReturn::Read(actual.read_from(s.clone())
                                       .expect("read_from")
+                                      .map(|it| it.expect("read from item"))
                                       .map(|(_, v)| v)
                                       .collect())
         }
@@ -222,8 +236,9 @@ fn postcondition(model: &RocksdbLog, cmd: &LogCommand, ret: &CommandReturn) -> b
         }
         (&LogCommand::ReadFrom(ref seq),
          &CommandReturn::Read(ref val)) => {
-            &model.read_from(seq.clone()).expect("read_from").map(|(_, v)| v).collect::<Vec<_>>() ==
-            val
+            &model.read_from(seq.clone()).expect("read_from")
+                .map(|it| it.expect("read from item"))
+                .map(|(_, v)| v).collect::<Vec<_>>() == val
         }
         (cmd, ret) => {
             warn!("Unexpected command / return combination: {:?} -> {:?}",
@@ -340,7 +355,9 @@ fn test_can_read_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> 
                 }
             }
             LogCommand::ReadFrom(ref read_seq) => {
-                let result = log.read_from(*read_seq).expect("read_from").map(|(_, v)| v).next();
+                let result = log.read_from(*read_seq).expect("read_from")
+                                      .map(|it| it.expect("read from item"))
+                                      .map(|(_, v)| v).next();
                 assert_eq!(result.as_ref(), prepared.get(read_seq))
             }
             LogCommand::CommitTo(_) => (),

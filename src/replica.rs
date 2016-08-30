@@ -3,6 +3,7 @@ use std::fmt;
 use std::thread;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::error;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use data::{Buf, OpResp, PeerMsg, Seqno};
@@ -44,7 +45,8 @@ enum ReplRole<D: Hash + Eq> {
 }
 
 pub trait Log: fmt::Debug {
-    type Cursor : Iterator<Item=(Seqno, Vec<u8>)>;
+    type Cursor : Iterator<Item=Result<(Seqno, Vec<u8>), Self::Error>>;
+    type Error : error::Error;
     fn seqno(&self) -> log::Result<Seqno>;
     fn read_prepared(&self) -> log::Result<Option<Seqno>>;
     fn read_committed(&self) -> log::Result<Option<Seqno>>;
@@ -235,6 +237,7 @@ impl<D: fmt::Debug + Clone + Eq + Hash> Forwarder<D> {
         if send_next <= max_to_prepare_now {
             for (i, op) in log.read_from(send_next)
                               .expect("read_from")
+                              .map(|it| it.expect("read_from item"))
                               .take_while(|&(i, _)| i <= max_to_prepare_now) {
                 debug!("Queueing seq:{:?}/{:?}; ds/seqno: {:?}",
                        i,

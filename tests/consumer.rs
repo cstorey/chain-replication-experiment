@@ -220,6 +220,7 @@ fn can_totally_do_the_thing_prop<L: TestLog>(cmds: Commands) -> TestResult {
                                                                   .expect("read_committed")) {
         log.read_from(min)
            .expect("read_from")
+           .map(|it| it.expect("read from item"))
            .take_while(|&(s, _)| s <= committed)
            .inspect(|&(s, ref v)| debug!("Read: {:?} -> {:?}", s, v))
            .map(|(s, v)| (s, hash(&v)))

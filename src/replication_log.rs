@@ -1,7 +1,9 @@
 use std::fmt;
 use std::io;
-use rocksdb::{DB, DBIterator, Direction, IteratorMode, Options, Writable, WriteBatch, WriteOptions};
-use rocksdb::ffi::DBCFHandle;
+use lmdb_zero::{self, Environment, EnvBuilder, Database, ConstAccessor, ReadTransaction,
+                WriteTransaction, put, open, error};
+
+use hex_slice::AsHex;
 use tempdir::TempDir;
 use data::Seqno;
 use replica::Log;
@@ -64,6 +66,7 @@ error_chain! {
     links {}
     foreign_links {
         io::Error, Io, "I/O error";
+        lmdb_zero::Error, Lmdb, "Db error";
     }
     errors {
         BadSequence(saw: Seqno, expected: Seqno)
@@ -72,14 +75,14 @@ error_chain! {
     }
 }
 
+// 1TGB. That'll be enough, right?
+const ARBITARILY_LARGE: usize = 1 << 40;
 
 pub struct RocksdbLog {
     dir: TempDir,
-    db: Arc<DB>,
+    env: Arc<Environment>,
     seqno_prepared: Option<Seqno>,
 }
-
-pub struct RocksdbCursor(DBIterator);
 
 const META: &'static str = "meta";
 const DATA: &'static str = "data";
@@ -92,79 +95,104 @@ impl fmt::Debug for RocksdbLog {
     }
 }
 
+fn open_db<'a>(env: &'a Environment, name: &str) -> Result<Database<'a>> {
+    let db = try!(Database::open(env,
+                                 Some(name),
+                                 &lmdb_zero::DatabaseOptions::new(lmdb_zero::db::CREATE)));
+    Ok(db)
+}
+
 impl RocksdbLog {
     pub fn new() -> Result<RocksdbLog> {
         let d = try!(TempDir::new("rocksdb-log"));
         info!("DB path: {:?}", d.path());
-        let mut db = try!(DB::open_default(&d.path().to_string_lossy()));
-        let _meta = try!(db.create_cf(META, &Options::new()));
-        let _data = try!(db.create_cf(DATA, &Options::new()));
-        let db = Arc::new(db);
+        let mut b = try!(EnvBuilder::new());
+        try!(b.set_maxdbs(3));
+        try!(b.set_mapsize(ARBITARILY_LARGE));
+        let env = unsafe {
+            try!(b.open(d.path().to_str().expect("string"),
+                    open::Flags::empty(), 0o777)) };
 
-        let seqno_prepared = try!(Self::do_read_seqno(&db, META_PREPARED));
+        let seqno_prepared = {
+            let meta  = try!(open_db(&env, META));
+            let _  = try!(open_db(&env, DATA));
+
+            let txn = try!(ReadTransaction::new(&env));
+            try!(Self::do_read_seqno(&meta, &txn.access(), META_PREPARED))
+        };
         Ok(RocksdbLog {
             dir: d,
-            db: db,
+            env: Arc::new(env),
             seqno_prepared: seqno_prepared,
         })
     }
 
-    fn meta(db: &DB) -> Result<DBCFHandle> {
-        db.cf_handle(META).map(Clone::clone).ok_or(ErrorKind::MissingCf(META.to_string()).into())
+    fn meta(env: &Environment) -> Result<Database> {
+        Ok(try!(open_db(&env, META)))
     }
 
-    fn data(db: &DB) -> Result<DBCFHandle> {
-        db.cf_handle(DATA).map(Clone::clone).ok_or(ErrorKind::MissingCf(DATA.to_string()).into())
+    fn data(env: &Environment) -> Result<Database> {
+        Ok(try!(open_db(&env, DATA)))
     }
 
-    fn do_read_seqno(db: &DB, name: &str) -> Result<Option<Seqno>> {
-        match try!(db.get_cf(try!(Self::meta(&db)), name.as_bytes())) {
-            Some(val) => Ok(Some(Seqno::fromkey(&val))),
-            None => Ok(None),
-        }
+    fn do_read_seqno(meta: &Database, txn: &ConstAccessor, name: &str) -> Result<Option<Seqno>> {
+        let val = {
+            let val = match txn.get(meta, name) {
+                Ok(val) => Some(Seqno::fromkey(val)),
+                Err(e) if e.code == error::NOTFOUND => None,
+                Err(e) => return Err(e.into()),
+            };
+            val
+        };
+
+        Ok(val)
     }
+
 
     fn read_seqno(&self, name: &str) -> Result<Option<Seqno>> {
-        Self::do_read_seqno(&self.db, name)
+        let meta = Self::meta(&self.env);
+        let txn = try!(ReadTransaction::new(&self.env));
+        Self::do_read_seqno(&try!(meta), &txn.access(), name)
     }
 
-    fn do_commit_to(db: &DB, commit_seqno: Seqno) -> Result<()> {
+    fn do_commit_to(env: &Environment, commit_seqno: Seqno) -> Result<()> {
         debug!("Commit {:?}", commit_seqno);
-        let meta = try!(Self::meta(&db));
+        let meta = try!(Self::meta(&env));
         let key = Seqno::tokey(&commit_seqno);
 
-        let prepared = try!(Self::do_read_seqno(&db, META_PREPARED));
-        let committed = try!(Self::do_read_seqno(&db, META_COMMITTED));
-
-        debug!("Committing: {:?}, committed, {:?}, prepared: {:?}",
-               committed,
-               committed,
-               prepared);
-
-        if let Some(p) = prepared {
-            if p < commit_seqno {
-                return Err(ErrorKind::BadCommit(p, commit_seqno).into());
-            }
-        }
-
-        if committed == Some(commit_seqno) {
-            debug!("Skipping, commits up to date");
-            return Ok(());
-        }
-
         let t0 = PreciseTime::now();
-        let mut opts = WriteOptions::new();
-        opts.set_sync(true);
-        db.put_cf_opt(meta, META_COMMITTED.as_bytes(), &key.as_ref(), &opts)
-          .expect("Persist commit point");
+        let txn = try!(WriteTransaction::new(&env));
+
+        {
+            let mut accessor = txn.access();
+            let prepared = try!(Self::do_read_seqno(&meta, &accessor, META_PREPARED));
+            let committed = try!(Self::do_read_seqno(&meta, &accessor, META_COMMITTED));
+
+            debug!("Committing: {:?}, committed, {:?}, prepared: {:?}",
+                    committed,
+                    committed,
+                    prepared);
+
+            if let Some(p) = prepared {
+                if p < commit_seqno {
+                    return Err(ErrorKind::BadCommit(p, commit_seqno).into());
+                }
+            }
+
+            if committed == Some(commit_seqno) {
+                debug!("Skipping, commits up to date");
+                return Ok(());
+            }
+
+            try!(accessor.put(&meta, META_COMMITTED.as_bytes(), &key, put::Flags::empty()));
+        }
+        try!(txn.commit());
         let t1 = PreciseTime::now();
         debug!("Committed {:?} in: {}", commit_seqno, t0.to(t1));
         Ok(())
     }
 
     pub fn stop(self) {
-        let RocksdbLog { db, .. } = self;
-        drop(db);
     }
 
     pub fn quiesce(&self) {}
@@ -172,6 +200,7 @@ impl RocksdbLog {
 
 impl Log for RocksdbLog {
     type Cursor = RocksdbCursor;
+    type Error = Error;
 
     fn seqno(&self) -> Result<Seqno> {
         let prepared = try!(self.read_prepared());
@@ -187,12 +216,7 @@ impl Log for RocksdbLog {
     }
 
     fn read_from(&self, seqno: Seqno) -> Result<RocksdbCursor> {
-        let key = Seqno::tokey(&seqno);
-        let datacf = try!(Self::data(&self.db));
-        let iter = try!(self.db
-                            .iterator_cf(datacf,
-                                         IteratorMode::From(&key.as_ref(), Direction::Forward)));
-        Ok(RocksdbCursor(iter))
+        Ok(RocksdbCursor(self.env.clone(), seqno))
     }
 
 
@@ -212,13 +236,19 @@ impl Log for RocksdbLog {
         // };
 
         let t0 = PreciseTime::now();
-        let batch = WriteBatch::new();
-        try!(batch.put_cf(try!(Self::data(&self.db)), &key.as_ref(), &data_bytes));
-        try!(batch.put_cf(try!(Self::meta(&self.db)),
-                          META_PREPARED.as_bytes(),
-                          &key.as_ref()));
-        try!(self.db.write(batch));
+        let data = try!(Self::data(&self.env));
+        let meta = try!(Self::meta(&self.env));
+        let txn = try!(WriteTransaction::new(&self.env));
+        {
+            let mut access = txn.access();
+            try!(access.put(&data, &key, data_bytes, put::NOOVERWRITE));
+            try!(access.put(&meta, META_PREPARED, &key, put::Flags::empty()));
+        }
+        try!(txn.commit());
+        drop(meta);
+        drop(data);
         let t1 = PreciseTime::now();
+
         trace!("Prepare: {}", t0.to(t1));
         self.seqno_prepared = Some(seqno);
 
@@ -233,7 +263,7 @@ impl Log for RocksdbLog {
         let committed = try!(self.read_seqno(META_COMMITTED));
         if committed.map(|c| c < seqno).unwrap_or(true) {
             trace!("Request to commit {:?} -> {:?}", committed, seqno);
-            try!(Self::do_commit_to(&self.db, seqno));
+            try!(Self::do_commit_to(&self.env, seqno));
             Ok(true)
         } else {
             trace!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
@@ -242,15 +272,52 @@ impl Log for RocksdbLog {
     }
 }
 
-impl iter::Iterator for RocksdbCursor {
-    type Item = (Seqno, Vec<u8>);
-    fn next(&mut self) -> Option<Self::Item> {
-        let &mut RocksdbCursor(ref mut iter) = self;
-        if let Some((key, val)) = iter.next() {
+#[derive(Debug)]
+pub struct RocksdbCursor(Arc<Environment>, Seqno);
+
+impl RocksdbCursor {
+    fn read_next(&mut self) -> Result<Option<(Seqno, Vec<u8>)>> {
+        let &mut RocksdbCursor(ref env, ref mut seqno) = self;
+            let data = try!(RocksdbLog::data(&env));
+            let txn = try!(ReadTransaction::new(&env));
+            let key = Seqno::tokey(&seqno);
+            let mut cursor = try!(txn.cursor(&data).chain_err(|| "get cursor"));
+            debug!("Attempt read from: {:?}/{:x}", seqno, key.as_hex());
+            let ret = match try!(mdb_maybe(cursor.seek_range_k::<[u8], [u8]>(&txn.access(), &key))) {
+                Some((k, v)) => {
+                    let read_seq = Seqno::fromkey(k);
+                    debug!("Read from: {:?}/{:x}", read_seq, key.as_hex());
+                    *seqno = read_seq.succ();
+                    (read_seq, v.to_vec())
+                },
+                None => return Ok(None),
+            };
+
+            Ok(Some(ret))
+        /*if let Some((key, val)) = iter.next() {
             let seqno = Seqno::fromkey(&key);
             Some((seqno, val.to_vec()))
         } else {
             None
         }
+        */
+    }
+}
+impl iter::Iterator for RocksdbCursor {
+    type Item = Result<(Seqno, Vec<u8>)>;
+    fn next(&mut self) -> Option<Self::Item> {
+        return self.read_next()
+            .map(|ot| ot.map(Ok))
+            .unwrap_or_else(|e| Some(Err(e)))
+    }
+}
+
+
+fn mdb_maybe<T>(res: ::std::result::Result<T, lmdb_zero::Error>)
+                -> ::std::result::Result<Option<T>, lmdb_zero::Error> {
+    match res {
+        Ok(kv) => Ok(Some(kv)),
+        Err(e) if e.code == error::NOTFOUND => Ok(None),
+        Err(e) => Err(e),
     }
 }
