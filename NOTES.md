@@ -19,7 +19,7 @@ Express interfaces in terms of messages; tell-don't-ask style. So:
  * Replication session ID consists of (address ref@epoch). Logically, the replication process begins anew for each configuration epoch.
  * So, because replication messages are only valid for a particular configuration, we can assume that all peers logically reconnect for each epoch.
 * Also, probably best to have upstream ask downstream peer for water marks, rather than relying on implicit banner on connect. This means we do not need to retain any state across configurations, and more consistency in message patterns.
- 
+
 
 ## Tracing
 
@@ -48,3 +48,35 @@ In order to create a useful summary, we need to identify a causal cut across a p
 ## Configuration mechanism is weird
 
 A few models of Chain Replication (eg: CORFU) talk about rendering a replica immutable, where the optimisation would be to inherit an existing replica's data. At the moment, we get a struct from the coordinator (ie: the threads that poke `etcd`), which we then interpret on an ad-hoc basis, prodding the `Replica` as we go. It might be better to dispose of the existing replica object, and re-build it, factory-style, from the configuration.
+
+## Fault injection testing.
+
+Basically, use molly-style approach to reason backwards from good outcomes, to find places where we can drop messages that may well invalidate the run. So, we take our outcome (All acks that the client receives are committed on all nodes) and work backwards to find what lead up to that result. eg:
+
+ 1. head received publish from client (CH1)
+ 2. middle recieved prepare from head (HM2)
+ 3. tail recieved prepare from middle (MT3)
+ 4. head committed item successfully to log
+ 5. middle recieved commit from head (HM5)
+ 6. middle committed item successfully to log
+ 7. tail recieved commit from middle (MT7)
+ 8. tail committed item successfully to log
+ 9. middle received ack from tail (TM9)
+ 10. the head node recieved an ack from middle (MH10)
+ 11. client receives okay from head (HC11)
+
+So, each event can be identified in terms of a (sender, recipient, time) tuple. if we assume (for a single round) that the schedule is invariant, we want to find some combination of message drops that any one of these actions does not happen.
+
+So, if we express these actions as a formula, then the outcome of the item getting committed on the tail is:
+
+Committed1(Head) = CH1
+Committed1(Mid)  = CH1 & HM2 & HM5
+Committed1(Tail) = CH1 & HM2 & MT3 & HM5 & MT7
+
+Commit invariant(N) = (C(N, Mid) => C(N, Head)) & (C(N, Tail) => C(N, Mid))
+
+Client view(N) = (HC11 => C(N, Tail))
+
+Our hypothesis is that no matter what pattern of message drops the system encounters, the system will be able to compensate and recover.  So, we want to find a pattern of message drops (or substitutions for the logical variables CH1, HM2, ...) that will render our invariants, rendered as a boolean formula, false.
+
+During operation, we trace messages, and infer causality from that. We can then read out the commit offsets from each simulated node, and correlate those with received commit messages.

@@ -32,6 +32,15 @@ def parse(f):
             ts.add(time)
             processes.add(pid)
 
+        elif 'Committed' in data:
+            s = data['Committed']
+            pid = str(s['process'])
+            time = tuple(s['time'])
+            offset = str(dict(committed_to=s['offset']))
+            proc_tls[pid][time] = offset
+            ts.add(time)
+            processes.add(pid)
+
         elif 'MessageRecv' in data:
             r = data['MessageRecv']
             dst = str(r['dst']);
@@ -43,6 +52,7 @@ def parse(f):
             ts.add(recv)
             last = last_deliveries.get(dst, (0,));
             last_deliveries[dst] = recv if last < recv else last
+
         elif 'NodeCrashed' in data:
             c = data['NodeCrashed']
             proc = str(c['process'])
@@ -51,7 +61,7 @@ def parse(f):
             ts.add(t)
             node_crashes[proc] = t
         else:
-            print >> sys.stderr, "unrecognised type: %(type)s" % data
+            print >> sys.stderr, "unrecognised type: %r" % (data.keys(),)
 
     graph = graphviz.Digraph()# rankdir="TD", splines="line");
 

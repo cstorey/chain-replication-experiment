@@ -241,7 +241,6 @@ impl Tracer {
         Tracer { entries: Vec::new() }
     }
     fn state(&mut self, t: Timestamp<u64>, process: &NodeId, state: String) {
-
         let m = ProcessState {
             time: t,
             process: *process,
@@ -273,6 +272,15 @@ impl Tracer {
         };
         self.entries.push(TraceEvent::NodeCrashed(m));
     }
+    fn committed(&mut self, t: Timestamp<u64>, process: &NodeId, offset: Seqno) {
+        let m = Committed {
+            time: t,
+            process: *process,
+            offset: offset,
+        };
+        self.entries.push(TraceEvent::Committed(m));
+    }
+
     fn persist_to(&self, path: &Path) {
         let mut f = File::create(path).expect("create file");
         serde_json::to_writer(&mut f, &self.entries).expect("write json");
@@ -349,6 +357,14 @@ impl<L: TestLog> NetworkSim<L> {
             for (id, n) in self.nodes.iter() {
                 state.tracer.state(now, id, format!("{:?}", n));
             }
+            let now = state.clock.now();
+            for (id, model) in self.nodes.iter() {
+                if let Some(offset) = model.borrow_log()
+                    .read_committed()
+                        .expect("read_committed") {
+                            state.tracer.committed(now, id, offset);
+                        }
+            }
 
             debug!("time: {:?}/{:?}", t, end_of_time);
             f(t, self, &mut state);
@@ -363,15 +379,18 @@ impl<L: TestLog> NetworkSim<L> {
                    state);
 
         }
+
+        state.tracer.persist_to(&path);
         debug!("messages: {:#?}", state.tracer.messages());
         assert!(state.is_quiescent());
 
         let tracer = state.tracer;
-
-        Self::infer_causality(tracer.messages());
+        let messages = tracer.messages();
+        let deps = Self::infer_causality(&messages);
     }
 
-    fn infer_causality(messages: Vec<&MessageRecv<ReplCommand>>) {
+    fn infer_causality<'a>(messages: &'a [&MessageRecv<ReplCommand>]) ->
+            Graph<&'a MessageRecv<ReplCommand>, usize> {
         let mut g = Graph::new();
         let mut nodes = HashMap::new();
 
@@ -379,24 +398,29 @@ impl<L: TestLog> NetworkSim<L> {
                               .enumerate()
                               .flat_map(|(yi, y)| messages[..yi].iter().map(move |x| (x, y)))
                               .filter(|&(ref x, ref y)| x.sent < y.recv) {
-            debug!("Compare: {:?}", x);
-            debug!("   with: {:?}", y);
             let causedp = if x.dst == y.src {
+                debug!("Compare: {:?}", x);
+                debug!("   with: {:?}", y);
                 Self::peer_message_causal(&x.data, &y.data)
-            } else {
+            } else if x.src == y.src {
+                debug!("Compare: {:?}", x);
+                debug!("   with: {:?}", y);
                 Self::self_message_causal(&x.data, &y.data)
+            } else {
+                false
             };
 
-            let xn = *nodes.entry(*x).or_insert_with(|| g.add_node(format!("{:#?}", x)));
-            let yn = *nodes.entry(*y).or_insert_with(|| g.add_node(format!("{:#?}", y)));
-            debug!("causedp: {:?}; {:?}->{:?}", causedp, xn, yn);
             if causedp {
+                let xn = *nodes.entry(*x).or_insert_with(|| g.add_node(x.clone()));
+                let yn = *nodes.entry(*y).or_insert_with(|| g.add_node(y.clone()));
+                debug!("causedp: {:?}; {:?}->{:?}", causedp, (x.src, x.dst), (y.src, y.dst));
                 g.update_edge(xn, yn, 1usize);
             }
         }
         let mut of = File::create("target/causality.dot").expect("file create");
 
         writeln!(&mut of, "{}", ::petgraph::dot::Dot::new(&g)).expect("writeln!");
+        g
     }
 
     fn peer_message_causal(x: &ReplCommand, y: &ReplCommand) -> bool {
