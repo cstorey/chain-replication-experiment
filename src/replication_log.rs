@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io;
-use lmdb_zero::{self, Environment, EnvBuilder, Database, ConstAccessor, ReadTransaction,
-                WriteTransaction, put, open, error};
+use lmdb_zero::{self, ConstAccessor, Database, EnvBuilder, Environment, ReadTransaction,
+                WriteTransaction, error, open, put};
 
 use hex_slice::AsHex;
 use tempdir::TempDir;
@@ -111,11 +111,13 @@ impl RocksdbLog {
         try!(b.set_mapsize(ARBITARILY_LARGE));
         let env = unsafe {
             try!(b.open(d.path().to_str().expect("string"),
-                    open::Flags::empty(), 0o777)) };
+                        open::Flags::empty(),
+                        0o777))
+        };
 
         let seqno_prepared = {
-            let meta  = try!(open_db(&env, META));
-            let _  = try!(open_db(&env, DATA));
+            let meta = try!(open_db(&env, META));
+            let _ = try!(open_db(&env, DATA));
 
             let txn = try!(ReadTransaction::new(&env));
             try!(Self::do_read_seqno(&meta, &txn.access(), META_PREPARED))
@@ -169,9 +171,9 @@ impl RocksdbLog {
             let committed = try!(Self::do_read_seqno(&meta, &accessor, META_COMMITTED));
 
             debug!("Committing: {:?}, committed, {:?}, prepared: {:?}",
-                    committed,
-                    committed,
-                    prepared);
+                   committed,
+                   committed,
+                   prepared);
 
             if let Some(p) = prepared {
                 if p < commit_seqno {
@@ -192,8 +194,7 @@ impl RocksdbLog {
         Ok(())
     }
 
-    pub fn stop(self) {
-    }
+    pub fn stop(self) {}
 
     pub fn quiesce(&self) {}
 }
@@ -278,37 +279,37 @@ pub struct RocksdbCursor(Arc<Environment>, Seqno);
 impl RocksdbCursor {
     fn read_next(&mut self) -> Result<Option<(Seqno, Vec<u8>)>> {
         let &mut RocksdbCursor(ref env, ref mut seqno) = self;
-            let data = try!(RocksdbLog::data(&env));
-            let txn = try!(ReadTransaction::new(&env));
-            let key = Seqno::tokey(&seqno);
-            let mut cursor = try!(txn.cursor(&data).chain_err(|| "get cursor"));
-            debug!("Attempt read from: {:?}/{:x}", seqno, key.as_hex());
-            let ret = match try!(mdb_maybe(cursor.seek_range_k::<[u8], [u8]>(&txn.access(), &key))) {
-                Some((k, v)) => {
-                    let read_seq = Seqno::fromkey(k);
-                    debug!("Read from: {:?}/{:x}", read_seq, key.as_hex());
-                    *seqno = read_seq.succ();
-                    (read_seq, v.to_vec())
-                },
-                None => return Ok(None),
-            };
+        let data = try!(RocksdbLog::data(&env));
+        let txn = try!(ReadTransaction::new(&env));
+        let key = Seqno::tokey(&seqno);
+        let mut cursor = try!(txn.cursor(&data).chain_err(|| "get cursor"));
+        debug!("Attempt read from: {:?}/{:x}", seqno, key.as_hex());
+        let ret = match try!(mdb_maybe(cursor.seek_range_k::<[u8], [u8]>(&txn.access(), &key))) {
+            Some((k, v)) => {
+                let read_seq = Seqno::fromkey(k);
+                debug!("Read from: {:?}/{:x}", read_seq, key.as_hex());
+                *seqno = read_seq.succ();
+                (read_seq, v.to_vec())
+            }
+            None => return Ok(None),
+        };
 
-            Ok(Some(ret))
-        /*if let Some((key, val)) = iter.next() {
-            let seqno = Seqno::fromkey(&key);
-            Some((seqno, val.to_vec()))
-        } else {
-            None
-        }
-        */
+        Ok(Some(ret))
+        // if let Some((key, val)) = iter.next() {
+        // let seqno = Seqno::fromkey(&key);
+        // Some((seqno, val.to_vec()))
+        // } else {
+        // None
+        // }
+        //
     }
 }
 impl iter::Iterator for RocksdbCursor {
     type Item = Result<(Seqno, Vec<u8>)>;
     fn next(&mut self) -> Option<Self::Item> {
         return self.read_next()
-            .map(|ot| ot.map(Ok))
-            .unwrap_or_else(|e| Some(Err(e)))
+                   .map(|ot| ot.map(Ok))
+                   .unwrap_or_else(|e| Some(Err(e)));
     }
 }
 

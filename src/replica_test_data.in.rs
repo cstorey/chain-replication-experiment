@@ -50,6 +50,26 @@ enum TraceEvent<M> {
     Committed(Committed),
 }
 
+#[derive(Clone, Debug,Eq,PartialEq, Ord,PartialOrd, Hash)]
+enum CausalVar {
+    True,
+    False,
+    Commit(Seqno, NodeId),
+    Message(u64, NodeId, NodeId),
+}
+
+impl fmt::Display for CausalVar {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &CausalVar::True => write!(fmt, "T"),
+            &CausalVar::False => write!(fmt, "F"),
+            &CausalVar::Commit(seq, node) => write!(fmt, "C({:?}, {:?})", seq, node),
+            &CausalVar::Message(t, src, dst) => write!(fmt, "M({}, {:?}, {:?})", t, src, dst),
+        }
+    }
+}
+
+
 #[derive(Debug,Eq, PartialEq, Hash, Clone, Serialize, Deserialize)]
 enum ReplCommand {
     ClientOperation(Buf),
