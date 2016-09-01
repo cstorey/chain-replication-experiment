@@ -31,10 +31,9 @@ before_script:
 
 env:
   global:
-    - LIBRARY_PATH=$HOME/lib
-    - LD_LIBRARY_PATH=$HOME/lib
     # override the default `--features unstable` used for the nightly branch (optional)
     - TRAVIS_CARGO_NIGHTLY_FEATURE=nightly
+    - RUST_BACKTRACE=t
 
 script:
 - travis-cargo build
