@@ -69,7 +69,6 @@ optional = false
 
 [dev-dependencies]
 env_logger = "0.3.2"
-sat = { git = "https://github.com/cstorey/sat.git" }
 
 [dev-dependencies.bformulae]
 git = "https://github.com/cstorey/bformulae.git"

@@ -15,7 +15,6 @@ use std::io::Write;
 use serde_json;
 
 use bformulae::Bools;
-use sat::solver::Dimacs;
 
 use petgraph::Graph;
 use petgraph::visit::DfsIter;
@@ -498,11 +497,11 @@ impl<L: TestLog> NetworkSim<L> {
             .map(|g|g.is(Bools::var(CausalVar::False)))
             .fold(Bools::var(CausalVar::False), |l, r| l | r);
 
-        let cnf = falsified_goal.to_cnf(&commit_env);
+        let mut cnf = falsified_goal.to_cnf(&commit_env);
 
-        let solver = Dimacs::new(|| ::std::process::Command::new("minisat"));
-        let result = cnf.solve_with(&solver as &::sat::solver::Solver);
-        debug!("Sat result: {:?}", result);
+        for result in cnf {
+            debug!("Sat result: {:?}", result);
+        }
     }
 
     fn infer_causality<'a>(messages: &'a [TraceEvent<ReplCommand>]) ->

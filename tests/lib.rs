@@ -11,7 +11,6 @@ extern crate spki_sexp;
 extern crate hybrid_clocks;
 extern crate petgraph;
 extern crate bformulae;
-extern crate sat;
 
 mod replica;
 mod replication_log;
