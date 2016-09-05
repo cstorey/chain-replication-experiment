@@ -19,7 +19,6 @@ dependencies = [
  "petgraph 0.2.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "quickcheck 0.2.27 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.3.14 (registry+https://github.com/rust-lang/crates.io-index)",
- "sat 0.1.0 (git+https://github.com/cstorey/sat.git)",
  "serde 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_codegen 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -84,11 +83,11 @@ dependencies = [
 [[package]]
 name = "bformulae"
 version = "0.1.0"
-source = "git+https://github.com/cstorey/bformulae.git#b0b650cc2b68664bf27db837878860ff734c5935"
+source = "git+https://github.com/cstorey/bformulae.git#d44764610dc70f977e490e24d42526202669e845"
 dependencies = [
+ "cryptominisat 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "maplit 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "sat 0.1.0 (git+https://github.com/cstorey/sat.git)",
 ]
 
 [[package]]
@@ -154,6 +153,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "gcc 0.3.27 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "cookie"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -178,6 +185,15 @@ dependencies = [
 name = "crossbeam"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "cryptominisat"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "cmake 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.15 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "dbghelp-sys"
@@ -614,14 +630,6 @@ version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "semver 0.1.20 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "sat"
-version = "0.1.0"
-source = "git+https://github.com/cstorey/sat.git#fbad579e4e790ffdf265d6c9f87626fc8f18fc61"
-dependencies = [
- "tempfile 2.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
