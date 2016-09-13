@@ -76,7 +76,7 @@ error_chain! {
 }
 
 // 1TGB. That'll be enough, right?
-const ARBITARILY_LARGE: usize = 1 << 40;
+const ARBITARILY_LARGE: usize = 1 << 24;
 
 pub struct RocksdbLog {
     dir: TempDir,
