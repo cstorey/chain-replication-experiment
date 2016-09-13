@@ -499,6 +499,10 @@ impl<L: TestLog> NetworkSim<L> {
 
         let mut cnf = falsified_goal.to_cnf(&commit_env);
 
+        // let results = HashSet::new();
+        // Our "solution" is the set of message vars assigned with `false`.
+        // Create a partial ordering such that a <= b iff forall(x in a) x in b
+        // So, we want to find the least set of solutions.
         for result in cnf {
             debug!("Sat result: {:?}", result);
         }
