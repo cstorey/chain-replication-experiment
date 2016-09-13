@@ -9,7 +9,7 @@ use data::Seqno;
 use replica::Log;
 use time::PreciseTime;
 use std::sync::Arc;
-use std::iter;
+use std::{iter,result};
 
 // Approximate structure of the log.
 //
@@ -75,8 +75,7 @@ error_chain! {
     }
 }
 
-// 1TGB. That'll be enough, right?
-const ARBITARILY_LARGE: usize = 1 << 24;
+const INITIAL_MAP_SIZE: usize = 1 << 10;
 
 pub struct RocksdbLog {
     dir: TempDir,
@@ -95,49 +94,74 @@ impl fmt::Debug for RocksdbLog {
     }
 }
 
-fn open_db<'a>(env: &'a Environment, name: &str) -> Result<Database<'a>> {
+type LmdbResult<T> = result::Result<T, lmdb_zero::Error>;
+
+fn open_db<'a>(env: &'a Environment, name: &str) -> LmdbResult<Database<'a>> {
     let db = try!(Database::open(env,
                                  Some(name),
                                  &lmdb_zero::DatabaseOptions::new(lmdb_zero::db::CREATE)));
     Ok(db)
 }
 
+fn open_env(path: &str, map_size: usize) -> LmdbResult<Environment> {
+    let mut b = try!(EnvBuilder::new());
+    try!(b.set_maxdbs(3));
+    try!(b.set_mapsize(map_size));
+    let env = unsafe {
+        try!(b.open(path,
+                    open::Flags::empty(),
+                    0o777))
+    };
+    Ok(env)
+}
+
+fn auto_expand_map<R, F: FnMut(&Arc<Environment>) -> LmdbResult<R>>(env: &mut Arc<Environment>, mut f: F) -> LmdbResult<R> {
+    loop {
+        match f(&*env) {
+            Err(e) if e.code == lmdb_zero::error::MAP_FULL => (),
+            other => return other,
+        }
+        let info = try!(env.info());
+        // We assume that because the path is passed in as a &str, it's
+        // already correct utf8.
+        let path = try!(env.path()).to_str().expect("db path to_str").to_string();
+        let next_size = info.mapsize * 2;
+        info!("Re-opening {:?} with map-size {:?}b", path, next_size);
+        let new = Arc::new(try!(open_env(&path, next_size)));
+        info!("Retrying... with: {:?}", env);
+        *env = new;
+    }
+}
+
 impl RocksdbLog {
     pub fn new() -> Result<RocksdbLog> {
         let d = try!(TempDir::new("rocksdb-log"));
         info!("DB path: {:?}", d.path());
-        let mut b = try!(EnvBuilder::new());
-        try!(b.set_maxdbs(3));
-        try!(b.set_mapsize(ARBITARILY_LARGE));
-        let env = unsafe {
-            try!(b.open(d.path().to_str().expect("string"),
-                        open::Flags::empty(),
-                        0o777))
-        };
+        let mut env = Arc::new(try!(open_env(d.path().to_str().expect("string"), INITIAL_MAP_SIZE)));
 
-        let seqno_prepared = {
+        let seqno_prepared = try!(auto_expand_map(&mut env, |env| {
             let meta = try!(open_db(&env, META));
             let _ = try!(open_db(&env, DATA));
 
             let txn = try!(ReadTransaction::new(&env));
-            try!(Self::do_read_seqno(&meta, &txn.access(), META_PREPARED))
-        };
+            Self::do_read_seqno(&meta, &txn.access(), META_PREPARED)
+        }));
         Ok(RocksdbLog {
             dir: d,
-            env: Arc::new(env),
+            env: env,
             seqno_prepared: seqno_prepared,
         })
     }
 
-    fn meta(env: &Environment) -> Result<Database> {
+    fn meta(env: &Environment) -> LmdbResult<Database> {
         Ok(try!(open_db(&env, META)))
     }
 
-    fn data(env: &Environment) -> Result<Database> {
+    fn data(env: &Environment) -> LmdbResult<Database> {
         Ok(try!(open_db(&env, DATA)))
     }
 
-    fn do_read_seqno(meta: &Database, txn: &ConstAccessor, name: &str) -> Result<Option<Seqno>> {
+    fn do_read_seqno(meta: &Database, txn: &ConstAccessor, name: &str) -> result::Result<Option<Seqno>, lmdb_zero::Error> {
         let val = {
             let val = match txn.get(meta, name) {
                 Ok(val) => Some(Seqno::fromkey(val)),
@@ -154,42 +178,50 @@ impl RocksdbLog {
     fn read_seqno(&self, name: &str) -> Result<Option<Seqno>> {
         let meta = Self::meta(&self.env);
         let txn = try!(ReadTransaction::new(&self.env));
-        Self::do_read_seqno(&try!(meta), &txn.access(), name)
+        Ok(try!(Self::do_read_seqno(&try!(meta), &txn.access(), name)))
     }
 
-    fn do_commit_to(env: &Environment, commit_seqno: Seqno) -> Result<()> {
+    fn do_commit_to(env: &mut Arc<Environment>, commit_seqno: Seqno) -> Result<()> {
         debug!("Commit {:?}", commit_seqno);
-        let meta = try!(Self::meta(&env));
         let key = Seqno::tokey(&commit_seqno);
 
         let t0 = PreciseTime::now();
-        let txn = try!(WriteTransaction::new(&env));
 
-        {
-            let mut accessor = txn.access();
-            let prepared = try!(Self::do_read_seqno(&meta, &accessor, META_PREPARED));
-            let committed = try!(Self::do_read_seqno(&meta, &accessor, META_COMMITTED));
+        let mut err  = None;
+        try!(auto_expand_map(env, |env| {
+            let meta = try!(Self::meta(&env));
+            let txn = try!(WriteTransaction::new(&env));
+            {
+                let mut accessor = txn.access();
+                let prepared = try!(Self::do_read_seqno(&meta, &accessor, META_PREPARED));
+                let committed = try!(Self::do_read_seqno(&meta, &accessor, META_COMMITTED));
 
-            debug!("Committing: {:?}, committed, {:?}, prepared: {:?}",
-                   committed,
-                   committed,
-                   prepared);
+                debug!("Committing: {:?}, committed, {:?}, prepared: {:?}",
+                       committed,
+                       committed,
+                       prepared);
 
-            if let Some(p) = prepared {
-                if p < commit_seqno {
-                    return Err(ErrorKind::BadCommit(p, commit_seqno).into());
+                if let Some(p) = prepared {
+                    if p < commit_seqno {
+                        err = Some(ErrorKind::BadCommit(p, commit_seqno));
+                        return Ok(());
+                    }
                 }
-            }
 
-            if committed == Some(commit_seqno) {
-                debug!("Skipping, commits up to date");
-                return Ok(());
-            }
+                if committed == Some(commit_seqno) {
+                    debug!("Skipping, commits up to date");
+                    return Ok(());
+                }
 
-            try!(accessor.put(&meta, META_COMMITTED.as_bytes(), &key, put::Flags::empty()));
-        }
-        try!(txn.commit());
+                try!(accessor.put(&meta, META_COMMITTED.as_bytes(), &key, put::Flags::empty()));
+            }
+            try!(txn.commit());
+            Ok(())
+        }));
         let t1 = PreciseTime::now();
+        if let Some(e) = err {
+            return Err(e.into())
+        }
         debug!("Committed {:?} in: {}", commit_seqno, t0.to(t1));
         Ok(())
     }
@@ -222,8 +254,9 @@ impl Log for RocksdbLog {
 
 
     fn prepare(&mut self, seqno: Seqno, data_bytes: &[u8]) -> Result<()> {
-        trace!("Prepare {:?}", seqno);
         let key = Seqno::tokey(&seqno);
+        debug!("Prepare {:?}", seqno);
+
 
         let next = try!(self.seqno());
         if seqno != next {
@@ -237,20 +270,22 @@ impl Log for RocksdbLog {
         // };
 
         let t0 = PreciseTime::now();
-        let data = try!(Self::data(&self.env));
-        let meta = try!(Self::meta(&self.env));
-        let txn = try!(WriteTransaction::new(&self.env));
-        {
-            let mut access = txn.access();
-            try!(access.put(&data, &key, data_bytes, put::NOOVERWRITE));
-            try!(access.put(&meta, META_PREPARED, &key, put::Flags::empty()));
-        }
-        try!(txn.commit());
-        drop(meta);
-        drop(data);
+        try!(auto_expand_map(&mut self.env, |env| {
+            debug!("Write {:?}", seqno);
+            let data = try!(Self::data(&env));
+            let meta = try!(Self::meta(&env));
+            let txn = try!(WriteTransaction::new(&env));
+            {
+                let mut access = txn.access();
+                try!(access.put(&data, &key, data_bytes, put::NOOVERWRITE));
+                try!(access.put(&meta, META_PREPARED, &key, put::Flags::empty()));
+            }
+            try!(txn.commit());
+            Ok(())
+        }));
         let t1 = PreciseTime::now();
 
-        trace!("Prepare: {}", t0.to(t1));
+        trace!("Prepared in: {}", t0.to(t1));
         self.seqno_prepared = Some(seqno);
 
         trace!("Watermarks: prepared: {:?}; committed: {:?}",
@@ -264,7 +299,7 @@ impl Log for RocksdbLog {
         let committed = try!(self.read_seqno(META_COMMITTED));
         if committed.map(|c| c < seqno).unwrap_or(true) {
             trace!("Request to commit {:?} -> {:?}", committed, seqno);
-            try!(Self::do_commit_to(&self.env, seqno));
+            try!(Self::do_commit_to(&mut self.env, seqno));
             Ok(true)
         } else {
             trace!("Request to commit {:?} -> {:?}; no-op", committed, seqno);
