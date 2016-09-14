@@ -236,9 +236,11 @@ fn postcondition(model: &RocksdbLog, cmd: &LogCommand, ret: &CommandReturn) -> b
         }
         (&LogCommand::ReadFrom(ref seq),
          &CommandReturn::Read(ref val)) => {
-            &model.read_from(seq.clone()).expect("read_from")
-                .map(|it| it.expect("read from item"))
-                .map(|(_, v)| v).collect::<Vec<_>>() == val
+            &model.read_from(seq.clone())
+                  .expect("read_from")
+                  .map(|it| it.expect("read from item"))
+                  .map(|(_, v)| v)
+                  .collect::<Vec<_>>() == val
         }
         (cmd, ret) => {
             warn!("Unexpected command / return combination: {:?} -> {:?}",
@@ -355,9 +357,11 @@ fn test_can_read_prepared_values_prop<L: TestLog>(mut vals: Vec<LogCommand>) -> 
                 }
             }
             LogCommand::ReadFrom(ref read_seq) => {
-                let result = log.read_from(*read_seq).expect("read_from")
-                                      .map(|it| it.expect("read from item"))
-                                      .map(|(_, v)| v).next();
+                let result = log.read_from(*read_seq)
+                                .expect("read_from")
+                                .map(|it| it.expect("read from item"))
+                                .map(|(_, v)| v)
+                                .next();
                 assert_eq!(result.as_ref(), prepared.get(read_seq))
             }
             LogCommand::CommitTo(_) => (),

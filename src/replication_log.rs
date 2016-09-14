@@ -9,7 +9,7 @@ use data::Seqno;
 use replica::Log;
 use time::PreciseTime;
 use std::sync::Arc;
-use std::{iter,result};
+use std::{iter, result};
 
 // Approximate structure of the log.
 //
@@ -107,15 +107,13 @@ fn open_env(path: &str, map_size: usize) -> LmdbResult<Environment> {
     let mut b = try!(EnvBuilder::new());
     try!(b.set_maxdbs(3));
     try!(b.set_mapsize(map_size));
-    let env = unsafe {
-        try!(b.open(path,
-                    open::Flags::empty(),
-                    0o777))
-    };
+    let env = unsafe { try!(b.open(path, open::Flags::empty(), 0o777)) };
     Ok(env)
 }
 
-fn auto_expand_map<R, F: FnMut(&Arc<Environment>) -> LmdbResult<R>>(env: &mut Arc<Environment>, mut f: F) -> LmdbResult<R> {
+fn auto_expand_map<R, F: FnMut(&Arc<Environment>) -> LmdbResult<R>>(env: &mut Arc<Environment>,
+                                                                    mut f: F)
+                                                                    -> LmdbResult<R> {
     loop {
         match f(&*env) {
             Err(e) if e.code == lmdb_zero::error::MAP_FULL => (),
@@ -137,7 +135,8 @@ impl RocksdbLog {
     pub fn new() -> Result<RocksdbLog> {
         let d = try!(TempDir::new("rocksdb-log"));
         info!("DB path: {:?}", d.path());
-        let mut env = Arc::new(try!(open_env(d.path().to_str().expect("string"), INITIAL_MAP_SIZE)));
+        let mut env = Arc::new(try!(open_env(d.path().to_str().expect("string"),
+                                             INITIAL_MAP_SIZE)));
 
         let seqno_prepared = try!(auto_expand_map(&mut env, |env| {
             let meta = try!(open_db(&env, META));
@@ -161,7 +160,10 @@ impl RocksdbLog {
         Ok(try!(open_db(&env, DATA)))
     }
 
-    fn do_read_seqno(meta: &Database, txn: &ConstAccessor, name: &str) -> result::Result<Option<Seqno>, lmdb_zero::Error> {
+    fn do_read_seqno(meta: &Database,
+                     txn: &ConstAccessor,
+                     name: &str)
+                     -> result::Result<Option<Seqno>, lmdb_zero::Error> {
         let val = {
             let val = match txn.get(meta, name) {
                 Ok(val) => Some(Seqno::fromkey(val)),
@@ -187,7 +189,7 @@ impl RocksdbLog {
 
         let t0 = PreciseTime::now();
 
-        let mut err  = None;
+        let mut err = None;
         try!(auto_expand_map(env, |env| {
             let meta = try!(Self::meta(&env));
             let txn = try!(WriteTransaction::new(&env));
@@ -220,7 +222,7 @@ impl RocksdbLog {
         }));
         let t1 = PreciseTime::now();
         if let Some(e) = err {
-            return Err(e.into())
+            return Err(e.into());
         }
         debug!("Committed {:?} in: {}", commit_seqno, t0.to(t1));
         Ok(())
