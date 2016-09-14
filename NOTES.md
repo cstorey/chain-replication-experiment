@@ -80,3 +80,9 @@ Client view(N) = (HC11 => C(N, Tail))
 Our hypothesis is that no matter what pattern of message drops the system encounters, the system will be able to compensate and recover.  So, we want to find a pattern of message drops (or substitutions for the logical variables CH1, HM2, ...) that will render our invariants, rendered as a boolean formula, false.
 
 During operation, we trace messages, and infer causality from that. We can then read out the commit offsets from each simulated node, and correlate those with received commit messages.
+
+### FI fault detection stuff.
+
+Okay, so because our fault injection model drops *messages*, wheras the code itself is *connection* oriented, we need to revise our simulation. Part of the wierdness is that we abstract over recipients, but in the real code these refer to a connection; wheras in the simulation they are a recipient. So, we need to add a layer of indirection to model the connection establishment / failure detection bits. These will end up being "capabilities" that offer the ability to talk to a peer, and when destroyed need to be re-established.
+
+The replication engine assumes that any downstream messages it sends will be sent to the same peer. I should draw out the state machine, really.
