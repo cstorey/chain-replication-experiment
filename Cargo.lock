@@ -83,7 +83,7 @@ dependencies = [
 [[package]]
 name = "bformulae"
 version = "0.1.0"
-source = "git+https://github.com/cstorey/bformulae.git#d44764610dc70f977e490e24d42526202669e845"
+source = "git+https://github.com/cstorey/bformulae.git#c3b049753ac10c8ab965583784c33790463f0ec7"
 dependencies = [
  "cryptominisat 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",

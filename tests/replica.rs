@@ -18,6 +18,7 @@ use std::hash::{SipHasher,Hash, Hasher};
 use bformulae::Bools;
 
 use petgraph::Graph;
+use petgraph::graph::NodeIndex;
 use petgraph::visit::DfsIter;
 
 #[cfg(feature = "serde_macros")]
@@ -87,30 +88,43 @@ fn simulate_three_node_system_vec() {
 }
 
 #[test]
-#[ignore]
 fn simulate_three_node_system_with_failure_archons () {
     env_logger::init().unwrap_or(());
     let mut stack = vec![BTreeSet::new()];
     let mut seen = BTreeSet::new();
+    let mut failing_cases = BTreeSet::new();
     while let Some(failure_set) = stack.pop() {
         seen.insert(failure_set.clone());
         let mut h = SipHasher::new();
         failure_set.hash(&mut h);
 
-        let mut sim = NetworkSim::<VecLog>::new(3).set_failures(failure_set);
+        let mut sim = NetworkSim::<VecLog>::new(3).set_failures(failure_set.clone());
         let name = format!("simulate_three_node_system_with_failure_archons-{:08x}", h.finish());
         info!("Test run named: {:?}", name);
-        let new_failures = sim.run_for(10, &name, |t, sim, state| {
+        let state = sim.run_for(10, &name, |t, sim, state| {
             if t == 0 {
                 sim.client_operation(state, b"hello_world".to_vec().into());
             }
         });
-        info!("New potential failures set: {:?}", new_failures);
-        stack.extend(new_failures.into_iter().filter(|f| !seen.contains(f)));
-        info!("Remaining failures: {:?}", stack);
 
-        sim.validate_client_responses(1);
-        sim.validate_logs();
+        // At each point, we want to validate whether the commit invariants have been violated.
+        if state.fulfils_invariants() {
+            // Great! it passed!
+            let new_failures = state.fault_candidates().into_iter()
+                .filter(|f| !seen.contains(f))
+                .map(|f| failure_set.union(&f).cloned().collect())
+                .collect::<Vec<_>>();
+            info!("New potential failures set: {:?}", new_failures);
+            stack.extend(new_failures);
+            info!("Remaining failures: {:?}", stack);
+        } else {
+            failing_cases.insert(failure_set);
+        }
+    }
+
+
+    for case in failing_cases {
+        error!("Failing case: {:?}", case);
     }
 }
 
@@ -281,6 +295,290 @@ impl NetworkState {
         let t = self.clock.now();
         self.tracer.node_crashed(t, &node_id);
     }
+
+    fn nodes(&self) -> BTreeSet<NodeId> {
+        self.input_bufs.keys().chain(self.output_bufs.keys()).cloned().collect::<BTreeSet<NodeId>>()
+    }
+    fn fault_candidates(&self) -> BTreeSet<BTreeSet<CausalVar>> {
+        let nodes = self.nodes();
+        let deps = self.infer_causality();
+        Self::derive_formula(nodes, deps)
+    }
+
+    fn infer_causality(&self) -> Graph<CausalVar, usize> {
+        let messages = &self.tracer.entries;
+        let mut g = Graph::new();
+        let mut nodes = HashMap::new();
+
+        for (x, y) in messages.iter()
+                              .enumerate()
+                              .flat_map(|(yi, y)| messages.iter().map(move |x| (x, y))) {
+            let (xcv, ycv) = match (x.as_causal_var(), y.as_causal_var()) {
+                (Some(a), Some(b)) => (a, b),
+                _ => continue,
+            };
+
+            let causedp = match (x, y) {
+                (&TraceEvent::MessageRecv(ref x),
+                 &TraceEvent::MessageRecv(ref y))
+                    if x.dst == y.src => Self::peer_message_causal(&x.data, &y.data),
+                (&TraceEvent::MessageRecv(ref x),
+                 &TraceEvent::MessageRecv(ref y))
+                    if x.src == y.src => Self::self_message_causal(&x.data, &y.data),
+                (&TraceEvent::MessageRecv(ref x),
+                 &TraceEvent::Committed(ref c))
+                    if x.dst == c.process => Self::recv_message_commit_causalp(&x.data, &c.offset),
+                (&TraceEvent::MessageRecv(ref x),
+                 &TraceEvent::Committed(ref c))
+                    if x.src == c.process => Self::send_message_commit_causalp(&x.data, &c.offset),
+                (&TraceEvent::Committed(ref c),
+                 &TraceEvent::MessageRecv(ref y))
+                    if y.src == c.process => Self::send_commit_message_causalp(&c.offset, &y.data),
+                _ => false,
+            };
+            trace!("causedp: {:?}; Compare: {:?} / {:?}", causedp, x, y);
+
+            let xn = *nodes.entry(xcv.clone()).or_insert_with(|| g.add_node(xcv));
+            let yn = *nodes.entry(ycv.clone()).or_insert_with(|| g.add_node(ycv));
+            if causedp {
+                trace!("Add edge: {:?} <- {:?}", g[xn], g[yn]);
+                // it's a "caused by relation"
+                g.update_edge(yn, xn, 1usize);
+            }
+        }
+        let mut of = File::create("target/causality.dot").expect("file create");
+
+        writeln!(&mut of, "{}", ::petgraph::dot::Dot::new(&g)).expect("writeln!");
+        g
+    }
+
+    fn commit_events(deps: &Graph<CausalVar, usize>) -> BTreeSet<(NodeIndex, Seqno, NodeId)> {
+        deps.node_indices()
+            .filter_map(|ni| {
+                    match &deps[ni] {
+                    &CausalVar::Commit(seq, node) => Some((ni, seq, node)),
+                    _ => None,
+                    }
+                    })
+        .collect::<BTreeSet<_>>()
+    }
+
+    fn derive_commit_formula(nodes: &BTreeSet<NodeId>, deps: &Graph<CausalVar, usize>) -> (Bools<CausalVar>, BTreeMap<CausalVar, bool>) {
+        let mut committed_offsets = BTreeMap::new();
+        let commit_events = Self::commit_events(deps);
+
+
+        for &(_, offset, process) in commit_events.iter() {
+            let ent = committed_offsets.entry(process).or_insert(offset);
+            *ent = cmp::max(*ent, offset);
+        }
+
+        debug!("Commit goals: {:?}", committed_offsets);
+        let max = committed_offsets.values().cloned().max().unwrap_or(Seqno::zero());
+        debug!("max: {:?}", max);
+
+        // Show that each seqno will be committed at node N if it is commited at N-1
+        let commit_goal = iterate(Seqno::zero(), Seqno::succ)
+                              .take_while(|&s| s <= max)
+                              .flat_map(|seq| {
+                                  nodes.iter().zip(nodes.iter().skip(1)).map(move |(&x, &y)| {
+                                      Bools::var(CausalVar::Commit(seq, x))
+                                          .implies(Bools::var(CausalVar::Commit(seq, y)))
+                                  })
+                              })
+                              .fold(Bools::var(CausalVar::True), |l, r| l & r);
+
+        let mut commit_env = BTreeMap::new();
+        commit_env.insert(CausalVar::True, true);
+        commit_env.insert(CausalVar::False, false);
+
+        // Extend the environment with facts about which (node, seqno) have been committed.
+        commit_env.extend(nodes.iter().flat_map(|n| {
+            let off = committed_offsets.get(n);
+            iterate(Seqno::zero(), Seqno::succ)
+                .take_while(|&s| s <= max)
+                .map(move |s| (CausalVar::Commit(s, *n), Some(&s) <= off))
+        }));
+
+        (commit_goal, commit_env)
+    }
+
+    fn fulfils_invariants(&self) -> bool {
+        let deps = self.infer_causality();
+        let nodes = self.nodes();
+        let (commit_goal, commit_env) = Self::derive_commit_formula(&nodes, &deps);
+        info!("Goals: {:?}", commit_goal);
+        info!("env: {:?}", commit_env);
+        let commited_okay = commit_goal.eval(&commit_env).expect("eval");
+        commited_okay
+    }
+
+    fn derive_formula(nodes: BTreeSet<NodeId>, deps: Graph<CausalVar, usize>) -> BTreeSet<BTreeSet<CausalVar>> {
+        // Commit invariant
+        // Forall(N)Exists(X, Y) Predecessor(X, Y) = (C(N, X) => C(N, Y))
+
+        let (commit_goal, commit_env) = Self::derive_commit_formula(&nodes, &deps);
+        let commit_events = Self::commit_events(&deps);
+        let all_goals = commit_events.iter().map(|&(ci, _seq, _node)| {
+                // Now, for each observed commit, traverse it's supporting messages from the edge
+            let reachable = DfsIter::new(&deps, ci).map(|ni| {
+                deps[ni].clone()
+            }).collect::<BTreeSet<CausalVar>>();
+            info!("Reachable from {:?}: {:?}", deps[ci], reachable);
+            // So, we want to say that each commit goal is equal to the success of each message that supports it.
+            let commit_goal = Bools::var(deps[ci].clone());
+            let message_supports = reachable.into_iter().map(Bools::var).fold(Bools::var(CausalVar::True), |l, r| l & r);
+            let goal = commit_goal.is(message_supports);
+            debug!("Combined goal {:?}: {:?}", (_seq, _node), goal);
+            goal
+        }).collect::<BTreeSet<_>>();
+
+        for it in all_goals.iter() {
+            println!("Goal: {}", it);
+        }
+        // We want to find a pattern of message drops (false M(...)          .
+        // variables) that results in falsifying one or more of our commit   .
+        // goals. To express this in circuit satisfiability, we assert:
+        // (G0 == F) | ... | (GN == F).
+
+        let falsified_goal = all_goals.into_iter()
+                                      .map(|g| g.is(Bools::var(CausalVar::False)))
+                                      .fold(Bools::var(CausalVar::False), |l, r| l | r);
+
+        let mut cnf = falsified_goal.to_cnf(&commit_env);
+
+        let mut results = BTreeSet::new();
+        // Our "solution" is the set of message vars assigned with `false`.
+        // Create a partial ordering such that a <= b iff forall(x in a) x in b
+        // So, we want to find the least set of solutions.
+        for result in cnf {
+            let falsies = result.into_iter()
+                                .filter(|&(ref k, _)| {
+                                    if let &CausalVar::Message(_, _, _) = k {
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .filter(|&(_, v)| !v)
+                                .map(|(k, _)| k)
+                                .collect::<BTreeSet<_>>();
+            trace!("potential failures: {:?}", falsies);
+            for s in results.iter().filter(|s| falsies.is_subset(s)).cloned().collect::<Vec<_>>() {
+                results.remove(&s);
+            }
+            let has_subset = results.iter().any(|s| falsies.is_superset(s));
+            if !has_subset {
+                results.insert(falsies);
+            }
+        }
+        for res in results.iter() {
+            debug!("lower bound result: {:?}", res);
+        }
+        results
+    }
+
+
+    fn recv_message_commit_causalp(x: &ReplCommand, seq: &Seqno) -> bool {
+        match x {
+            &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(ref s0, _), .. })
+                if s0 <= seq => true,
+            &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(ref s0), .. })
+                if s0 <= seq => false,
+            &ReplCommand::Forward(ref other) => {
+                debug!("recv_message_commit_causalp: Unhandled: {:?} / {:?}",
+                       x,
+                       seq);
+                false
+            }
+            other => {
+                trace!("recv_message_commit_causalp: Unhandled: {:?} / {:?}",
+                       x,
+                       seq);
+                false
+            }
+        }
+    }
+
+    fn send_message_commit_causalp(x: &ReplCommand, seq: &Seqno) -> bool {
+        match x {
+            &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(ref s0, _), .. })
+                if s0 <= seq => true,
+            &ReplCommand::Forward(ref other) => {
+                debug!("recv_message_commit_causalp: Unhandled: {:?} / {:?}",
+                       x,
+                       seq);
+                false
+            }
+            other => {
+                trace!("recv_message_commit_causalp: Unhandled: {:?} / {:?}",
+                       x,
+                       seq);
+                false
+            }
+        }
+    }
+    fn send_commit_message_causalp(seq: &Seqno, y: &ReplCommand) -> bool {
+        match y {
+            &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(ref s0), .. })
+                if seq <= s0 => false,
+            &ReplCommand::Forward(ref other) => {
+                debug!("message_commit_causalp: Unhandled: {:?} / {:?}", seq, y);
+                false
+            }
+            other => {
+                trace!("send_commit_message_causalp: Unhandled: {:?} / {:?}",
+                       seq,
+                       y);
+                false
+            }
+        }
+    }
+
+    fn peer_message_causal(x: &ReplCommand, y: &ReplCommand) -> bool {
+        match (x, y) {
+            (&ReplCommand::ClientOperation(ref data0),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(_, ref data1), .. })) => {
+                data0 == data1
+            }
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) |
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Response(OpResp::Ok(_, s1, _))) |
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Response(OpResp::Err(_, s1, _))) |
+            (&ReplCommand::Response(OpResp::Err(_, s0, _)),
+             &ReplCommand::Response(OpResp::Err(_, s1, _))) |
+            (&ReplCommand::Response(OpResp::Ok(_, s0, _)),
+             &ReplCommand::Response(OpResp::Ok(_, s1, _))) => s0 == s1,
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::HelloDownstream, epoch: _, .. }),
+                 &ReplCommand::Response(OpResp::HelloIHave(_, _)))
+                => true,
+            (&ReplCommand::Response(OpResp::HelloIHave(_, s0)),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) => {
+                s0 <= Some(s1)
+            }
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s0), .. }),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s1), .. })) => {
+                s0 >= s1
+            }
+            (_, _) => false,
+        }
+    }
+
+    fn self_message_causal(x: &ReplCommand, y: &ReplCommand) -> bool {
+        match (x, y) {
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s1), .. })) => {
+                s0 <= s1
+            }
+            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
+             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) => {
+                s0.succ() == s1
+            }
+            (_, _) => false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -406,7 +704,7 @@ impl<L: TestLog> NetworkSim<L> {
     fn run_for<F: FnMut(usize, &mut Self, &mut NetworkState)>(&mut self,
                                                               end_of_time: usize,
                                                               test_name: &str,
-                                                              mut f: F) -> BTreeSet<BTreeSet<CausalVar>> {
+                                                              mut f: F) -> NetworkState {
         let mut epoch = None;
         let path = PathBuf::from(format!("target/run-trace-{}.jsons", test_name));
         let tracer = Tracer::new();
@@ -460,265 +758,8 @@ impl<L: TestLog> NetworkSim<L> {
         debug!("messages: {:#?}", state.tracer.messages());
         assert!(state.is_quiescent());
 
-        let tracer = state.tracer;
-        let deps = Self::infer_causality(&*tracer.entries);
 
-        Self::derive_formula(self.nodes.keys().cloned(), deps)
-    }
-
-    fn derive_formula<I: Iterator<Item = NodeId>>(nodes: I, deps: Graph<CausalVar, usize>) -> BTreeSet<BTreeSet<CausalVar>> {
-        // Commit invariant
-        // Forall(N)Exists(X, Y) Predecessor(X, Y) = (C(N, X) => C(N, Y))
-        let nodes = nodes.collect::<BTreeSet<NodeId>>();
-        let mut committed_offsets = BTreeMap::new();
-        let commit_events = deps.node_indices()
-                                .filter_map(|ni| {
-                                    match &deps[ni] {
-                                        &CausalVar::Commit(seq, node) => Some((ni, seq, node)),
-                                        _ => None,
-                                    }
-                                })
-                                .collect::<BTreeSet<_>>();
-
-
-        for &(_, offset, process) in commit_events.iter() {
-            let ent = committed_offsets.entry(process).or_insert(offset);
-            *ent = cmp::max(*ent, offset);
-        }
-
-        debug!("Commit goals: {:?}", committed_offsets);
-        let max = committed_offsets.values().cloned().max().unwrap_or(Seqno::zero());
-        debug!("max: {:?}", max);
-
-        // Show that each seqno will be committed at node N if it is commited at N-1
-        let commit_goal = iterate(Seqno::zero(), Seqno::succ)
-                              .take_while(|&s| s <= max)
-                              .flat_map(|seq| {
-                                  nodes.iter().zip(nodes.iter().skip(1)).map(move |(&x, &y)| {
-                                      Bools::var(CausalVar::Commit(seq, x))
-                                          .implies(Bools::var(CausalVar::Commit(seq, y)))
-                                  })
-                              })
-                              .fold(Bools::var(CausalVar::True), |l, r| l & r);
-
-        let mut commit_env = BTreeMap::new();
-        commit_env.insert(CausalVar::True, true);
-        commit_env.insert(CausalVar::False, false);
-
-        // Extend the environment with facts about which (node, seqno) have been committed.
-        commit_env.extend(committed_offsets.into_iter().flat_map(|(p, off)| {
-            iterate(Seqno::zero(), Seqno::succ)
-                .take_while(|&s| s <= max)
-                .map(move |s| (CausalVar::Commit(s, p), s <= off))
-        }));
-
-        info!("Goals: {:?}", commit_goal);
-        info!("env: {:?}", commit_env);
-        assert!(commit_goal.eval(&commit_env).expect("eval"));
-
-        let all_goals = commit_events.iter().map(|&(ci, _seq, _node)| {
-                // Now, for each observed commit, traverse it's supporting messages from the edge
-            let reachable = DfsIter::new(&deps, ci).map(|ni| {
-                deps[ni].clone()
-            }).collect::<BTreeSet<CausalVar>>();
-            info!("Reachable from {:?}: {:?}", deps[ci], reachable);
-            // So, we want to say that each commit goal is equal to the success of each message that supports it.
-            let commit_goal = Bools::var(deps[ci].clone());
-            let message_supports = reachable.into_iter().map(Bools::var).fold(Bools::var(CausalVar::True), |l, r| l & r);
-            let goal = commit_goal.is(message_supports);
-            debug!("Combined goal {:?}: {:?}", (_seq, _node), goal);
-            goal
-        }).collect::<BTreeSet<_>>();
-
-        for it in all_goals.iter() {
-            println!("Goal: {}", it);
-        }
-        // We want to find a pattern of message drops (false M(...)          .
-        // variables) that results in falsifying one or more of our commit   .
-        // goals. To express this in circuit satisfiability, we assert:
-        // (G0 == F) | ... | (GN == F).
-
-        let falsified_goal = all_goals.into_iter()
-                                      .map(|g| g.is(Bools::var(CausalVar::False)))
-                                      .fold(Bools::var(CausalVar::False), |l, r| l | r);
-
-        let mut cnf = falsified_goal.to_cnf(&commit_env);
-
-        let mut results = BTreeSet::new();
-        // Our "solution" is the set of message vars assigned with `false`.
-        // Create a partial ordering such that a <= b iff forall(x in a) x in b
-        // So, we want to find the least set of solutions.
-        for result in cnf {
-            let falsies = result.into_iter()
-                                .filter(|&(ref k, _)| {
-                                    if let &CausalVar::Message(_, _, _) = k {
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                })
-                                .filter(|&(_, v)| !v)
-                                .map(|(k, _)| k)
-                                .collect::<BTreeSet<_>>();
-            trace!("potential failures: {:?}", falsies);
-            for s in results.iter().filter(|s| falsies.is_subset(s)).cloned().collect::<Vec<_>>() {
-                results.remove(&s);
-            }
-            let has_subset = results.iter().any(|s| falsies.is_superset(s));
-            if !has_subset {
-                results.insert(falsies);
-            }
-        }
-        for res in results.iter() {
-            debug!("lower bound result: {:?}", res);
-        }
-        results
-    }
-
-    fn infer_causality<'a>(messages: &'a [TraceEvent<ReplCommand>]) -> Graph<CausalVar, usize> {
-        let mut g = Graph::new();
-        let mut nodes = HashMap::new();
-
-        for (x, y) in messages.iter()
-                              .enumerate()
-                              .flat_map(|(yi, y)| messages.iter().map(move |x| (x, y))) {
-            let (xcv, ycv) = match (x.as_causal_var(), y.as_causal_var()) {
-                (Some(a), Some(b)) => (a, b),
-                _ => continue,
-            };
-
-            let causedp = match (x, y) {
-                (&TraceEvent::MessageRecv(ref x),
-                 &TraceEvent::MessageRecv(ref y))
-                    if x.dst == y.src => Self::peer_message_causal(&x.data, &y.data),
-                (&TraceEvent::MessageRecv(ref x),
-                 &TraceEvent::MessageRecv(ref y))
-                    if x.src == y.src => Self::self_message_causal(&x.data, &y.data),
-                (&TraceEvent::MessageRecv(ref x),
-                 &TraceEvent::Committed(ref c))
-                    if x.dst == c.process => Self::recv_message_commit_causalp(&x.data, &c.offset),
-                (&TraceEvent::MessageRecv(ref x),
-                 &TraceEvent::Committed(ref c))
-                    if x.src == c.process => Self::send_message_commit_causalp(&x.data, &c.offset),
-                (&TraceEvent::Committed(ref c),
-                 &TraceEvent::MessageRecv(ref y))
-                    if y.src == c.process => Self::send_commit_message_causalp(&c.offset, &y.data),
-                _ => false,
-            };
-            trace!("causedp: {:?}; Compare: {:?} / {:?}", causedp, x, y);
-
-            let xn = *nodes.entry(xcv.clone()).or_insert_with(|| g.add_node(xcv));
-            let yn = *nodes.entry(ycv.clone()).or_insert_with(|| g.add_node(ycv));
-            if causedp {
-                trace!("Add edge: {:?} <- {:?}", g[xn], g[yn]);
-                // it's a "caused by relation"
-                g.update_edge(yn, xn, 1usize);
-            }
-        }
-        let mut of = File::create("target/causality.dot").expect("file create");
-
-        writeln!(&mut of, "{}", ::petgraph::dot::Dot::new(&g)).expect("writeln!");
-        g
-    }
-    fn recv_message_commit_causalp(x: &ReplCommand, seq: &Seqno) -> bool {
-        match x {
-            &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(ref s0, _), .. })
-                if s0 <= seq => true,
-            &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(ref s0), .. })
-                if s0 <= seq => false,
-            &ReplCommand::Forward(ref other) => {
-                debug!("recv_message_commit_causalp: Unhandled: {:?} / {:?}",
-                       x,
-                       seq);
-                false
-            }
-            other => {
-                trace!("recv_message_commit_causalp: Unhandled: {:?} / {:?}",
-                       x,
-                       seq);
-                false
-            }
-        }
-    }
-
-    fn send_message_commit_causalp(x: &ReplCommand, seq: &Seqno) -> bool {
-        match x {
-            &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(ref s0, _), .. })
-                if s0 <= seq => true,
-            &ReplCommand::Forward(ref other) => {
-                debug!("recv_message_commit_causalp: Unhandled: {:?} / {:?}",
-                       x,
-                       seq);
-                false
-            }
-            other => {
-                trace!("recv_message_commit_causalp: Unhandled: {:?} / {:?}",
-                       x,
-                       seq);
-                false
-            }
-        }
-    }
-    fn send_commit_message_causalp(seq: &Seqno, y: &ReplCommand) -> bool {
-        match y {
-            &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(ref s0), .. })
-                if seq <= s0 => false,
-            &ReplCommand::Forward(ref other) => {
-                debug!("message_commit_causalp: Unhandled: {:?} / {:?}", seq, y);
-                false
-            }
-            other => {
-                trace!("send_commit_message_causalp: Unhandled: {:?} / {:?}",
-                       seq,
-                       y);
-                false
-            }
-        }
-    }
-
-    fn peer_message_causal(x: &ReplCommand, y: &ReplCommand) -> bool {
-        match (x, y) {
-            (&ReplCommand::ClientOperation(ref data0),
-             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(_, ref data1), .. })) => {
-                data0 == data1
-            }
-            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
-             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) |
-            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
-             &ReplCommand::Response(OpResp::Ok(_, s1, _))) |
-            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
-             &ReplCommand::Response(OpResp::Err(_, s1, _))) |
-            (&ReplCommand::Response(OpResp::Err(_, s0, _)),
-             &ReplCommand::Response(OpResp::Err(_, s1, _))) |
-            (&ReplCommand::Response(OpResp::Ok(_, s0, _)),
-             &ReplCommand::Response(OpResp::Ok(_, s1, _))) => s0 == s1,
-            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::HelloDownstream, epoch: _, .. }),
-                 &ReplCommand::Response(OpResp::HelloIHave(_, _)))
-                => true,
-            (&ReplCommand::Response(OpResp::HelloIHave(_, s0)),
-             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) => {
-                s0 <= Some(s1)
-            }
-            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s0), .. }),
-             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s1), .. })) => {
-                s0 >= s1
-            }
-            (_, _) => false,
-        }
-    }
-
-    fn self_message_causal(x: &ReplCommand, y: &ReplCommand) -> bool {
-        match (x, y) {
-            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
-             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::CommitTo(s1), .. })) => {
-                s0 <= s1
-            }
-            (&ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s0, _), .. }),
-             &ReplCommand::Forward(ReplicationMessage { msg: PeerMsg::Prepare(s1, _), .. })) => {
-                s0.succ() == s1
-            }
-            (_, _) => false,
-        }
+        state
     }
 
     fn tail_node(&self) -> NodeId {
