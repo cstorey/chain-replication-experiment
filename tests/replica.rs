@@ -499,12 +499,26 @@ impl<L: TestLog> NetworkSim<L> {
 
         let mut cnf = falsified_goal.to_cnf(&commit_env);
 
-        // let results = HashSet::new();
+        let mut results = BTreeSet::new();
         // Our "solution" is the set of message vars assigned with `false`.
         // Create a partial ordering such that a <= b iff forall(x in a) x in b
         // So, we want to find the least set of solutions.
         for result in cnf {
-            debug!("Sat result: {:?}", result);
+            let falsies = result.into_iter()
+                .filter(|&(ref k, _)| if let &CausalVar::Message(_, _, _) = k { true } else { false })
+                .filter(|&(_, v)| !v)
+                .map(|(k, _)| k).collect::<BTreeSet<_>>();
+            trace!("potential failures: {:?}", falsies);
+            for s in results.iter().filter(|s| falsies.is_subset(s)).cloned().collect::<Vec<_>>() {
+                results.remove(&s);
+            }
+            let has_subset = results.iter().any(|s| falsies.is_superset(s));
+            if ! has_subset {
+                results.insert(falsies);
+            }
+        }
+        for res in results {
+            debug!("lower bound result: {:?}", res);
         }
     }
 
