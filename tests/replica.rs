@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::Write;
 use serde_json;
+use std::hash::{SipHasher,Hash, Hasher};
 
 use bformulae::Bools;
 
@@ -84,6 +85,35 @@ fn simulate_three_node_system_vec() {
     sim.validate_client_responses(1);
     sim.validate_logs();
 }
+
+#[test]
+#[ignore]
+fn simulate_three_node_system_with_failure_archons () {
+    env_logger::init().unwrap_or(());
+    let mut stack = vec![BTreeSet::new()];
+    let mut seen = BTreeSet::new();
+    while let Some(failure_set) = stack.pop() {
+        seen.insert(failure_set.clone());
+        let mut h = SipHasher::new();
+        failure_set.hash(&mut h);
+
+        let mut sim = NetworkSim::<VecLog>::new(3).set_failures(failure_set);
+        let name = format!("simulate_three_node_system_with_failure_archons-{:08x}", h.finish());
+        info!("Test run named: {:?}", name);
+        let new_failures = sim.run_for(10, &name, |t, sim, state| {
+            if t == 0 {
+                sim.client_operation(state, b"hello_world".to_vec().into());
+            }
+        });
+        info!("New potential failures set: {:?}", new_failures);
+        stack.extend(new_failures.into_iter().filter(|f| !seen.contains(f)));
+        info!("Remaining failures: {:?}", stack);
+
+        sim.validate_client_responses(1);
+        sim.validate_logs();
+    }
+}
+
 
 #[test]
 fn simulate_three_node_system_streaming_vec() {
@@ -191,6 +221,7 @@ struct NetworkSim<L> {
     epoch: Epoch,
     client_id: NodeId,
     client_buf: VecDeque<ReplCommand>,
+    drops: BTreeSet<CausalVar>,
 }
 
 #[derive(Debug)]
@@ -216,7 +247,7 @@ impl NetworkState {
         trace!("enqueue:{:?}->{:?}; {:?}", src, dst, self);
     }
 
-    fn dequeue_one(&mut self) -> Option<(NodeId, NodeId, ReplCommand)> {
+    fn dequeue_one(&mut self) -> Option<(NodeId, NodeId, ReplCommand, Timestamp<u64>, Timestamp<u64>)> {
         let (dest, ref mut queue) = if let Some((dest, q)) = self.input_bufs
                                                                  .iter_mut()
                                                                  .filter(|&(_, ref q)| {
@@ -231,8 +262,7 @@ impl NetworkState {
         };
         if let Some((src, sent, it)) = queue.pop_front() {
             let recv = self.clock.now();
-            self.tracer.recv(sent, recv, &src, &dest, it.clone());
-            Some((src, dest, it))
+            Some((src, dest, it, sent, recv))
         } else {
             None
         }
@@ -299,7 +329,9 @@ impl Tracer {
             dst: *dst,
             data: data,
         };
-        self.entries.push(TraceEvent::MessageRecv(m));
+        let ev = TraceEvent::MessageRecv(m);
+        debug!("Observe at {:?}: {:?}", ev.as_causal_var(), ev);
+        self.entries.push(ev);
     }
 
     fn node_crashed(&mut self, t: Timestamp<u64>, process: &NodeId) {
@@ -351,7 +383,13 @@ impl<L: TestLog> NetworkSim<L> {
             epoch: epoch,
             client_id: NodeId::Client,
             client_buf: VecDeque::new(),
+            drops: BTreeSet::new(),
         }
+    }
+    fn set_failures(mut self, failures: BTreeSet<CausalVar>) -> Self {
+        debug!("Dropping messages on: {:?}", failures);
+        self.drops = failures;
+        self
     }
 
     fn configs(&self) -> BTreeMap<NodeId, ConfigurationView<NodeId>> {
@@ -368,7 +406,7 @@ impl<L: TestLog> NetworkSim<L> {
     fn run_for<F: FnMut(usize, &mut Self, &mut NetworkState)>(&mut self,
                                                               end_of_time: usize,
                                                               test_name: &str,
-                                                              mut f: F) {
+                                                              mut f: F) -> BTreeSet<BTreeSet<CausalVar>> {
         let mut epoch = None;
         let path = PathBuf::from(format!("target/run-trace-{}.jsons", test_name));
         let tracer = Tracer::new();
@@ -425,10 +463,10 @@ impl<L: TestLog> NetworkSim<L> {
         let tracer = state.tracer;
         let deps = Self::infer_causality(&*tracer.entries);
 
-        Self::derive_formula(self.nodes.keys().cloned(), deps);
+        Self::derive_formula(self.nodes.keys().cloned(), deps)
     }
 
-    fn derive_formula<I: Iterator<Item = NodeId>>(nodes: I, deps: Graph<CausalVar, usize>) {
+    fn derive_formula<I: Iterator<Item = NodeId>>(nodes: I, deps: Graph<CausalVar, usize>) -> BTreeSet<BTreeSet<CausalVar>> {
         // Commit invariant
         // Forall(N)Exists(X, Y) Predecessor(X, Y) = (C(N, X) => C(N, Y))
         let nodes = nodes.collect::<BTreeSet<NodeId>>();
@@ -531,9 +569,10 @@ impl<L: TestLog> NetworkSim<L> {
                 results.insert(falsies);
             }
         }
-        for res in results {
+        for res in results.iter() {
             debug!("lower bound result: {:?}", res);
         }
+        results
     }
 
     fn infer_causality<'a>(messages: &'a [TraceEvent<ReplCommand>]) -> Graph<CausalVar, usize> {
@@ -566,12 +605,12 @@ impl<L: TestLog> NetworkSim<L> {
                     if y.src == c.process => Self::send_commit_message_causalp(&c.offset, &y.data),
                 _ => false,
             };
-            debug!("causedp: {:?}; Compare: {:?} / {:?}", causedp, x, y);
+            trace!("causedp: {:?}; Compare: {:?} / {:?}", causedp, x, y);
 
             let xn = *nodes.entry(xcv.clone()).or_insert_with(|| g.add_node(xcv));
             let yn = *nodes.entry(ycv.clone()).or_insert_with(|| g.add_node(ycv));
             if causedp {
-                debug!("Add edge: {:?} <- {:?}", g[xn], g[yn]);
+                trace!("Add edge: {:?} <- {:?}", g[xn], g[yn]);
                 // it's a "caused by relation"
                 g.update_edge(yn, xn, 1usize);
             }
@@ -843,23 +882,30 @@ impl<L: TestLog> NetworkSim<L> {
     }
 
     fn step(&mut self, state: &mut NetworkState, path: &Path) {
-        while let Some((src, dest, input)) = state.dequeue_one() {
+        while let Some((src, dest, input, sent_t, recv_t)) = state.dequeue_one() {
             debug!("Inputs: {:?} -> {:?}: {:?}", src, dest, input);
             if dest == self.client_id {
                 self.client_buf.push_back(input);
             } else {
-                if let Some(ref mut n) = self.nodes.get_mut(&dest) {
+                let cv = CausalVar::Message(sent_t.time, src, dest);
+                debug!("dropping? {:?} -> {:?}", cv, self.drops.contains(&cv));
+                if self.drops.contains(&cv) {
+                    warn!("Injecting failure for nodes: {:?} -> {:?} at {:?}", src, dest, recv_t);
+                    // We also need to indicate that the "connection" was dropped. Because failure detectors.
+
+                } else if let Some(ref mut n) = self.nodes.get_mut(&dest) {
+                    debug!("Feed node {:?} with {:?} at {:?}", dest, input, recv_t);
+                    state.tracer.recv(sent_t, recv_t, &src, &dest, input.clone());
                     state.tracer.persist_to(&path);
                     let mut output = OutBufs {
                         node_id: dest,
                         ports: state,
                     };
 
-                    debug!("Feed node {:?} with {:?}", dest, input);
                     apply_cmd(n, &input, src, &mut output);
 
                 } else {
-                    warn!("Dropping message for node: {:?}: {:?}", dest, input);
+                    warn!("Dropping message for dead node: {:?}: {:?}", dest, input);
                 }
             }
         }
