@@ -14,6 +14,8 @@ extern crate error_chain;
 
 pub mod sexp_proto;
 mod server;
+mod client;
 mod messages;
 
 pub use server::ServerService;
+pub use client::Client;

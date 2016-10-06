@@ -14,10 +14,12 @@ use super::errors::Error;
 use super::Empty;
 
 use std::marker::PhantomData;
+use std::fmt;
 
 pub struct Client<T, R> {
     inner: proto::Client<T, R, stream::Empty<Empty, Error>, Error>,
 }
+
 impl<T: Send + 'static, R: Send + 'static> Service for Client<T, R> {
     type Request = T;
     type Response = R;
@@ -29,6 +31,12 @@ impl<T: Send + 'static, R: Send + 'static> Service for Client<T, R> {
     }
     fn call(&self, req: T) -> Self::Future {
         self.inner.call(proto::Message::WithoutBody(req))
+    }
+}
+
+impl<T, R> fmt::Debug for Client<T, R> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_tuple("Client").finish()
     }
 }
 

@@ -21,8 +21,9 @@ fn stuff() {
     let mut core = Core::new().unwrap();
 
     let head = vastatrix::ServerService::new();
-    let head_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(), head);
-
+    let head_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(), head).expect("start");
 
     
+    let client = vastatrix::Client::new(core.handle(), head_host.local_addr());
+
 }
