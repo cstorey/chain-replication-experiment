@@ -1,0 +1,33 @@
+[package]
+authors = ["Ceri Storey <ceri@lshift.net>"]
+name = "sexp-proto-tokio"
+version = "0.1.0"
+
+[dependencies]
+env_logger = "0.3.0"
+error-chain = "0.5.0"
+futures = "0.1"
+log = "0.3.6"
+rand = "0.3.14"
+serde = "0.8.10"
+time = "0.1.35"
+tokio-core = "0.1"
+
+[dependencies.bytes]
+git = "https://github.com/carllerche/bytes.git"
+
+[dependencies.spki-sexp]
+git = "https://github.com/cstorey/spki-sexp.rs.git"
+optional = false
+
+[dependencies.tokio-middleware]
+git = "https://github.com/tokio-rs/tokio-middleware"
+
+[dependencies.tokio-proto]
+git = "https://github.com/cstorey/tokio-proto"
+
+[dependencies.tokio-service]
+git = "https://github.com/tokio-rs/tokio-service"
+
+[dependencies.tokio-timer]
+git = "https://github.com/tokio-rs/tokio-timer"
