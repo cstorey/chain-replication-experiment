@@ -7,10 +7,10 @@ use tokio::reactor::Handle;
 use tokio::net::TcpStream;
 use tokio::io::FramedIo;
 use futures::stream;
-use sexp_proto::sexp_proto_new;
 use serde;
-use errors::Error;
 
+use super::sexp_proto::sexp_proto_new;
+use super::errors::Error;
 use super::Empty;
 
 use std::marker::PhantomData;

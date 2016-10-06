@@ -9,7 +9,7 @@ use std::fmt::Write;
 
 use std::marker::PhantomData;
 
-use errors::Error;
+use super::errors::Error;
 use super::Empty;
 
 #[derive(Debug)]
@@ -49,7 +49,7 @@ impl<T: de::Deserialize> Parse for SexpParser<T> {
             Err(e) => {
                 error!("Transport error:{:?}", e);
                 Some(Frame::Error(e.into()))
-            },
+            }
         }
     }
 }

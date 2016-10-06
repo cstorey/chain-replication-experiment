@@ -6,9 +6,9 @@ use futures::{Async, Future};
 use futures::stream;
 use std::io;
 use std::net::SocketAddr;
-use sexp_proto::sexp_proto_new;
 
-use errors::Error;
+use super::sexp_proto::sexp_proto_new;
+use super::errors::Error;
 use super::Empty;
 
 struct SexpService<T> {
