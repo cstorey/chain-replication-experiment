@@ -2,7 +2,7 @@ use proto::{self, pipeline, server};
 use proto::server::ServerHandle;
 use service::{Service, NewService};
 use tokio::reactor::Handle;
-use futures::{Async, Future};
+use futures::{Async, Poll, Future};
 use futures::stream;
 use std::io;
 use std::net::SocketAddr;
@@ -10,39 +10,47 @@ use std::net::SocketAddr;
 use super::sexp_proto::sexp_proto_new;
 use super::errors::Error;
 use super::Empty;
+use serde;
 
 struct SexpService<T> {
     inner: T,
 }
 
+struct SexpFuture<F>(F);
+
 impl<T> Service for SexpService<T>
-    where T: Service<Request = String, Response = String, Error = Error>,
+    where T: Service<Error = Error>,
           T::Future: Send + 'static
 {
-    type Request = String;
-    type Response = proto::Message<String, stream::Empty<Empty, Error>>;
+    type Request = T::Request;
+    type Response = proto::Message<T::Response, stream::Empty<Empty, Error>>;
     type Error = Error;
-    type Future = Box<Future<Item = Self::Response, Error = Error> + Send>;
+    // type Future = Box<Future<Item = Self::Response, Error = Error> + Send + 'static>;
+    type Future = SexpFuture<T::Future>;
 
     fn poll_ready(&self) -> Async<()> {
         Async::Ready(())
     }
     fn call(&self, req: Self::Request) -> Self::Future {
-        debug!("Got request:{:?}", req);
-        self.inner
-            .call(req)
-            .map(|r| {
-                debug!("Respond with:{:?}", r);
-                r
-            })
-            .map(proto::Message::WithoutBody)
-            .boxed()
+        SexpFuture(self.inner.call(req))
+    }
+}
+
+impl<F: Future> Future for SexpFuture<F> {
+    type Item = proto::Message<F::Item, stream::Empty<Empty, Error>>;
+    type Error = F::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let ret = try_ready!(self.0.poll());
+        Ok(Async::Ready(proto::Message::WithoutBody(ret)))
     }
 }
 
 pub fn serve<T>(handle: &Handle, addr: SocketAddr, new_service: T) -> io::Result<ServerHandle>
-    where T: NewService<Request = String, Response = String, Error = Error> + Send + 'static,
-          <<T as NewService>::Item as Service>::Future: Send
+    where T: NewService<Error = Error> + Send + 'static,
+          <<T as NewService>::Item as Service>::Future: Send,
+          T::Request: serde::Deserialize + serde::Serialize,
+          T::Response: serde::Deserialize + serde::Serialize
 {
     let handle = try!(server::listen(handle, addr, move |stream| {
         // Initialize the pipeline dispatch with the service and the line

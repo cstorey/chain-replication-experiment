@@ -1,7 +1,14 @@
 [package]
+authors = ["Ceri Storey <ceri@lshift.net>"]
+build = "build.rs"
 name = "vastatrix"
 version = "0.1.0"
-authors = ["Ceri Storey <ceri@lshift.net>"]
+
+[build-dependencies]
+env_logger = "0.3.0"
+serde_codegen = "0.8.11"
+tempfile = "2.1.4"
+log = "0.3.6"
 
 [dependencies]
 env_logger = "0.3.0"
