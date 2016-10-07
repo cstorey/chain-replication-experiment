@@ -3,6 +3,6 @@ mod errors;
 
 pub mod server;
 pub mod client;
-pub use self::errors::Error;
+pub use self::errors::*;
 
 pub enum Empty {}

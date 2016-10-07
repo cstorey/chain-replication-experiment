@@ -43,6 +43,7 @@ impl<T: de::Deserialize> Parse for SexpParser<T> {
         buf.shift(len);
         debug!("Buffer now:{:?}", buf.len());
 
+        debug!("Packets now:{:?}", self.packets);
         match self.packets.take() {
             Ok(Some(msg)) => Some(Frame::Message(msg)),
             Ok(None) => None,

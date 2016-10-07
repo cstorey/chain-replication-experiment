@@ -6,9 +6,9 @@ version = "0.1.0"
 
 [build-dependencies]
 env_logger = "0.3.0"
+log = "0.3.6"
 serde_codegen = "0.8.11"
 tempfile = "2.1.4"
-log = "0.3.6"
 
 [dependencies]
 env_logger = "0.3.0"
@@ -19,6 +19,7 @@ rand = "0.3.14"
 serde = "0.8.10"
 time = "0.1.35"
 tokio-core = "0.1"
+void = "1.0.2"
 
 [dependencies.bytes]
 git = "https://github.com/carllerche/bytes.git"

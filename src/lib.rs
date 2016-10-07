@@ -11,11 +11,13 @@ extern crate log;
 extern crate bytes;
 #[macro_use]
 extern crate error_chain;
+extern crate void;
 
 pub mod sexp_proto;
-mod server;
-mod client;
+mod replica;
+mod proxy;
 mod messages;
 
-pub use server::ServerService;
-pub use client::Client;
+pub use replica::server::ServerService;
+pub use proxy::server::ProxyService;
+pub use proxy::client::ProxyClient;
