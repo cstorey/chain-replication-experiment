@@ -20,20 +20,19 @@ fn stuff() {
 
     let mut core = Core::new().unwrap();
 
-    let head = vastatrix::ProxyService::new();
-    let head_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(), head).expect("start");
-
+    let head = vastatrix::ServerService::new();
+    let head_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(), head)
+        .expect("start");
+    let mut client = vastatrix::FatClient::new(core.handle(), head_host.local_addr());
     
-    let client = vastatrix::ProxyClient::new(core.handle(), head_host.local_addr());
-    
-    let f = client.log_item(b"hello world")
-        .and_then(|res| client.await_commit(res.position()));
+    let f = client.log_item(b"hello world".to_vec())
+        .and_then(|off| client.await_commit(off));
 
     let wpos = core.run(f).expect("run write");
 
     println!("Wrote to offset:{:?}", wpos);
 
-    // let item_f = client.read_item(None);
+    // let item_f = client.consume();
 
     // let (rpos, item) = core.run(f).expect("run read");
 }

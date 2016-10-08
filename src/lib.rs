@@ -17,7 +17,9 @@ pub mod sexp_proto;
 mod replica;
 mod proxy;
 mod messages;
+mod fatclient;
 
 pub use replica::server::ServerService;
 pub use proxy::server::ProxyService;
 pub use proxy::client::ProxyClient;
+pub use fatclient::FatClient;

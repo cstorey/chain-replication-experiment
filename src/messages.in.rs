@@ -13,7 +13,10 @@ pub enum ServerRequest {
     }
 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub enum ServerResponse { }
+pub enum ServerResponse {
+    Done(LogPos),
+    BadSequence(LogPos)
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum ClientRequest { 
@@ -25,5 +28,15 @@ pub enum ClientResponse { }
 impl ClientResponse {
     pub fn position(&self) -> LogPos {
         unimplemented!()
+    }
+}
+
+impl LogPos {
+    pub fn zero() ->Self {
+        LogPos(0)
+    }
+    pub fn next(&self) ->Self {
+        let &LogPos(off) = self;
+        LogPos(off+1)
     }
 }

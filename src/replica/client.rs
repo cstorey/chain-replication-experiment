@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::net::SocketAddr;
 use std::marker::PhantomData;
 use void::Void;
+use std::fmt;
 
 
 error_chain!{
@@ -16,11 +17,11 @@ error_chain!{
 }
 
 #[derive(Debug)]
-pub struct ServerClient(Mutex<sclient::Client<ServerRequest, ServerResponse>>);
+pub struct ReplicaClient(Mutex<sclient::Client<ServerRequest, ServerResponse>>);
 
-pub struct ServerClientFut(BoxFuture<ServerResponse, sexp_proto::Error>);
+pub struct ReplicaClientFut(BoxFuture<ServerResponse, sexp_proto::Error>);
 
-impl Future for ServerClientFut {
+impl Future for ReplicaClientFut {
     type Item = ServerResponse;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -28,41 +29,48 @@ impl Future for ServerClientFut {
     }
 }
 
-impl ServerClient {
+impl ReplicaClient {
     pub fn new(handle: Handle, target: &SocketAddr) -> Self {
         let client0 = sclient::connect(handle, target);
-        ServerClient(Mutex::new(client0))
+        ReplicaClient(Mutex::new(client0))
     }
 
     pub fn append_entry(&self,
                         assumed_offset: LogPos,
                         entry_offset: LogPos,
-                        datum: &[u8])
-                        -> ServerClientFut {
+                        datum: Vec<u8>)
+                        -> ReplicaClientFut {
         let req = ServerRequest::AppendLogEntry {
             assumed_offset: assumed_offset,
             entry_offset: entry_offset,
-            datum: datum.to_vec(),
+            datum: datum,
         };
         self.call(req)
     }
 
-    pub fn await_commit(&self, pos: LogPos) -> ServerClientFut {
+    pub fn await_commit(&self, pos: LogPos) -> ReplicaClientFut {
         let req = ServerRequest::CommitEntriesUpto { offset: pos };
         self.call(req)
     }
 }
 
-impl Service for ServerClient {
+impl Service for ReplicaClient {
     type Request = ServerRequest;
     type Response = ServerResponse;
     type Error = Error;
-    type Future = ServerClientFut;
+    type Future = ReplicaClientFut;
 
     fn poll_ready(&self) -> Async<()> {
         self.0.lock().expect("unlock").poll_ready()
     }
     fn call(&self, req: Self::Request) -> Self::Future {
-        ServerClientFut(self.0.lock().expect("unlock").call(req))
+        ReplicaClientFut(self.0.lock().expect("unlock").call(req))
+    }
+}
+
+
+impl fmt::Debug for ReplicaClientFut {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_tuple("ReplicaClientFut").finish()
     }
 }

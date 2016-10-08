@@ -1,6 +1,6 @@
 use service::Service;
-use futures::{self, Async, Poll};
-use messages::{ServerRequest, ServerResponse};
+use futures::{self, Async, Poll, Future};
+use messages::{ServerRequest, ServerResponse, LogPos};
 
 use sexp_proto::Error;
 
@@ -8,6 +8,8 @@ use sexp_proto::Error;
 #[derive(Clone,Debug)]
 pub struct ServerService;
 
+#[derive(Debug)]
+pub struct ReplicaFut;
 
 impl ServerService {
     pub fn new() -> Self {
@@ -20,12 +22,20 @@ impl Service for ServerService {
     type Request = ServerRequest;
     type Response = ServerResponse;
     type Error = Error;
-    type Future = futures::Empty<Self::Response, Self::Error>;
+    type Future = ReplicaFut;
 
     fn poll_ready(&self) -> Async<()> {
-        unimplemented!()
+        Async::Ready(())
     }
     fn call(&self, req: Self::Request) -> Self::Future {
-        unimplemented!()
+        ReplicaFut
+    }
+}
+
+impl Future for ReplicaFut {
+    type Item = ServerResponse;
+    type Error = Error;
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        Ok(Async::Ready(ServerResponse::Done(LogPos::zero())))
     }
 }
