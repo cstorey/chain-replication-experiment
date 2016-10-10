@@ -19,7 +19,7 @@ fn can_append_one() {
 }
 
 #[test]
-fn fetching_one_is_async() {
+fn fetching_one_is_lazy() {
     env_logger::init().unwrap_or(());
     let store = RamStore::new();
     let current = LogPos::zero();
@@ -32,6 +32,24 @@ fn fetching_one_is_async() {
     let (off, val) = fetch_f.wait().expect("fetch");
     assert_eq!((off, val), (next, b"foobar".to_vec()))
 }
+
+#[test]
+fn writes_are_lazy() {
+    env_logger::init().unwrap_or(());
+    let store = RamStore::new();
+    let current = LogPos::zero();
+    let next = current.next();
+
+    let store_f = store.append_entry(current, next, b"foobar".to_vec());
+    let mut fetch_f = store.fetch_next(current);
+    assert_eq!(fetch_f.poll().expect("poll-notready"), Async::NotReady);
+
+    store_f.wait().expect("append_entry");
+
+    let (off, val) = fetch_f.wait().expect("fetch");
+    assert_eq!((off, val), (next, b"foobar".to_vec()))
+}
+
 
 #[test]
 fn can_write_many() {
