@@ -8,13 +8,7 @@ use std::net::SocketAddr;
 use std::marker::PhantomData;
 use void::Void;
 use std::fmt;
-
-
-error_chain!{
-    links {
-        sexp_proto::Error, sexp_proto::ErrorKind, SexpP;
-    }
-}
+use {Error, ErrorKind};
 
 #[derive(Debug)]
 pub struct ReplicaClient(Mutex<sclient::Client<ServerRequest, ServerResponse>>);

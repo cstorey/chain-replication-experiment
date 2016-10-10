@@ -14,11 +14,13 @@ extern crate error_chain;
 extern crate void;
 
 pub mod sexp_proto;
+mod errors;
 mod replica;
-mod proxy;
+mod tail;
 mod fatclient;
 
 pub use replica::server::ServerService;
-pub use proxy::server::ProxyService;
-pub use proxy::client::ProxyClient;
+pub use tail::server::TailService;
+pub use tail::client::TailClient;
 pub use fatclient::FatClient;
+pub use errors::*;

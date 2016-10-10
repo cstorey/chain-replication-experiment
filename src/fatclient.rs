@@ -1,15 +1,19 @@
 use tokio::reactor::Handle;
 use futures::{Future, Poll, Async};
 use std::net::SocketAddr;
-use replica::client::{ReplicaClient, Error};
+use replica::client::ReplicaClient;
+use tail::client::TailClient;
+use tail::messages::TailResponse;
 use replica::{LogPos, ServerResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
 use std::mem;
+use {Error, ErrorKind};
 
 #[derive(Debug)]
 pub struct FatClient {
     head: Arc<ReplicaClient>,
+    tail: Arc<TailClient>,
     last_known_head: Arc<Mutex<LogPos>>,
 }
 
@@ -22,21 +26,20 @@ pub struct FatClient {
 // ```
 //
 type ReplicaFut = <ReplicaClient as Service>::Future;
+type TailFut = <TailClient as Service>::Future;
 
-#[derive(Debug)]
 pub struct LogItemFut(ReplicaFut);
 
-pub struct AwaitCommitFut {
-    client: Arc<ReplicaClient>,
-    offset: LogPos,
-}
+pub struct AwaitCommitFut(TailFut);
 
 impl FatClient {
-    pub fn new(handle: Handle, head: &SocketAddr) -> Self {
-        let repl = ReplicaClient::new(handle, head);
+    pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
+        let repl = ReplicaClient::new(handle.clone(), head);
+        let tail = TailClient::new(handle, tail);
 
         FatClient {
             head: Arc::new(repl),
+            tail: Arc::new(tail),
             last_known_head: Arc::new(Mutex::new(LogPos::zero())),
         }
     }
@@ -47,10 +50,7 @@ impl FatClient {
         LogItemFut(f)
     }
     pub fn await_commit(&mut self, offset: LogPos) -> AwaitCommitFut {
-        AwaitCommitFut {
-            client: self.head.clone(),
-            offset: offset,
-        }
+        AwaitCommitFut(self.tail.await_commit(offset))
     }
 }
 
@@ -58,16 +58,13 @@ impl Future for LogItemFut {
     type Item = LogPos;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try!(self.0.poll()) {
-            Async::Ready(ServerResponse::Done(offset)) => {
+        match try_ready!(self.0.poll()) {
+            ServerResponse::Done(offset) => {
                 debug!("Done =>{:?}", offset);
                 return Ok(Async::Ready(offset));
             }
-            Async::Ready(other) => {
+            other => {
                 panic!("Unhandled response: {:?}", other);
-            }
-            Async::NotReady => {
-                return Ok(Async::NotReady);
             }
         }
     }
@@ -77,6 +74,11 @@ impl Future for AwaitCommitFut {
     type Item = LogPos;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        Ok(Async::Ready(self.offset))
+        match try_ready!(self.0.poll()) {
+            TailResponse::Done(offset) => {
+                debug!("Done =>{:?}", offset);
+                return Ok(Async::Ready(offset));
+            }
+        }
     }
 }

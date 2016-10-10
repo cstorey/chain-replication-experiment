@@ -15,7 +15,7 @@ fn process() {
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
 
-    for m in ["replica/messages", "proxy/messages"].iter() {
+    for m in ["replica/messages", "tail/messages"].iter() {
         let src = PathBuf::from(format!("src/{}.in.rs", m));
         let dst = Path::new(&out_dir).join(format!("{}.rs", m));
         let tmp_dst = NamedTempFile::new_in(&out_dir).expect("temp file");
