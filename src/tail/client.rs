@@ -1,14 +1,12 @@
 use futures::{Future, Poll, Async, BoxFuture};
-use replica::{ServerRequest, ServerResponse, LogPos};
+use replica::LogPos;
 use super::{TailRequest, TailResponse};
 use sexp_proto::{self, client as sclient};
 use service::Service;
 use tokio::reactor::Handle;
 use std::sync::Mutex;
 use std::net::SocketAddr;
-use std::marker::PhantomData;
-use void::Void;
-use {Error, ErrorKind};
+use Error;
 
 // Currently, this is intended to be
 #[derive(Debug)]

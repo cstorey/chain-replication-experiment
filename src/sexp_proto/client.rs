@@ -1,11 +1,9 @@
-use futures::{self, Async, Future, Poll};
-use std::io;
+use futures::{Async, Future};
 use std::net::SocketAddr;
 use service::Service;
 use proto::{self, pipeline};
 use tokio::reactor::Handle;
 use tokio::net::TcpStream;
-use tokio::io::FramedIo;
 use futures::stream;
 use serde;
 
@@ -13,7 +11,6 @@ use super::sexp_proto::sexp_proto_new;
 use super::errors::Error;
 use super::Empty;
 
-use std::marker::PhantomData;
 use std::fmt;
 
 pub struct Client<T, R> {

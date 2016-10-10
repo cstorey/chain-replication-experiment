@@ -1,5 +1,5 @@
 use service::Service;
-use futures::{self, Async, Poll};
+use futures::{self, Async};
 use super::{TailRequest, TailResponse};
 use store::Store;
 use replica::LogPos;
@@ -28,7 +28,7 @@ impl<S: Store> Service for TailService<S> {
     fn poll_ready(&self) -> Async<()> {
         Async::Ready(())
     }
-    fn call(&self, req: Self::Request) -> Self::Future {
+    fn call(&self, _req: Self::Request) -> Self::Future {
         futures::finished(TailResponse::Done(LogPos::zero()))
     }
 }

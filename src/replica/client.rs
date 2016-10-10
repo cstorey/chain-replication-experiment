@@ -5,10 +5,8 @@ use service::Service;
 use tokio::reactor::Handle;
 use std::sync::Mutex;
 use std::net::SocketAddr;
-use std::marker::PhantomData;
-use void::Void;
 use std::fmt;
-use {Error, ErrorKind};
+use Error;
 
 #[derive(Debug)]
 pub struct ReplicaClient(Mutex<sclient::Client<ServerRequest, ServerResponse>>);

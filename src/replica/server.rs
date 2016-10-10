@@ -1,5 +1,5 @@
 use service::Service;
-use futures::{self, Async, Poll, Future};
+use futures::{Async, Poll, Future};
 use super::{ServerRequest, ServerResponse, LogPos};
 
 use sexp_proto::Error;
@@ -29,7 +29,7 @@ impl<S> Service for ServerService<S> {
     fn poll_ready(&self) -> Async<()> {
         Async::Ready(())
     }
-    fn call(&self, req: Self::Request) -> Self::Future {
+    fn call(&self, _req: Self::Request) -> Self::Future {
         ReplicaFut
     }
 }

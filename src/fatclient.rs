@@ -7,8 +7,7 @@ use tail::messages::TailResponse;
 use replica::{LogPos, ServerResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
-use std::mem;
-use {Error, ErrorKind};
+use Error;
 
 #[derive(Debug)]
 pub struct FatClient {

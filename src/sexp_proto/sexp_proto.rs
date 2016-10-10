@@ -1,6 +1,5 @@
 use bytes::{self, MutBuf};
 use bytes::buf::BlockBuf;
-use std::io;
 use proto::{pipeline, Parse, Serialize, Framed};
 use tokio::io::Io;
 use spki_sexp as sexp;
