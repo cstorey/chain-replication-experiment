@@ -124,7 +124,7 @@ fn concurrent_writes_should_be_able_to_recover() {
 
     // Request a write from a slow client
     let write_1 = store.append_entry(current, next, b"foo".to_vec());
-    // A second client gets their first
+    // A second client gets there first
     store.append_entry(current, next, b"foo".to_vec()).wait().expect("append_entry 1");
 
     // Wait for the first write to be completed
