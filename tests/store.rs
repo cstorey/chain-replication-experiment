@@ -75,11 +75,11 @@ fn cannot_overwrite_item() {
     let store = RamStore::new();
     let current = LogPos::zero();
     let next = current.next();
+
     store.append_entry(current, next, b"foo".to_vec()).wait().expect("append_entry 1");
     let overwrite_res = store.append_entry(current, next, b"bar".to_vec()).wait();
 
-    let expected_seq = if let &ErrorKind::BadSequence(n) = overwrite_res.unwrap_err().kind() {
-        Some(n) } else { None };
+    let expected_seq = head_from_error(overwrite_res.unwrap_err());
     assert_eq!(expected_seq, Some(next));
 }
 
@@ -89,12 +89,58 @@ fn cannot_overwrite_history() {
     let store = RamStore::new();
     let current = LogPos::zero();
     let next = current.next();
+
     store.append_entry(current, next, b"foo".to_vec()).wait().expect("append_entry 1");
     let current = next; let next = next.next();
     store.append_entry(current, next, b"bar".to_vec()).wait().expect("append_entry 1");
     let overwrite_res = store.append_entry(LogPos::zero(), LogPos::zero().next(), b"moo".to_vec()).wait();
 
-    let expected_seq = if let &ErrorKind::BadSequence(n) = overwrite_res.unwrap_err().kind() {
-        Some(n) } else { None };
+    let expected_seq = head_from_error(overwrite_res.unwrap_err());
     assert_eq!(expected_seq, Some(next));
+}
+
+#[test]
+fn error_feedback_should_indicate_new_head() {
+    env_logger::init().unwrap_or(());
+    let store = RamStore::new();
+    let current = LogPos::zero();
+    let next = current.next();
+
+    store.append_entry(current, next, b"foo".to_vec()).wait().expect("append_entry 1");
+    let overwrite_res = store.append_entry(LogPos::zero(), LogPos::zero().next(), b"moo".to_vec()).wait();
+
+    let new_head = head_from_error(overwrite_res.unwrap_err()).expect("current sequence number");
+
+    let final_write = store.append_entry(new_head, new_head.next(), b"moo".to_vec()).wait();
+    assert!(final_write.is_ok());
+}
+
+#[test]
+fn concurrent_writes_should_be_able_to_recover() {
+    env_logger::init().unwrap_or(());
+    let store = RamStore::new();
+    let current = LogPos::zero();
+    let next = current.next();
+
+    // Request a write from a slow client
+    let write_1 = store.append_entry(current, next, b"foo".to_vec());
+    // A second client gets their first
+    store.append_entry(current, next, b"foo".to_vec()).wait().expect("append_entry 1");
+
+    // Wait for the first write to be completed
+    let overwrite_res = write_1.wait();
+
+    // Retry the first write
+    let new_head = head_from_error(overwrite_res.unwrap_err()).expect("current sequence number");
+    let final_write = store.append_entry(new_head, new_head.next(), b"foo".to_vec()).wait();
+    assert!(final_write.is_ok());
+}
+
+
+fn head_from_error(error: Error) -> Option<LogPos> {
+    if let &ErrorKind::BadSequence(n) = error.kind() {
+        Some(n)
+    } else {
+        None
+    }
 }
