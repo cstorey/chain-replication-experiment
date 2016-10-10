@@ -28,6 +28,7 @@ type ReplicaFut = <ReplicaClient as Service>::Future;
 type TailFut = <TailClient as Service>::Future;
 
 pub struct LogItemFut(ReplicaFut);
+pub struct FetchNextFut(TailFut);
 
 impl FatClient {
     pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
@@ -46,6 +47,11 @@ impl FatClient {
         let f = self.head.append_entry(current, current.next(), body.clone());
         LogItemFut(f)
     }
+
+    pub fn fetch_next(&mut self, after: LogPos) -> FetchNextFut {
+        let f = self.tail.fetch_next(after);
+        FetchNextFut(f)
+    }
 }
 
 impl Future for LogItemFut {
@@ -61,5 +67,19 @@ impl Future for LogItemFut {
                 panic!("Unhandled response: {:?}", other);
             }
         }
+    }
+}
+impl Future for FetchNextFut {
+    type Item = (LogPos, Vec<u8>);
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match try_ready!(self.0.poll()) {
+            TailResponse::NextItem(offset, value) => {
+                debug!("Done =>{:?}", offset);
+                return Ok(Async::Ready((offset, value)));
+            }
+        }
+
     }
 }

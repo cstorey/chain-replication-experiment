@@ -28,8 +28,8 @@ impl TailClient {
         TailClient(Mutex::new(client0))
     }
 
-    pub fn await_commit(&self, pos: LogPos) -> TailClientFut {
-        let req = TailRequest::AwaitCommit(pos);
+    pub fn fetch_next(&self, pos: LogPos) -> TailClientFut {
+        let req = TailRequest::FetchNextAfter(pos);
         self.call(req)
     }
 }

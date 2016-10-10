@@ -1,3 +1,5 @@
+#[macro_use]
+extern crate log;
 extern crate futures;
 extern crate tokio_core as tokio;
 extern crate tokio_service as service;
@@ -11,12 +13,12 @@ use service::Service;
 use futures::{Poll, Async, Future};
 use futures::stream::{self, Stream};
 use std::sync::{Mutex,Arc};
-use vastatrix::RamStore;
+use vastatrix::{RamStore,LogPos};
 
 use vastatrix::sexp_proto;
 
 #[test]
-fn stuff() {
+fn smoketest() {
     env_logger::init().unwrap_or(());
 
     let mut core = Core::new().unwrap();
@@ -29,14 +31,20 @@ fn stuff() {
     let tail_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(),
             vastatrix::TailService::new(store.clone()))
         .expect("start-tail");
+
+    info!("Head at: {:?}, tail at: {:?}", head_host.local_addr(), tail_host.local_addr());
     let mut client = vastatrix::FatClient::new(core.handle(), head_host.local_addr(), tail_host.local_addr());
 
-    let f = client.log_item(b"hello world".to_vec());
+    let message = b"hello world";
+    let f = client.log_item(message.to_vec());
     let wpos = core.run(f).expect("run write");
 
-    println!("Wrote to offset:{:?}", wpos);
+    info!("Wrote to offset:{:?}", wpos);
 
-    // let item_f = client.consume();
+    let item_f = client.fetch_next(LogPos::zero());
 
-    // let (rpos, item) = core.run(f).expect("run read");
+    let (rpos, item) = core.run(item_f).expect("run read");
+    info!("Got@{:?}: {:?}", rpos, item);
+
+    // assert_eq!((rpos, item), (wpos, message.to_vec()));
 }

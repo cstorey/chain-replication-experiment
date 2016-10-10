@@ -29,6 +29,6 @@ impl<S: Store> Service for TailService<S> {
         Async::Ready(())
     }
     fn call(&self, _req: Self::Request) -> Self::Future {
-        futures::finished(TailResponse::Done(LogPos::zero()))
+        futures::finished(TailResponse::NextItem(LogPos::zero(), vec![]))
     }
 }

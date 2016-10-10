@@ -2,11 +2,11 @@ use replica::LogPos;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum TailRequest {
-    AwaitCommit(LogPos),
+    FetchNextAfter(LogPos),
 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum TailResponse {
-    Done(LogPos),
+    NextItem(LogPos, Vec<u8>),
 }
 impl TailResponse {
     pub fn position(&self) -> LogPos {
