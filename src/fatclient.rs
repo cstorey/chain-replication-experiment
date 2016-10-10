@@ -2,7 +2,7 @@ use tokio::reactor::Handle;
 use futures::{Future, Poll, Async};
 use std::net::SocketAddr;
 use replica::client::{ReplicaClient, Error};
-use messages::{LogPos, ServerResponse};
+use replica::{LogPos, ServerResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
 use std::mem;
@@ -32,8 +32,8 @@ pub struct AwaitCommitFut {
 }
 
 impl FatClient {
-    pub fn new(handle: Handle, target: &SocketAddr) -> Self {
-        let repl = ReplicaClient::new(handle, target);
+    pub fn new(handle: Handle, head: &SocketAddr) -> Self {
+        let repl = ReplicaClient::new(handle, head);
 
         FatClient {
             head: Arc::new(repl),

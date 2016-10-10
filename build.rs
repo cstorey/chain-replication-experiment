@@ -15,7 +15,7 @@ fn process() {
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
 
-    for m in ["messages"].iter() {
+    for m in ["replica/messages", "proxy/messages"].iter() {
         let src = PathBuf::from(format!("src/{}.in.rs", m));
         let dst = Path::new(&out_dir).join(format!("{}.rs", m));
         let tmp_dst = NamedTempFile::new_in(&out_dir).expect("temp file");
@@ -34,6 +34,11 @@ fn process() {
 
         info!("Updating? {:?}", should_update);
         if should_update {
+            if let Some(parent) = dst.parent() {
+                info!("Ensure dir {:?}", parent);
+                fs::create_dir_all(parent).expect("create_dir_all parent");
+            }
+            info!("Move {:?} => {:?}", tmp_dst.path(), dst);
             fs::rename(tmp_dst.path(), dst).expect("rename");
         }
     }

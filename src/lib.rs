@@ -16,7 +16,6 @@ extern crate void;
 pub mod sexp_proto;
 mod replica;
 mod proxy;
-mod messages;
 mod fatclient;
 
 pub use replica::server::ServerService;

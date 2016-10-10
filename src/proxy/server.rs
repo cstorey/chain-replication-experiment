@@ -1,6 +1,6 @@
 use service::Service;
 use futures::{self, Async, Poll};
-use messages::{ClientRequest, ClientResponse};
+use super::{ClientRequest, ClientResponse};
 
 use sexp_proto::Error;
 
