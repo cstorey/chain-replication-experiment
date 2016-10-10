@@ -31,9 +31,7 @@ fn stuff() {
         .expect("start-tail");
     let mut client = vastatrix::FatClient::new(core.handle(), head_host.local_addr(), tail_host.local_addr());
 
-    let f = client.log_item(b"hello world".to_vec())
-        .and_then(|off| client.await_commit(off));
-
+    let f = client.log_item(b"hello world".to_vec());
     let wpos = core.run(f).expect("run write");
 
     println!("Wrote to offset:{:?}", wpos);

@@ -8,9 +8,6 @@ pub enum ServerRequest {
         entry_offset: LogPos,
         datum: Vec<u8>
     },
-    CommitEntriesUpto {
-        offset: LogPos,
-    }
 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum ServerResponse {

@@ -39,11 +39,6 @@ impl ReplicaClient {
         };
         self.call(req)
     }
-
-    pub fn await_commit(&self, pos: LogPos) -> ReplicaClientFut {
-        let req = ServerRequest::CommitEntriesUpto { offset: pos };
-        self.call(req)
-    }
 }
 
 impl Service for ReplicaClient {

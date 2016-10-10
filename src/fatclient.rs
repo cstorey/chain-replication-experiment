@@ -29,8 +29,6 @@ type TailFut = <TailClient as Service>::Future;
 
 pub struct LogItemFut(ReplicaFut);
 
-pub struct AwaitCommitFut(TailFut);
-
 impl FatClient {
     pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
         let repl = ReplicaClient::new(handle.clone(), head);
@@ -48,9 +46,6 @@ impl FatClient {
         let f = self.head.append_entry(current, current.next(), body.clone());
         LogItemFut(f)
     }
-    pub fn await_commit(&mut self, offset: LogPos) -> AwaitCommitFut {
-        AwaitCommitFut(self.tail.await_commit(offset))
-    }
 }
 
 impl Future for LogItemFut {
@@ -64,19 +59,6 @@ impl Future for LogItemFut {
             }
             other => {
                 panic!("Unhandled response: {:?}", other);
-            }
-        }
-    }
-}
-
-impl Future for AwaitCommitFut {
-    type Item = LogPos;
-    type Error = Error;
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.0.poll()) {
-            TailResponse::Done(offset) => {
-                debug!("Done =>{:?}", offset);
-                return Ok(Async::Ready(offset));
             }
         }
     }
