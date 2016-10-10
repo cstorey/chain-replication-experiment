@@ -18,9 +18,11 @@ mod errors;
 mod replica;
 mod tail;
 mod fatclient;
+mod store;
 
 pub use replica::server::ServerService;
 pub use tail::server::TailService;
 pub use tail::client::TailClient;
 pub use fatclient::FatClient;
 pub use errors::*;
+pub use store::RamStore;

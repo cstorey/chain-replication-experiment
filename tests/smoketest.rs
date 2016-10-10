@@ -10,7 +10,8 @@ use tokio::reactor::{Core, Handle};
 use service::Service;
 use futures::{Poll, Async, Future};
 use futures::stream::{self, Stream};
-use std::sync::Mutex;
+use std::sync::{Mutex,Arc};
+use vastatrix::RamStore;
 
 use vastatrix::sexp_proto;
 
@@ -20,11 +21,13 @@ fn stuff() {
 
     let mut core = Core::new().unwrap();
 
+    let store = RamStore::new();
+
     let head_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(),
-            vastatrix::ServerService::new())
+            vastatrix::ServerService::new(store.clone()))
         .expect("start-head");
     let tail_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(),
-            vastatrix::TailService::new())
+            vastatrix::TailService::new(store.clone()))
         .expect("start-tail");
     let mut client = vastatrix::FatClient::new(core.handle(), head_host.local_addr(), tail_host.local_addr());
 

@@ -1,22 +1,24 @@
 use service::Service;
 use futures::{self, Async, Poll};
 use super::{TailRequest, TailResponse};
+use store::Store;
 use replica::LogPos;
 
 use sexp_proto::Error;
 
 /// The main interface to the outside world.
 #[derive(Clone,Debug)]
-pub struct TailService;
+pub struct TailService<S> {
+    store: S,
+}
 
-
-impl TailService {
-    pub fn new() -> Self {
-        TailService
+impl<S: Store> TailService<S> {
+    pub fn new(store: S) -> Self {
+        TailService { store: store }
     }
 }
 
-impl Service for TailService {
+impl<S: Store> Service for TailService<S> {
     // The type of the input requests we get.
     type Request = TailRequest;
     type Response = TailResponse;

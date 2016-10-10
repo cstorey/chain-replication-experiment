@@ -6,18 +6,20 @@ use sexp_proto::Error;
 
 /// The main interface to the outside world.
 #[derive(Clone,Debug)]
-pub struct ServerService;
+pub struct ServerService<S> {
+    store: S,
+}
 
 #[derive(Debug)]
 pub struct ReplicaFut;
 
-impl ServerService {
-    pub fn new() -> Self {
-        ServerService
+impl<S> ServerService<S> {
+    pub fn new(store: S) -> Self {
+        ServerService { store: store }
     }
 }
 
-impl Service for ServerService {
+impl<S> Service for ServerService<S> {
     // The type of the input requests we get.
     type Request = ServerRequest;
     type Response = ServerResponse;
