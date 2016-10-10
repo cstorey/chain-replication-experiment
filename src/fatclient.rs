@@ -9,7 +9,7 @@ use std::mem;
 
 #[derive(Debug)]
 pub struct FatClient {
-    client: Arc<ReplicaClient>,
+    head: Arc<ReplicaClient>,
     last_known_head: Arc<Mutex<LogPos>>,
 }
 
@@ -24,11 +24,7 @@ pub struct FatClient {
 type ReplicaFut = <ReplicaClient as Service>::Future;
 
 #[derive(Debug)]
-pub enum LogItemFut {
-    Start(Arc<ReplicaClient>, Arc<Mutex<LogPos>>, Vec<u8>),
-    Sent(Arc<ReplicaClient>, Arc<Mutex<LogPos>>, Vec<u8>, ReplicaFut),
-    Invalid,
-}
+pub struct LogItemFut(ReplicaFut);
 
 pub struct AwaitCommitFut {
     client: Arc<ReplicaClient>,
@@ -40,17 +36,19 @@ impl FatClient {
         let repl = ReplicaClient::new(handle, target);
 
         FatClient {
-            client: Arc::new(repl),
+            head: Arc::new(repl),
             last_known_head: Arc::new(Mutex::new(LogPos::zero())),
         }
     }
 
     pub fn log_item(&mut self, body: Vec<u8>) -> LogItemFut {
-        LogItemFut::Start(self.client.clone(), self.last_known_head.clone(), body)
+        let current = *self.last_known_head.lock().expect("lock current");
+        let f = self.head.append_entry(current, current.next(), body.clone());
+        LogItemFut(f)
     }
     pub fn await_commit(&mut self, offset: LogPos) -> AwaitCommitFut {
         AwaitCommitFut {
-            client: self.client.clone(),
+            client: self.head.clone(),
             offset: offset,
         }
     }
@@ -60,40 +58,16 @@ impl Future for LogItemFut {
     type Item = LogPos;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        loop {
-            debug!("LogItemFut::poll@{}:{}: {:?}", file!(), line!(), self);
-            match mem::replace(self, LogItemFut::Invalid) {
-                LogItemFut::Start(client, pos, body) => {
-                    let current = *pos.lock().expect("lock current");
-                    let f = client.append_entry(current, current.next(), body.clone());
-
-                    debug!("=> LogItemFut::Sent");
-                    *self = LogItemFut::Sent(client.clone(), pos.clone(), body, f);
-                }
-                LogItemFut::Sent(client, pos, body, mut fut) => {
-                    debug!("LogItemFut::Sent");
-                    match try!(fut.poll()) {
-                        Async::Ready(ServerResponse::Done(offset)) => {
-                            debug!("Done =>{:?}", offset);
-                            return Ok(Async::Ready(offset));
-                        }
-                        Async::Ready(ServerResponse::BadSequence(new_offset)) => {
-                            debug!("BadSequence =>{:?}", new_offset);
-                            // FIXME: Can be pathological if we have already observed a more recent value?
-                            *pos.lock().expect("lock current") = new_offset;
-
-                            *self = LogItemFut::Start(client, pos, body);
-                            debug!("=> LogItemFut::Start");
-                        }
-                        Async::NotReady => {
-                            *self = LogItemFut::Sent(client, pos, body, fut);
-                            return Ok(Async::NotReady);
-                        }
-                    }
-                }
-                LogItemFut::Invalid => {
-                    panic!("Invalid state in LogItemFut");
-                }
+        match try!(self.0.poll()) {
+            Async::Ready(ServerResponse::Done(offset)) => {
+                debug!("Done =>{:?}", offset);
+                return Ok(Async::Ready(offset));
+            }
+            Async::Ready(other) => {
+                panic!("Unhandled response: {:?}", other);
+            }
+            Async::NotReady => {
+                return Ok(Async::NotReady);
             }
         }
     }
