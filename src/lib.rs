@@ -18,13 +18,13 @@ pub mod sexp_proto;
 mod errors;
 mod replica;
 mod tail;
-mod fatclient;
+mod thick_client;
 mod store;
 
 pub use replica::server::ServerService;
 pub use replica::LogPos;
 pub use tail::server::TailService;
 pub use tail::client::TailClient;
-pub use fatclient::FatClient;
+pub use thick_client::ThickClient;
 pub use errors::*;
 pub use store::{RamStore, Store};

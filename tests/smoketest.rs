@@ -30,7 +30,7 @@ fn smoketest() {
         .expect("start-tail");
 
     info!("Head at: {:?}, tail at: {:?}", head_host.local_addr(), tail_host.local_addr());
-    let client = vastatrix::FatClient::new(core.handle(), head_host.local_addr(), tail_host.local_addr());
+    let client = vastatrix::ThickClient::new(core.handle(), head_host.local_addr(), tail_host.local_addr());
 
     let f = client.log_item(b"hello".to_vec())
         .and_then(|pos0| { client.log_item(b"world".to_vec()).map(move |pos1| (pos0, pos1)) });
