@@ -5,21 +5,20 @@ use tokio::io::Io;
 use spki_sexp as sexp;
 use serde::{ser, de};
 use std::fmt::Write;
+use std::error;
 use void::Void;
 
 use std::marker::PhantomData;
 
-use super::errors::Error;
-
 #[derive(Debug)]
-pub struct SexpParser<T> {
-    _x: PhantomData<fn() -> (T)>,
+pub struct SexpParser<T, E> {
+    _x: PhantomData<fn() -> Result<T, E>>,
     packets: sexp::Packetiser,
 }
 
-pub type Frame<T> = pipeline::Frame<T, Void, Error>;
+pub type Frame<T, E> = pipeline::Frame<T, Void, E>;
 
-impl<T> SexpParser<T> {
+impl<T, E> SexpParser<T, E> {
     pub fn new() -> Self {
         SexpParser {
             _x: PhantomData,
@@ -28,10 +27,10 @@ impl<T> SexpParser<T> {
     }
 }
 
-impl<T: de::Deserialize> Parse for SexpParser<T> {
-    type Out = Frame<T>;
+impl<T: de::Deserialize, E: From<sexp::Error>> Parse for SexpParser<T, E> {
+    type Out = Frame<T, E>;
 
-    fn parse(&mut self, buf: &mut BlockBuf) -> Option<Frame<T>> {
+    fn parse(&mut self, buf: &mut BlockBuf) -> Option<Self::Out> {
         use proto::pipeline::Frame;
 
         if !buf.is_compact() {
@@ -55,11 +54,11 @@ impl<T: de::Deserialize> Parse for SexpParser<T> {
 }
 
 
-pub struct SexpSerializer<T>(PhantomData<T>);
+pub struct SexpSerializer<T, E>(PhantomData<(T, E)>);
 
-impl<T: ser::Serialize> Serialize for SexpSerializer<T> {
-    type In = Frame<T>;
-    fn serialize(&mut self, frame: Frame<T>, buf: &mut BlockBuf) {
+impl<T: ser::Serialize, E: error::Error> Serialize for SexpSerializer<T, E> {
+    type In = Frame<T, E>;
+    fn serialize(&mut self, frame: Self::In, buf: &mut BlockBuf) {
         use proto::pipeline::Frame;
         match frame {
             Frame::Message(val) => buf.write_slice(&sexp::as_bytes(&val).expect("serialize")),
@@ -74,11 +73,14 @@ impl<T: ser::Serialize> Serialize for SexpSerializer<T> {
     }
 }
 
-pub type FramedSexpTransport<T, X, Y> = Framed<T, SexpParser<X>, SexpSerializer<Y>>;
+pub type FramedSexpTransport<T, X, Y, E> = Framed<T, SexpParser<X, E>, SexpSerializer<Y, E>>;
 
-pub fn sexp_proto_new<T: Io, X: de::Deserialize, Y: ser::Serialize>
+pub fn sexp_proto_new<T: Io,
+                      X: de::Deserialize,
+                      Y: ser::Serialize,
+                      E: From<sexp::Error> + error::Error>
     (inner: T)
-     -> FramedSexpTransport<T, X, Y> {
+     -> FramedSexpTransport<T, X, Y, E> {
     Framed::new(inner,
                 SexpParser::new(),
                 SexpSerializer(PhantomData),
