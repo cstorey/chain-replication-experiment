@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use {Error, ErrorKind};
 
 #[derive(Debug)]
-pub struct FatClient {
-    head: Arc<ReplicaClient>,
-    tail: Arc<TailClient>,
+pub struct FatClient<H, T> {
+    head: H,
+    tail: T,
     last_known_head: Arc<Mutex<LogPos>>,
 }
 
@@ -24,27 +24,29 @@ pub struct FatClient {
 // failed_badver -> request_sent;
 // ```
 //
-type ReplicaFut = <ReplicaClient as Service>::Future;
-type TailFut = <TailClient as Service>::Future;
-
-pub struct LogItemFut(ReplicaFut);
-pub struct FetchNextFut(TailFut);
+pub struct LogItemFut<F>(F);
+pub struct FetchNextFut<F>(F);
 
 //
 
-impl FatClient {
+impl FatClient<ReplicaClient, TailClient> {
     pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
         let repl = ReplicaClient::new(handle.clone(), head);
         let tail = TailClient::new(handle, tail);
 
         FatClient {
-            head: Arc::new(repl),
-            tail: Arc::new(tail),
+            head: repl,
+            tail: tail,
             last_known_head: Arc::new(Mutex::new(LogPos::zero())),
         }
     }
+}
 
-    pub fn log_item(&self, body: Vec<u8>) -> LogItemFut {
+impl<H, T> FatClient<H, T>
+    where H: Service<Request = ReplicaRequest, Response = ReplicaResponse>,
+          T: Service<Request = TailRequest, Response = TailResponse>
+{
+    pub fn log_item(&self, body: Vec<u8>) -> LogItemFut<H::Future> {
         let current = *self.last_known_head.lock().expect("lock current");
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,
@@ -54,14 +56,14 @@ impl FatClient {
         LogItemFut(self.head.call(req))
     }
 
-    pub fn fetch_next(&self, after: LogPos) -> FetchNextFut {
+    pub fn fetch_next(&self, after: LogPos) -> FetchNextFut<T::Future> {
         let req = TailRequest::FetchNextAfter(after);
         let f = self.tail.call(req);
         FetchNextFut(f)
     }
 }
 
-impl Future for LogItemFut {
+impl<F: Future<Item = ReplicaResponse, Error = Error>> Future for LogItemFut<F> {
     type Item = LogPos;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -77,7 +79,8 @@ impl Future for LogItemFut {
         }
     }
 }
-impl Future for FetchNextFut {
+
+impl<F: Future<Item = TailResponse, Error = Error>> Future for FetchNextFut<F> {
     type Item = (LogPos, Vec<u8>);
     type Error = Error;
 
