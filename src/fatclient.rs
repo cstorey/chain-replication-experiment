@@ -31,14 +31,8 @@ pub struct FetchNextFut<F>(F);
 
 impl FatClient<ReplicaClient, TailClient> {
     pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
-        let repl = ReplicaClient::new(handle.clone(), head);
-        let tail = TailClient::new(handle, tail);
-
-        FatClient {
-            head: repl,
-            tail: tail,
-            last_known_head: Arc::new(Mutex::new(LogPos::zero())),
-        }
+        Self::build(ReplicaClient::new(handle.clone(), head),
+                    TailClient::new(handle, tail))
     }
 }
 
@@ -46,6 +40,14 @@ impl<H, T> FatClient<H, T>
     where H: Service<Request = ReplicaRequest, Response = ReplicaResponse>,
           T: Service<Request = TailRequest, Response = TailResponse>
 {
+    fn build(head: H, tail: T) -> Self {
+        FatClient {
+            head: head,
+            tail: tail,
+            last_known_head: Arc::new(Mutex::new(LogPos::zero())),
+        }
+    }
+
     pub fn log_item(&self, body: Vec<u8>) -> LogItemFut<H::Future> {
         let current = *self.last_known_head.lock().expect("lock current");
         let req = ReplicaRequest::AppendLogEntry {
@@ -91,6 +93,84 @@ impl<F: Future<Item = TailResponse, Error = Error>> Future for FetchNextFut<F> {
                 return Ok(Async::Ready((offset, value)));
             }
         }
+
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use futures::{self, Future, Async, BoxFuture};
+    use service::simple_service;
+    use store::{Store, RamStore};
+    use tail::{TailRequest, TailResponse};
+    use replica::{LogPos, ReplicaRequest, ReplicaResponse};
+    use std::sync::{Arc, Mutex};
+    use super::*;
+    use Error;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn sends_initial_request() {
+        let head_reqs = Arc::new(Mutex::new(Vec::new()));
+        let head = {
+            let reqs = head_reqs.clone();
+            simple_service(move |req: ReplicaRequest| -> BoxFuture<ReplicaResponse, Error> {
+                reqs.lock().expect("lock").push(req);
+                futures::finished(ReplicaResponse::Done(LogPos::zero())).boxed()
+            })
+        };
+        let tail = simple_service(|_: TailRequest| -> BoxFuture<TailResponse, Error> { unimplemented!() });
+        let client = FatClient::build(head, tail);
+
+        client.log_item(b"Hello".to_vec()).wait().unwrap();
+
+        let reqs = &*head_reqs.lock().unwrap();
+        let appends = reqs.iter()
+            .filter_map(|r| {
+                let &ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, ref datum } = r;
+                Some((datum.clone()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(&appends.iter().collect::<Vec<_>>(), &[b"Hello"]);
+    }
+
+
+    #[test]
+    fn resends_with_new_sequence_no_on_cas_failure() {
+        let head_reqs = Arc::new(Mutex::new(VecDeque::new()));
+        let mut head_resps = VecDeque::new();
+        head_resps.push_back(ReplicaResponse::BadSequence(LogPos::new(42)));
+        head_resps.push_back(ReplicaResponse::Done(LogPos::new(43)));
+        let head_resps = Arc::new(Mutex::new(head_resps));
+
+        let head = {
+            let reqs = head_reqs.clone();
+            let resps = head_resps.clone();
+            simple_service(move |req: ReplicaRequest| -> BoxFuture<ReplicaResponse, Error> {
+                reqs.lock().expect("lock").push_back(req);
+                let resp = resps.lock().unwrap().pop_front().expect("response");
+                futures::finished(resp).boxed()
+            })
+        };
+
+        let tail = simple_service(|_: TailRequest| -> BoxFuture<TailResponse, Error> { unimplemented!() });
+        let client = FatClient::build(head, tail);
+
+        client.log_item(b"Hello".to_vec()).wait().unwrap();
+
+        let ref reqs = *head_reqs.lock().unwrap();
+        let mut appends = reqs.iter()
+            .filter_map(|r| {
+                let &ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, ref datum } = r;
+                Some((assumed_offset, entry_offset, datum.clone()))
+            })
+            .collect::<VecDeque<_>>();
+        let r0 = appends.pop_front().unwrap();
+        let r1 = appends.pop_front().unwrap();
+
+        assert_eq!((r1.0, r1.2.as_ref()), (LogPos::new(42), b"Hello".as_ref()));
+        assert_eq!(r0.2, r1.2);
+        assert!(r1.0 < r1.1);
 
     }
 }

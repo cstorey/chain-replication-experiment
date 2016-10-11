@@ -16,11 +16,15 @@ pub enum ReplicaResponse {
 }
 
 impl LogPos {
-    pub fn zero() ->Self {
+    pub fn zero() -> Self {
         LogPos(0)
     }
-    pub fn next(&self) ->Self {
+    pub fn next(&self) -> Self {
         let &LogPos(off) = self;
         LogPos(off+1)
+    }
+
+    pub fn new(val: usize) -> Self {
+        LogPos(val)
     }
 }
