@@ -1,7 +1,7 @@
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct LogPos(usize);
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum ServerRequest {
     AppendLogEntry {
         assumed_offset: LogPos,
@@ -9,7 +9,7 @@ pub enum ServerRequest {
         datum: Vec<u8>
     },
 }
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum ServerResponse {
     Done(LogPos),
     BadSequence(LogPos)

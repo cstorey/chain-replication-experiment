@@ -7,7 +7,7 @@ use tail::messages::TailResponse;
 use replica::{LogPos, ServerResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
-use Error;
+use {Error, ErrorKind};
 
 #[derive(Debug)]
 pub struct FatClient {
@@ -42,13 +42,13 @@ impl FatClient {
         }
     }
 
-    pub fn log_item(&mut self, body: Vec<u8>) -> LogItemFut {
+    pub fn log_item(&self, body: Vec<u8>) -> LogItemFut {
         let current = *self.last_known_head.lock().expect("lock current");
         let f = self.head.append_entry(current, current.next(), body.clone());
         LogItemFut(f)
     }
 
-    pub fn fetch_next(&mut self, after: LogPos) -> FetchNextFut {
+    pub fn fetch_next(&self, after: LogPos) -> FetchNextFut {
         let f = self.tail.fetch_next(after);
         FetchNextFut(f)
     }
@@ -63,8 +63,9 @@ impl Future for LogItemFut {
                 debug!("Done =>{:?}", offset);
                 return Ok(Async::Ready(offset));
             }
-            other => {
-                panic!("Unhandled response: {:?}", other);
+            ServerResponse::BadSequence(head) => {
+                debug!("BadSequence =>{:?}", head);
+                return Err(ErrorKind::BadSequence(head).into());
             }
         }
     }

@@ -18,6 +18,7 @@ use vastatrix::{RamStore,LogPos};
 use vastatrix::sexp_proto;
 
 #[test]
+#[ignore]
 fn smoketest() {
     env_logger::init().unwrap_or(());
 
@@ -33,18 +34,19 @@ fn smoketest() {
         .expect("start-tail");
 
     info!("Head at: {:?}, tail at: {:?}", head_host.local_addr(), tail_host.local_addr());
-    let mut client = vastatrix::FatClient::new(core.handle(), head_host.local_addr(), tail_host.local_addr());
+    let client = vastatrix::FatClient::new(core.handle(), head_host.local_addr(), tail_host.local_addr());
 
-    let message = b"hello world";
-    let f = client.log_item(message.to_vec());
-    let wpos = core.run(f).expect("run write");
+    let f = client.log_item(b"hello".to_vec())
+        .and_then(|pos0| { client.log_item(b"world".to_vec()).map(move |pos1| (pos0, pos1)) });
+    let (wpos0, wpos1) = core.run(f).expect("run write");
 
-    info!("Wrote to offset:{:?}", wpos);
+    info!("Wrote to offset:{:?}", (wpos0, wpos1));
 
-    let item_f = client.fetch_next(LogPos::zero());
+    let item_f = client.fetch_next(LogPos::zero())
+            .and_then(|first| client.fetch_next(LogPos::zero()).map(|second| vec![first, second]));
 
-    let (rpos, item) = core.run(item_f).expect("run read");
-    info!("Got@{:?}: {:?}", rpos, item);
+    let read = core.run(item_f).expect("run read");
+    info!("Got: {:?}", read);
 
-    // assert_eq!((rpos, item), (wpos, message.to_vec()));
+    assert_eq!(read, vec![(wpos0, b"hello".to_vec()), (wpos1, b"world".to_vec())]);
 }

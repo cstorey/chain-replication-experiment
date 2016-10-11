@@ -4,10 +4,10 @@ use service::{Service, NewService};
 use tokio::reactor::Handle;
 use futures::{Async, Poll, Future};
 use futures::stream;
+use spki_sexp as sexp;
 use std::io;
 use std::error;
 use std::net::SocketAddr;
-use spki_sexp as sexp;
 
 use super::sexp_proto::sexp_proto_new;
 use void::Void;
