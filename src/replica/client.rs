@@ -1,5 +1,5 @@
 use futures::{Future, Poll, Async, BoxFuture};
-use super::{ReplicaRequest, ReplicaResponse, LogPos};
+use super::{ReplicaRequest, ReplicaResponse};
 use sexp_proto::{self, client as sclient};
 use service::Service;
 use tokio::reactor::Handle;

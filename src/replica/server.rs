@@ -72,11 +72,10 @@ impl<F: Future<Item = (), Error = Error>> Future for ReplicaFut<F> {
 
 #[cfg(test)]
 mod test {
-    use futures::{self, Future, Async};
+    use futures::Future;
     use service::Service;
     use replica::LogPos;
-    use store::{Store, RamStore};
-    use tail::messages::*;
+    use store::RamStore;
     use replica::{ReplicaRequest, ReplicaResponse};
     use super::*;
 
@@ -86,7 +85,7 @@ mod test {
         let replica = ServerService::new(store.clone());
 
         let zero = LogPos::zero();
-        let mut resp = replica.call(ReplicaRequest::AppendLogEntry {
+        let resp = replica.call(ReplicaRequest::AppendLogEntry {
             assumed_offset: zero,
             entry_offset: zero.next(),
             datum: b"foobar".to_vec(),
@@ -102,7 +101,7 @@ mod test {
         let replica = ServerService::new(store.clone());
 
         let zero = LogPos::zero();
-        let mut resp = replica.call(ReplicaRequest::AppendLogEntry {
+        let resp = replica.call(ReplicaRequest::AppendLogEntry {
             assumed_offset: zero.next(),
             entry_offset: zero,
             datum: b"foobar".to_vec(),

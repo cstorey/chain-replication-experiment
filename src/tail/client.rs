@@ -1,5 +1,4 @@
 use futures::{Future, Poll, Async, BoxFuture};
-use replica::LogPos;
 use super::{TailRequest, TailResponse};
 use sexp_proto::{self, client as sclient};
 use service::Service;

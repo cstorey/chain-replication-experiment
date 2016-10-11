@@ -7,12 +7,8 @@ extern crate tokio_proto as proto;
 extern crate env_logger;
 extern crate vastatrix;
 
-use proto::pipeline::{self, Frame};
-use tokio::reactor::{Core, Handle};
-use service::Service;
-use futures::{Poll, Async, Future};
-use futures::stream::{self, Stream};
-use std::sync::{Mutex,Arc};
+use tokio::reactor::{Core};
+use futures::{Future};
 use vastatrix::{RamStore,LogPos};
 
 use vastatrix::sexp_proto;

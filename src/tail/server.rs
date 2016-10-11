@@ -1,8 +1,7 @@
 use service::Service;
-use futures::{self, BoxFuture, Async, Future};
+use futures::{BoxFuture, Async, Future};
 use super::{TailRequest, TailResponse};
 use store::Store;
-use replica::LogPos;
 
 use Error;
 
@@ -51,7 +50,7 @@ impl<S: Store + Send> Service for TailService<S>
 
 #[cfg(test)]
 mod test {
-    use futures::{self, Future, Async};
+    use futures::{Future, Async};
     use service::Service;
     use replica::LogPos;
     use store::{Store, RamStore};
