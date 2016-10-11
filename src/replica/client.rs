@@ -26,19 +26,6 @@ impl ReplicaClient {
         let client0 = sclient::connect(handle, target);
         ReplicaClient(Mutex::new(client0))
     }
-
-    pub fn append_entry(&self,
-                        assumed_offset: LogPos,
-                        entry_offset: LogPos,
-                        datum: Vec<u8>)
-                        -> ReplicaClientFut {
-        let req = ReplicaRequest::AppendLogEntry {
-            assumed_offset: assumed_offset,
-            entry_offset: entry_offset,
-            datum: datum,
-        };
-        self.call(req)
-    }
 }
 
 impl Service for ReplicaClient {

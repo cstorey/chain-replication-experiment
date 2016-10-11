@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use replica::client::ReplicaClient;
 use tail::client::TailClient;
 use tail::messages::TailResponse;
-use replica::{LogPos, ReplicaResponse};
+use replica::{LogPos, ReplicaRequest, ReplicaResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
 use {Error, ErrorKind};
@@ -30,6 +30,8 @@ type TailFut = <TailClient as Service>::Future;
 pub struct LogItemFut(ReplicaFut);
 pub struct FetchNextFut(TailFut);
 
+//
+
 impl FatClient {
     pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
         let repl = ReplicaClient::new(handle.clone(), head);
@@ -44,8 +46,12 @@ impl FatClient {
 
     pub fn log_item(&self, body: Vec<u8>) -> LogItemFut {
         let current = *self.last_known_head.lock().expect("lock current");
-        let f = self.head.append_entry(current, current.next(), body.clone());
-        LogItemFut(f)
+        let req = ReplicaRequest::AppendLogEntry {
+            assumed_offset: current,
+            entry_offset: current.next(),
+            datum: body.clone(),
+        };
+        LogItemFut(self.head.call(req))
     }
 
     pub fn fetch_next(&self, after: LogPos) -> FetchNextFut {
