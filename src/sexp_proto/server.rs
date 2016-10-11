@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 
 use super::sexp_proto::sexp_proto_new;
 use super::errors::Error;
-use super::Empty;
+use void::Void;
 use serde;
 
 struct SexpService<T> {
@@ -23,7 +23,7 @@ impl<T> Service for SexpService<T>
           T::Future: Send + 'static
 {
     type Request = T::Request;
-    type Response = proto::Message<T::Response, stream::Empty<Empty, Error>>;
+    type Response = proto::Message<T::Response, stream::Empty<Void, Error>>;
     type Error = Error;
     // type Future = Box<Future<Item = Self::Response, Error = Error> + Send + 'static>;
     type Future = SexpFuture<T::Future>;
@@ -37,7 +37,7 @@ impl<T> Service for SexpService<T>
 }
 
 impl<F: Future> Future for SexpFuture<F> {
-    type Item = proto::Message<F::Item, stream::Empty<Empty, Error>>;
+    type Item = proto::Message<F::Item, stream::Empty<Void, Error>>;
     type Error = F::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {

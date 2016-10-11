@@ -5,11 +5,11 @@ use tokio::io::Io;
 use spki_sexp as sexp;
 use serde::{ser, de};
 use std::fmt::Write;
+use void::Void;
 
 use std::marker::PhantomData;
 
 use super::errors::Error;
-use super::Empty;
 
 #[derive(Debug)]
 pub struct SexpParser<T> {
@@ -17,7 +17,7 @@ pub struct SexpParser<T> {
     packets: sexp::Packetiser,
 }
 
-pub type Frame<T> = pipeline::Frame<T, Empty, Error>;
+pub type Frame<T> = pipeline::Frame<T, Void, Error>;
 
 impl<T> SexpParser<T> {
     pub fn new() -> Self {

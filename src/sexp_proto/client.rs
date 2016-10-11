@@ -9,12 +9,12 @@ use serde;
 
 use super::sexp_proto::sexp_proto_new;
 use super::errors::Error;
-use super::Empty;
+use void::Void;
 
 use std::fmt;
 
 pub struct Client<T, R> {
-    inner: proto::Client<T, R, stream::Empty<Empty, Error>, Error>,
+    inner: proto::Client<T, R, stream::Empty<Void, Error>, Error>,
 }
 
 impl<T: Send + 'static, R: Send + 'static> Service for Client<T, R> {

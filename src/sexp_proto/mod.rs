@@ -4,5 +4,3 @@ mod errors;
 pub mod server;
 pub mod client;
 pub use self::errors::*;
-
-pub enum Empty {}
