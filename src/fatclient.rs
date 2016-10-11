@@ -3,7 +3,7 @@ use futures::{Future, Poll, Async};
 use std::net::SocketAddr;
 use replica::client::ReplicaClient;
 use tail::client::TailClient;
-use tail::messages::TailResponse;
+use tail::{TailRequest, TailResponse};
 use replica::{LogPos, ReplicaRequest, ReplicaResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
@@ -55,7 +55,8 @@ impl FatClient {
     }
 
     pub fn fetch_next(&self, after: LogPos) -> FetchNextFut {
-        let f = self.tail.fetch_next(after);
+        let req = TailRequest::FetchNextAfter(after);
+        let f = self.tail.call(req);
         FetchNextFut(f)
     }
 }

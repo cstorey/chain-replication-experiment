@@ -27,11 +27,6 @@ impl TailClient {
         let client0 = sclient::connect(handle, target);
         TailClient(Mutex::new(client0))
     }
-
-    pub fn fetch_next(&self, pos: LogPos) -> TailClientFut {
-        let req = TailRequest::FetchNextAfter(pos);
-        self.call(req)
-    }
 }
 
 impl Service for TailClient {
