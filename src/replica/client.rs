@@ -1,5 +1,5 @@
 use futures::{Future, Poll, Async, BoxFuture};
-use super::{ServerRequest, ServerResponse, LogPos};
+use super::{ReplicaRequest, ReplicaResponse, LogPos};
 use sexp_proto::{self, client as sclient};
 use service::Service;
 use tokio::reactor::Handle;
@@ -9,12 +9,12 @@ use std::fmt;
 use Error;
 
 #[derive(Debug)]
-pub struct ReplicaClient(Mutex<sclient::Client<ServerRequest, ServerResponse>>);
+pub struct ReplicaClient(Mutex<sclient::Client<ReplicaRequest, ReplicaResponse>>);
 
-pub struct ReplicaClientFut(BoxFuture<ServerResponse, sexp_proto::Error>);
+pub struct ReplicaClientFut(BoxFuture<ReplicaResponse, sexp_proto::Error>);
 
 impl Future for ReplicaClientFut {
-    type Item = ServerResponse;
+    type Item = ReplicaResponse;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.0.poll().map_err(|e| e.into())
@@ -32,7 +32,7 @@ impl ReplicaClient {
                         entry_offset: LogPos,
                         datum: Vec<u8>)
                         -> ReplicaClientFut {
-        let req = ServerRequest::AppendLogEntry {
+        let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: assumed_offset,
             entry_offset: entry_offset,
             datum: datum,
@@ -42,8 +42,8 @@ impl ReplicaClient {
 }
 
 impl Service for ReplicaClient {
-    type Request = ServerRequest;
-    type Response = ServerResponse;
+    type Request = ReplicaRequest;
+    type Response = ReplicaResponse;
     type Error = Error;
     type Future = ReplicaClientFut;
 

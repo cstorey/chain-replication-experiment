@@ -2,7 +2,7 @@
 pub struct LogPos(usize);
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
-pub enum ServerRequest {
+pub enum ReplicaRequest {
     AppendLogEntry {
         assumed_offset: LogPos,
         entry_offset: LogPos,
@@ -10,7 +10,7 @@ pub enum ServerRequest {
     },
 }
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
-pub enum ServerResponse {
+pub enum ReplicaResponse {
     Done(LogPos),
     BadSequence(LogPos)
 }

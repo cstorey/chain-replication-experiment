@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use replica::client::ReplicaClient;
 use tail::client::TailClient;
 use tail::messages::TailResponse;
-use replica::{LogPos, ServerResponse};
+use replica::{LogPos, ReplicaResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
 use {Error, ErrorKind};
@@ -59,11 +59,11 @@ impl Future for LogItemFut {
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.0.poll()) {
-            ServerResponse::Done(offset) => {
+            ReplicaResponse::Done(offset) => {
                 debug!("Done =>{:?}", offset);
                 return Ok(Async::Ready(offset));
             }
-            ServerResponse::BadSequence(head) => {
+            ReplicaResponse::BadSequence(head) => {
                 debug!("BadSequence =>{:?}", head);
                 return Err(ErrorKind::BadSequence(head).into());
             }

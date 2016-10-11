@@ -1,6 +1,6 @@
 use service::Service;
 use futures::{Async, Poll, Future};
-use super::{ServerRequest, ServerResponse, LogPos};
+use super::{ReplicaRequest, ReplicaResponse, LogPos};
 use store::Store;
 
 use errors::{Error, ErrorKind};
@@ -24,8 +24,8 @@ impl<S> ServerService<S> {
 
 impl<S: Store> Service for ServerService<S> {
     // The type of the input requests we get.
-    type Request = ServerRequest;
-    type Response = ServerResponse;
+    type Request = ReplicaRequest;
+    type Response = ReplicaResponse;
     type Error = Error;
     type Future = ReplicaFut<S::AppendFut>;
 
@@ -33,9 +33,9 @@ impl<S: Store> Service for ServerService<S> {
         Async::Ready(())
     }
     fn call(&self, req: Self::Request) -> Self::Future {
-        debug!("ServerResponse#service: {:?}", req);
+        debug!("ReplicaResponse#service: {:?}", req);
         match req {
-            ServerRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
+            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
                 ReplicaFut::Append(self.store.append_entry(assumed_offset, entry_offset, datum),
                                    entry_offset)
             }
@@ -44,7 +44,7 @@ impl<S: Store> Service for ServerService<S> {
 }
 
 impl<F: Future<Item = (), Error = Error>> Future for ReplicaFut<F> {
-    type Item = ServerResponse;
+    type Item = ReplicaResponse;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self {
@@ -53,13 +53,13 @@ impl<F: Future<Item = (), Error = Error>> Future for ReplicaFut<F> {
                 match f.poll() {
                     Ok(Async::Ready(())) => {
                         trace!("ReplicaFut::Append: => Done");
-                        Ok(Async::Ready(ServerResponse::Done(offset)))
+                        Ok(Async::Ready(ReplicaResponse::Done(offset)))
                     }
                     Ok(Async::NotReady) => Ok(Async::NotReady),
                     Err(e) => {
                         if let &ErrorKind::BadSequence(head) = e.kind() {
                             debug!("Bad Sequence; head at: {:?}", head);
-                            Ok(Async::Ready(ServerResponse::BadSequence(head)))
+                            Ok(Async::Ready(ReplicaResponse::BadSequence(head)))
                         } else {
                             Err(e)
                         }
@@ -77,7 +77,7 @@ mod test {
     use replica::LogPos;
     use store::{Store, RamStore};
     use tail::messages::*;
-    use replica::{ServerRequest, ServerResponse};
+    use replica::{ReplicaRequest, ReplicaResponse};
     use super::*;
 
     #[test]
@@ -86,14 +86,14 @@ mod test {
         let replica = ServerService::new(store.clone());
 
         let zero = LogPos::zero();
-        let mut resp = replica.call(ServerRequest::AppendLogEntry {
+        let mut resp = replica.call(ReplicaRequest::AppendLogEntry {
             assumed_offset: zero,
             entry_offset: zero.next(),
             datum: b"foobar".to_vec(),
         });
 
         assert_eq!(resp.wait().expect("append"),
-                   ServerResponse::Done(zero.next()))
+                   ReplicaResponse::Done(zero.next()))
     }
 
     #[test]
@@ -102,13 +102,13 @@ mod test {
         let replica = ServerService::new(store.clone());
 
         let zero = LogPos::zero();
-        let mut resp = replica.call(ServerRequest::AppendLogEntry {
+        let mut resp = replica.call(ReplicaRequest::AppendLogEntry {
             assumed_offset: zero.next(),
             entry_offset: zero,
             datum: b"foobar".to_vec(),
         });
 
         assert_eq!(resp.wait().expect("append"),
-                   ServerResponse::BadSequence(zero))
+                   ReplicaResponse::BadSequence(zero))
     }
 }

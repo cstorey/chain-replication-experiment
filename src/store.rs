@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use stable_bst::map::TreeMap;
 
 pub trait Store {
-    type AppendFut : Future<Item=(), Error=Error>;
-    type FetchFut : Future<Item=(LogPos, Vec<u8>), Error=Error>;
+    type AppendFut: Future<Item = (), Error = Error>;
+    type FetchFut: Future<Item = (LogPos, Vec<u8>), Error = Error>;
     fn append_entry(&self, current: LogPos, next: LogPos, value: Vec<u8>) -> Self::AppendFut;
     fn fetch_next(&self, current: LogPos) -> Self::FetchFut;
 }
@@ -36,28 +36,28 @@ impl Store for RamStore {
     fn append_entry(&self, current: LogPos, next: LogPos, val: Vec<u8>) -> Self::AppendFut {
         let inner = self.inner.clone();
         futures::lazy(move || {
-            let mut inner = inner.lock().expect("lock");
-            use stable_bst::Bound::*;
-            let current_head = inner.log
-                                    .range(Unbounded, Unbounded)
-                                    .rev()
-                                    .map(|(off, _)| off)
-                                    .cloned()
-                                    .next()
-                                    .unwrap_or_else(LogPos::zero);
+                let mut inner = inner.lock().expect("lock");
+                use stable_bst::Bound::*;
+                let current_head = inner.log
+                    .range(Unbounded, Unbounded)
+                    .rev()
+                    .map(|(off, _)| off)
+                    .cloned()
+                    .next()
+                    .unwrap_or_else(LogPos::zero);
 
-            debug!("append_entry: if at:{:?}; next:{:?}; current head:{:?}",
-                   current,
-                   next,
-                   current_head);
-            if current_head >= next {
-                return futures::failed(ErrorKind::BadSequence(current_head).into()).boxed();
-            }
+                debug!("append_entry: if at:{:?}; next:{:?}; current head:{:?}",
+                       current,
+                       next,
+                       current_head);
+                if current_head >= next {
+                    return futures::failed(ErrorKind::BadSequence(current_head).into()).boxed();
+                }
 
-            inner.log.insert(next, val);
-            debug!("Wrote to {:?}", next);
-            futures::finished(()).boxed()
-        })
+                inner.log.insert(next, val);
+                debug!("Wrote to {:?}", next);
+                futures::finished(()).boxed()
+            })
             .boxed()
     }
 
@@ -67,7 +67,7 @@ impl Store for RamStore {
 }
 
 impl Future for FetchFut {
-    type Item =(LogPos, Vec<u8>);
+    type Item = (LogPos, Vec<u8>);
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let inner = self.0.lock().expect("lock");
