@@ -11,8 +11,8 @@ use {Error, ErrorKind};
 
 #[derive(Debug)]
 pub struct ThickClient<H, T> {
-    head: H,
-    tail: T,
+    head: Arc<H>,
+    tail: Arc<T>,
     last_known_head: Arc<Mutex<LogPos>>,
 }
 
@@ -24,10 +24,12 @@ pub struct ThickClient<H, T> {
 // failed_badver -> request_sent;
 // ```
 //
-pub struct LogItemFut<F>(F);
+pub struct LogItemFut<H: Service> {
+    head: Arc<H>,
+    req: ReplicaRequest,
+    future: H::Future,
+}
 pub struct FetchNextFut<F>(F);
-
-//
 
 impl ThickClient<ReplicaClient, TailClient> {
     pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
@@ -42,20 +44,26 @@ impl<H, T> ThickClient<H, T>
 {
     fn build(head: H, tail: T) -> Self {
         ThickClient {
-            head: head,
-            tail: tail,
+            head: Arc::new(head),
+            tail: Arc::new(tail),
             last_known_head: Arc::new(Mutex::new(LogPos::zero())),
         }
     }
 
-    pub fn log_item(&self, body: Vec<u8>) -> LogItemFut<H::Future> {
+    pub fn log_item(&self, body: Vec<u8>) -> LogItemFut<H> {
         let current = *self.last_known_head.lock().expect("lock current");
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,
             entry_offset: current.next(),
             datum: body.clone(),
         };
-        LogItemFut(self.head.call(req))
+        debug!("Sending assuming: {:?}", current);
+        let fut = self.head.call(req.clone());
+        LogItemFut {
+            head: self.head.clone(),
+            future: fut,
+            req: req,
+        }
     }
 
     pub fn fetch_next(&self, after: LogPos) -> FetchNextFut<T::Future> {
@@ -65,18 +73,28 @@ impl<H, T> ThickClient<H, T>
     }
 }
 
-impl<F: Future<Item = ReplicaResponse, Error = Error>> Future for LogItemFut<F> {
+impl<S: Service<Request = ReplicaRequest, Response = ReplicaResponse, Error = Error>> Future for LogItemFut<S> {
     type Item = LogPos;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.0.poll()) {
-            ReplicaResponse::Done(offset) => {
-                debug!("Done =>{:?}", offset);
-                return Ok(Async::Ready(offset));
-            }
-            ReplicaResponse::BadSequence(head) => {
-                debug!("BadSequence =>{:?}", head);
-                return Err(ErrorKind::BadSequence(head).into());
+        loop {
+            let &mut LogItemFut { ref head, ref mut req, ref mut future } = self;
+            match try_ready!(future.poll()) {
+                ReplicaResponse::Done(offset) => {
+                    debug!("Done =>{:?}", offset);
+                    return Ok(Async::Ready(offset));
+                }
+                ReplicaResponse::BadSequence(new_offset) => {
+                    debug!("BadSequence =>{:?}", new_offset);
+                    match req {
+                        &mut ReplicaRequest::AppendLogEntry { ref mut assumed_offset, ref mut entry_offset, .. } => {
+                            *assumed_offset = new_offset;
+                            *entry_offset = new_offset.next();
+                        }
+                    };
+                    debug!("Sending assuming: {:?}", new_offset);
+                    *future = head.call(req.clone());
+                }
             }
         }
     }
@@ -107,9 +125,11 @@ mod test {
     use super::*;
     use Error;
     use std::collections::VecDeque;
+    use env_logger;
 
     #[test]
     fn sends_initial_request() {
+        env_logger::init().unwrap_or(());
         let head_reqs = Arc::new(Mutex::new(Vec::new()));
         let head = {
             let reqs = head_reqs.clone();
@@ -125,18 +145,19 @@ mod test {
 
         let reqs = &*head_reqs.lock().unwrap();
         let appends = reqs.iter()
-            .filter_map(|r| {
-                let &ReplicaRequest::AppendLogEntry { ref datum, .. } = r;
-                Some((datum.clone()))
-            })
-            .collect::<Vec<_>>();
+                          .filter_map(|r| {
+                              let &ReplicaRequest::AppendLogEntry { ref datum, .. } = r;
+                              Some((datum.clone()))
+                          })
+                          .collect::<Vec<_>>();
         assert_eq!(&appends.iter().collect::<Vec<_>>(), &[b"Hello"]);
     }
 
 
     #[test]
-    #[ignore]
+    // #[ignore]
     fn resends_with_new_sequence_no_on_cas_failure() {
+        env_logger::init().unwrap_or(());
         let head_reqs = Arc::new(Mutex::new(VecDeque::new()));
         let mut head_resps = VecDeque::new();
         head_resps.push_back(ReplicaResponse::BadSequence(LogPos::new(42)));

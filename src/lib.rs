@@ -13,6 +13,8 @@ extern crate bytes;
 extern crate error_chain;
 extern crate void;
 extern crate stable_bst;
+#[cfg(test)]
+extern crate env_logger;
 
 pub mod sexp_proto;
 mod errors;

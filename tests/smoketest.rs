@@ -14,7 +14,6 @@ use vastatrix::{RamStore,LogPos};
 use vastatrix::sexp_proto;
 
 #[test]
-#[ignore]
 fn smoketest() {
     env_logger::init().unwrap_or(());
 
@@ -39,7 +38,7 @@ fn smoketest() {
     info!("Wrote to offset:{:?}", (wpos0, wpos1));
 
     let item_f = client.fetch_next(LogPos::zero())
-            .and_then(|first| client.fetch_next(LogPos::zero()).map(|second| vec![first, second]));
+            .and_then(|(pos0, val0)| client.fetch_next(pos0).map(move |second| vec![(pos0, val0), second]));
 
     let read = core.run(item_f).expect("run read");
     info!("Got: {:?}", read);
