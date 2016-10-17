@@ -50,21 +50,33 @@ impl<S: Store + Send> Service for TailService<S>
 
 #[cfg(test)]
 mod test {
-    use futures::{Future, Async};
+    use futures::{Future, Async, task};
     use service::Service;
     use replica::LogPos;
     use store::{Store, RamStore};
     use tail::messages::*;
     use super::*;
+    use std::sync::Arc;
+
+    struct NullUnpark;
+
+    impl task::Unpark for NullUnpark {
+        fn unpark(&self) {}
+    }
+
+    fn null_parker() -> Arc<task::Unpark> {
+        Arc::new(NullUnpark)
+    }
 
     #[test]
     fn should_defer_read_from_empty_log() {
         let store = RamStore::new();
         let tail = TailService::new(store.clone());
 
-        let mut resp = tail.call(TailRequest::FetchNextAfter(LogPos::zero()));
+        let mut resp = task::spawn(tail.call(TailRequest::FetchNextAfter(LogPos::zero())));
 
-        assert_eq!(resp.poll().expect("fut"), Async::NotReady)
+        assert_eq!(resp.poll_future(null_parker()).expect("fut"),
+                   Async::NotReady)
     }
 
     #[test]
@@ -72,11 +84,13 @@ mod test {
         let store = RamStore::new();
         let tail = TailService::new(store.clone());
 
-        let mut resp = tail.call(TailRequest::FetchNextAfter(LogPos::zero()));
+        let mut resp = task::spawn(tail.call(TailRequest::FetchNextAfter(LogPos::zero())));
         let next = LogPos::zero().next();
-        store.append_entry(LogPos::zero(), next, b"foo".to_vec()).wait().expect("append_entry 1");
+        task::spawn(store.append_entry(LogPos::zero(), next, b"foo".to_vec()))
+            .wait_future()
+            .expect("append_entry 1");
 
-        assert_eq!(resp.poll().expect("fut"),
+        assert_eq!(resp.poll_future(null_parker()).expect("fut"),
                    Async::Ready(TailResponse::NextItem(next, b"foo".to_vec())));
     }
 
