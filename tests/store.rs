@@ -5,7 +5,8 @@ use futures::{Future,Async, task};
 use vastatrix::{RamStore,Store};
 use vastatrix::LogPos;
 use vastatrix::{Error,ErrorKind};
-use std::sync::Arc;
+use std::sync::{Arc,Mutex};
+use std::collections::VecDeque;
 
 struct NullUnpark;
 
@@ -154,4 +155,42 @@ fn head_from_error(error: Error) -> Option<LogPos> {
     } else {
         None
     }
+}
+
+#[derive(Debug,Clone)]
+struct Unparker(usize, Arc<Mutex<VecDeque<usize>>>);
+
+impl task::Unpark for Unparker {
+    fn unpark(&self) {
+        let &Unparker(ref n, ref q) = self;
+        println!("Unpark! {:?}", n);
+        q.lock().expect("lock").push_back(*n);
+    }
+}
+
+
+#[test]
+fn writes_notify_waiters() {
+    env_logger::init().unwrap_or(());
+    let sched_q = Arc::new(Mutex::new(VecDeque::new()));
+
+    let waiter_task_id = 0;
+    let store = RamStore::new();
+    let current = LogPos::zero();
+    let next = current.next();
+    println!("spawn fetcher");
+    let mut fetch_t = task::spawn(store.fetch_next(current));
+    let fetch_unparker = Arc::new(Unparker(waiter_task_id, sched_q.clone()));
+
+    println!("spawn appender");
+    let mut appender = task::spawn(store.append_entry(current, next, b"foobar".to_vec()));
+
+    println!("Poll fetcher");
+    assert_eq!(fetch_t.poll_future(fetch_unparker.clone()).expect("poll-notready"), Async::NotReady);
+
+    appender.wait_future().expect("append_entry");
+
+    println!("Pending: {:?}", sched_q);
+
+    assert_eq!(sched_q.lock().expect("lock").pop_front(), Some(waiter_task_id));
 }

@@ -1,7 +1,9 @@
 use {LogPos, Error, ErrorKind};
-use futures::{self, Future, BoxFuture, Poll, Async};
+use futures::{self, Future, BoxFuture, Poll, Async, task};
 use std::sync::{Arc, Mutex};
 use stable_bst::map::TreeMap;
+use std::collections::VecDeque;
+use std::fmt;
 
 pub trait Store {
     type AppendFut: Future<Item = (), Error = Error>;
@@ -10,9 +12,18 @@ pub trait Store {
     fn fetch_next(&self, current: LogPos) -> Self::FetchFut;
 }
 
-#[derive(Debug)]
 struct RamInner {
     log: TreeMap<LogPos, Vec<u8>>,
+    waiters: VecDeque<task::Task>,
+}
+
+impl fmt::Debug for RamInner {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("RamInner")
+           .field("log/len", &self.log.len())
+           .field("waiters/len", &self.waiters.len())
+           .finish()
+    }
 }
 
 #[derive(Debug,Clone)]
@@ -24,7 +35,10 @@ pub struct FetchFut(Arc<Mutex<RamInner>>, LogPos);
 
 impl RamStore {
     pub fn new() -> Self {
-        let inner = RamInner { log: TreeMap::new() };
+        let inner = RamInner {
+            log: TreeMap::new(),
+            waiters: VecDeque::new(),
+        };
         RamStore { inner: Arc::new(Mutex::new(inner)) }
     }
 }
@@ -56,6 +70,10 @@ impl Store for RamStore {
 
             inner.log.insert(next, val);
             debug!("Wrote to {:?}", next);
+            trace!("Notify {:?} waiters", inner.waiters.len());
+            for waiter in inner.waiters.drain(..) {
+                waiter.unpark()
+            }
             futures::finished(()).boxed()
         })
             .boxed()
@@ -70,15 +88,16 @@ impl Future for FetchFut {
     type Item = (LogPos, Vec<u8>);
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let inner = self.0.lock().expect("lock");
+        let mut inner = self.0.lock().expect("lock");
         let next = self.1;
         trace!("Polling: {:?} for {:?}", next, *inner);
         if let Some(r) = inner.log.get(&next) {
             trace!("Found: {:?}b", r.len());
-            Ok(Async::Ready((next, r.clone())))
-        } else {
-            trace!("NotReady");
-            Ok(Async::NotReady)
+            return Ok(Async::Ready((next, r.clone())));
         }
+
+        inner.waiters.push_back(task::park());
+        trace!("NotReady: {:?}", *inner);
+        Ok(Async::NotReady)
     }
 }
