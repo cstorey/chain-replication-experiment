@@ -27,6 +27,6 @@ pub use replica::server::ServerService;
 pub use replica::LogPos;
 pub use tail::server::TailService;
 pub use tail::client::TailClient;
-pub use thick_client::ThickClient;
+pub use thick_client::{ThickClient, ThickClientTcp};
 pub use errors::*;
 pub use store::{RamStore, Store};

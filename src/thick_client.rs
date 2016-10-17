@@ -16,6 +16,8 @@ pub struct ThickClient<H, T> {
     last_known_head: Arc<Mutex<LogPos>>,
 }
 
+pub type ThickClientTcp = ThickClient<ReplicaClient, TailClient>;
+
 // States:
 // ```dot
 // new -> request_sent;

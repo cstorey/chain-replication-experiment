@@ -14,7 +14,8 @@ use futures::Future;
 use vastatrix::{RamStore, LogPos};
 use std::net::SocketAddr;
 use clap::{App, Arg};
-use std::io::{self, BufRead};
+use std::io;
+use service::Service;
 
 use vastatrix::sexp_proto;
 
@@ -33,10 +34,17 @@ fn main() {
 
     let client = vastatrix::ThickClient::new(core.handle(), &head_addr, &tail_addr);
 
-    let stdin = io::stdin();
-    for l in stdin.lock().lines().map(|l| l.expect("read-line")) {
-        let f = client.log_item(l.into_bytes());
-        let wpos = core.run(f).expect("run write");
-        println!("Produce: {:?}", wpos);
+    fn cycle(client: vastatrix::ThickClientTcp,
+             start: LogPos)
+             -> futures::BoxFuture<(), vastatrix::Error> {
+        client.fetch_next(start)
+              .and_then(move |(pos, val)| {
+                  println!("Consume: {:?}: {}", pos, String::from_utf8_lossy(&val));
+                  cycle(client, pos)
+              })
+              .boxed()
     }
+
+    let read = core.run(cycle(client, LogPos::zero())).expect("run read");
+    info!("Got: {:?}", read);
 }
