@@ -42,11 +42,10 @@ pub struct SexpHost;
 pub struct BovineAddr(pub usize);
 
 pub struct InnerBovine<S: Service> {
-    new_services: BTreeMap<BovineAddr,
-                           Box<NewService<Request = S::Request,
-                                          Response = S::Response,
-                                          Item = S,
-                                          Error = S::Error>>>,
+    new_service: Box<NewService<Request = S::Request,
+                                Response = S::Response,
+                                Item = S,
+                                Error = S::Error>>,
 }
 
 pub struct SphericalBovine<S: Service> {
@@ -88,29 +87,17 @@ impl Host for SexpHost {
 }
 
 impl<S: Service> SphericalBovine<S> {
-    pub fn new() -> Self {
-        let inner = InnerBovine { new_services: BTreeMap::new() };
-        SphericalBovine { inner: Arc::new(Mutex::new(inner)) }
-    }
-
-    fn serve<N>(&self, service: N, handle: &Handle) -> Result<BovineAddr, io::Error>
+    pub fn new<N>(service: N) -> Self
         where N: NewService<Request = S::Request,
                             Response = S::Response,
                             Item = S,
                             Error = S::Error> + 'static
     {
-        // try!(pipeline::Server::new(service, transport))
-        let mut inner = self.inner.lock().expect("lock");
-        let n = inner.new_services.len();
-        let addr = BovineAddr(n);
-        assert!(inner.new_services.get(&addr).is_none());
-        inner.new_services.insert(addr, Box::new(service));
-        Ok(addr)
+        let inner = InnerBovine { new_service: Box::new(service) };
+        SphericalBovine { inner: Arc::new(Mutex::new(inner)) }
     }
 
-    fn connect_transport(&self,
-                         addr: BovineAddr)
-                         -> Result<BovinePort<S::Request, S::Response>, io::Error> {
+    fn connect_transport(&self) -> Result<BovinePort<S::Request, S::Response>, io::Error> {
         unimplemented!()
         // let cloned_ref = self.inner.clone();
         //
@@ -187,11 +174,10 @@ mod test {
         let mut core = Core::new().expect("Core::new");
         let service = simple_service(|n: usize| -> Result<usize, ()> { Ok(n + 1) });
 
-        let net = SphericalBovine::new();
-        let addr = net.serve(service, &core.handle()).expect("serve");
+        let net = SphericalBovine::new(service);
 
         let client : proto::Client<usize, usize, futures::stream::Empty<Void, io::Error>, io::Error> =
-            pipeline::connect(|| net.connect_transport(addr.clone()), &core.handle());
+            pipeline::connect(|| net.connect_transport(), &core.handle());
 
         let f = client.call(Message::WithoutBody(42));
 
