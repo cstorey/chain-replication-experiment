@@ -15,6 +15,9 @@ pub trait Host : Sized {
                     head_addr: Self::Addr,
                     tail_addr: Self::Addr)
                     -> Result<Self, io::Error>;
+
+    fn head_addr(&self) -> Self::Addr;
+    fn tail_addr(&self) -> Self::Addr;
 }
 
 #[derive(Debug)]
@@ -64,5 +67,11 @@ impl Host for SexpHost {
             head: head_host,
             tail: tail_host,
         })
+    }
+    fn head_addr(&self) -> Self::Addr {
+        self.head.local_addr().clone()
+    }
+    fn tail_addr(&self) -> Self::Addr {
+        self.tail.local_addr().clone()
     }
 }

@@ -7,11 +7,13 @@ extern crate tokio_proto as proto;
 extern crate env_logger;
 extern crate vastatrix;
 
-use tokio::reactor::{Core};
-use futures::{Future};
-use vastatrix::{RamStore,LogPos};
+use std::net::SocketAddr;
 
-use vastatrix::sexp_proto;
+use tokio::reactor::Core;
+use futures::Future;
+use vastatrix::LogPos;
+
+use vastatrix::hosting::*;
 
 #[test]
 fn smoketest() {
@@ -19,29 +21,40 @@ fn smoketest() {
 
     let mut core = Core::new().unwrap();
 
-    let store = RamStore::new();
+    let service = CoreService::new();
 
-    let head_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(),
-            vastatrix::ServerService::new(store.clone()))
-        .expect("start-head");
-    let tail_host = sexp_proto::server::serve(&core.handle(), "127.0.0.1:0".parse().unwrap(),
-            vastatrix::TailService::new(store.clone()))
-        .expect("start-tail");
+    let local_anon_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    info!("Head at: {:?}, tail at: {:?}", head_host.local_addr(), tail_host.local_addr());
-    let client = vastatrix::ThickClient::new(core.handle(), head_host.local_addr(), tail_host.local_addr());
+    let server = SexpHost::build_server(service,
+                                        &core.handle(),
+                                        local_anon_addr.clone(),
+                                        local_anon_addr.clone())
+                     .expect("start server");
+    println!("running: {:?}", server);
+
+    info!("Head at: {:?}, tail at: {:?}",
+          server.head_addr(),
+          server.tail_addr());
+    let client = vastatrix::ThickClient::new(core.handle(),
+                                             &server.head_addr(),
+                                             &server.tail_addr());
 
     let f = client.log_item(b"hello".to_vec())
-        .and_then(|pos0| { client.log_item(b"world".to_vec()).map(move |pos1| (pos0, pos1)) });
+                  .and_then(|pos0| {
+                      client.log_item(b"world".to_vec()).map(move |pos1| (pos0, pos1))
+                  });
     let (wpos0, wpos1) = core.run(f).expect("run write");
 
     info!("Wrote to offset:{:?}", (wpos0, wpos1));
 
     let item_f = client.fetch_next(LogPos::zero())
-            .and_then(|(pos0, val0)| client.fetch_next(pos0).map(move |second| vec![(pos0, val0), second]));
+                       .and_then(|(pos0, val0)| {
+                           client.fetch_next(pos0).map(move |second| vec![(pos0, val0), second])
+                       });
 
     let read = core.run(item_f).expect("run read");
     info!("Got: {:?}", read);
 
-    assert_eq!(read, vec![(wpos0, b"hello".to_vec()), (wpos1, b"world".to_vec())]);
+    assert_eq!(read,
+               vec![(wpos0, b"hello".to_vec()), (wpos1, b"world".to_vec())]);
 }
