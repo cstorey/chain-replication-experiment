@@ -7,7 +7,7 @@ use tail::{TailRequest, TailResponse};
 use replica::{LogPos, ReplicaRequest, ReplicaResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
-use {Error, ErrorKind};
+use Error;
 
 #[derive(Debug)]
 pub struct ThickClient<H, T> {

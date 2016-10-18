@@ -11,13 +11,9 @@ extern crate clap;
 
 use tokio::reactor::Core;
 use futures::Future;
-use vastatrix::{RamStore, LogPos};
+use vastatrix::LogPos;
 use std::net::SocketAddr;
 use clap::{App, Arg};
-use std::io;
-use service::Service;
-
-use vastatrix::sexp_proto;
 
 fn main() {
     env_logger::init().unwrap_or(());

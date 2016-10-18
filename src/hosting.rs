@@ -1,6 +1,5 @@
-use tokio::reactor::{Core, Handle};
-use futures::Future;
-use {RamStore, LogPos, sexp_proto, TailService, ServerService};
+use tokio::reactor::Handle;
+use {RamStore, sexp_proto, TailService, ServerService};
 
 use std::net::SocketAddr;
 use std::io;

@@ -50,7 +50,7 @@ impl<S: Store + Send> Service for TailService<S>
 
 #[cfg(test)]
 mod test {
-    use futures::{Future, Async, task};
+    use futures::{Async, task};
     use service::Service;
     use replica::LogPos;
     use store::{Store, RamStore};

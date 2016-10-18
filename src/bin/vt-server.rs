@@ -9,16 +9,11 @@ extern crate vastatrix;
 #[macro_use]
 extern crate clap;
 
-use tokio::reactor::{Core, Handle};
-use futures::Future;
-use vastatrix::{RamStore, LogPos};
+use tokio::reactor::Core;
 
 use std::net::SocketAddr;
-use std::io;
-use std::fmt;
 
 use clap::{App, Arg};
-use vastatrix::sexp_proto;
 use vastatrix::hosting::*;
 
 fn main() {
