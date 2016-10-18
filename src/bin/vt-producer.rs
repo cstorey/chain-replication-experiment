@@ -20,9 +20,9 @@ fn main() {
     let mut core = Core::new().unwrap();
 
     let matches = App::new("chain-repl-test")
-                      .arg(Arg::with_name("head").short("h").takes_value(true))
-                      .arg(Arg::with_name("tail").short("t").takes_value(true))
-                      .get_matches();
+        .arg(Arg::with_name("head").short("h").takes_value(true))
+        .arg(Arg::with_name("tail").short("t").takes_value(true))
+        .get_matches();
 
     let head_addr = value_t!(matches, "head", SocketAddr).unwrap_or_else(|e| e.exit());
     let tail_addr = value_t!(matches, "tail", SocketAddr).unwrap_or_else(|e| e.exit());

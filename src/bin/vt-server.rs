@@ -21,9 +21,9 @@ fn main() {
     let mut core = Core::new().unwrap();
 
     let matches = App::new("chain-repl-test")
-                      .arg(Arg::with_name("head").short("h").takes_value(true).required(true))
-                      .arg(Arg::with_name("tail").short("t").takes_value(true).required(true))
-                      .get_matches();
+        .arg(Arg::with_name("head").short("h").takes_value(true).required(true))
+        .arg(Arg::with_name("tail").short("t").takes_value(true).required(true))
+        .get_matches();
 
 
 
@@ -33,7 +33,7 @@ fn main() {
     let service = CoreService::new();
 
     let server = SexpHost.build_server(service, &core.handle(), head_addr, tail_addr)
-                         .expect("start server");
+        .expect("start server");
     println!("running: {:?}", server);
     core.run(futures::empty::<(), ()>()).expect("run read");
 }

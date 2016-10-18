@@ -20,9 +20,9 @@ struct RamInner {
 impl fmt::Debug for RamInner {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("RamInner")
-           .field("log/len", &self.log.len())
-           .field("waiters/len", &self.waiters.len())
-           .finish()
+            .field("log/len", &self.log.len())
+            .field("waiters/len", &self.waiters.len())
+            .finish()
     }
 }
 
@@ -50,32 +50,32 @@ impl Store for RamStore {
     fn append_entry(&self, current: LogPos, next: LogPos, val: Vec<u8>) -> Self::AppendFut {
         let inner = self.inner.clone();
         futures::lazy(move || {
-            let mut inner = inner.lock().expect("lock");
-            use stable_bst::Bound::*;
-            let current_head = inner.log
-                                    .range(Unbounded, Unbounded)
-                                    .rev()
-                                    .map(|(off, _)| off)
-                                    .cloned()
-                                    .next()
-                                    .unwrap_or_else(LogPos::zero);
+                let mut inner = inner.lock().expect("lock");
+                use stable_bst::Bound::*;
+                let current_head = inner.log
+                    .range(Unbounded, Unbounded)
+                    .rev()
+                    .map(|(off, _)| off)
+                    .cloned()
+                    .next()
+                    .unwrap_or_else(LogPos::zero);
 
-            debug!("append_entry: if at:{:?}; next:{:?}; current head:{:?}",
-                   current,
-                   next,
-                   current_head);
-            if current_head >= next {
-                return futures::failed(ErrorKind::BadSequence(current_head).into()).boxed();
-            }
+                debug!("append_entry: if at:{:?}; next:{:?}; current head:{:?}",
+                       current,
+                       next,
+                       current_head);
+                if current_head >= next {
+                    return futures::failed(ErrorKind::BadSequence(current_head).into()).boxed();
+                }
 
-            inner.log.insert(next, val);
-            debug!("Wrote to {:?}", next);
-            trace!("Notify {:?} waiters", inner.waiters.len());
-            for waiter in inner.waiters.drain(..) {
-                waiter.unpark()
-            }
-            futures::finished(()).boxed()
-        })
+                inner.log.insert(next, val);
+                debug!("Wrote to {:?}", next);
+                trace!("Notify {:?} waiters", inner.waiters.len());
+                for waiter in inner.waiters.drain(..) {
+                    waiter.unpark()
+                }
+                futures::finished(()).boxed()
+            })
             .boxed()
     }
 

@@ -147,11 +147,11 @@ mod test {
 
         let reqs = &*head_reqs.lock().unwrap();
         let appends = reqs.iter()
-                          .filter_map(|r| {
-                              let &ReplicaRequest::AppendLogEntry { ref datum, .. } = r;
-                              Some((datum.clone()))
-                          })
-                          .collect::<Vec<_>>();
+            .filter_map(|r| {
+                let &ReplicaRequest::AppendLogEntry { ref datum, .. } = r;
+                Some((datum.clone()))
+            })
+            .collect::<Vec<_>>();
         assert_eq!(&appends.iter().collect::<Vec<_>>(), &[b"Hello"]);
     }
 

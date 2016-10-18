@@ -12,6 +12,7 @@ extern crate bytes;
 #[macro_use]
 extern crate error_chain;
 extern crate void;
+extern crate take;
 extern crate stable_bst;
 #[cfg(test)]
 extern crate env_logger;

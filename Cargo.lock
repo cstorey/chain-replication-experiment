@@ -13,6 +13,7 @@ dependencies = [
  "serde_codegen 0.8.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "spki-sexp 0.0.1 (git+https://github.com/cstorey/spki-sexp.rs.git)",
  "stable_bst 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "take 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempfile 2.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "time 0.1.35 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-core 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -522,7 +523,7 @@ dependencies = [
 [[package]]
 name = "tokio-proto"
 version = "0.1.0"
-source = "git+https://github.com/cstorey/tokio-proto#f4c434e3baf981e0ad5ec7cc5bff455a6d255dbc"
+source = "git+https://github.com/cstorey/tokio-proto#e52b08588a0e427fd2c1dfccae1c9718215d537c"
 dependencies = [
  "bytes 0.4.0-dev (git+https://github.com/carllerche/bytes.git)",
  "futures 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
