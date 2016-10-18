@@ -9,59 +9,35 @@ extern crate vastatrix;
 #[macro_use]
 extern crate clap;
 
-use tokio::reactor::Core;
+use tokio::reactor::{Core, Handle};
 use futures::Future;
 use vastatrix::{RamStore, LogPos};
 
 use std::net::SocketAddr;
+use std::io;
+use std::fmt;
 
 use clap::{App, Arg};
 use vastatrix::sexp_proto;
+use vastatrix::hosting::*;
 
 fn main() {
     env_logger::init().unwrap_or(());
     let mut core = Core::new().unwrap();
 
     let matches = App::new("chain-repl-test")
-                      .arg(Arg::with_name("head").short("h").takes_value(true))
-                      .arg(Arg::with_name("tail").short("t").takes_value(true))
+                      .arg(Arg::with_name("head").short("h").takes_value(true).required(true))
+                      .arg(Arg::with_name("tail").short("t").takes_value(true).required(true))
                       .get_matches();
 
 
 
-    let store = RamStore::new();
+    let head_addr = value_t!(matches, "head", SocketAddr).unwrap_or_else(|e| e.exit());
+    let tail_addr = value_t!(matches, "tail", SocketAddr).unwrap_or_else(|e| e.exit());
 
-    if let Some(head_addr) = value_t!(matches, "head", SocketAddr)
-                                 .map(Some)
-                                 .unwrap_or_else(|e| {
-                                     if e.kind == clap::ErrorKind::ArgumentNotFound {
-                                         None
-                                     } else {
-                                         e.exit()
-                                     }
-                                 }) {
-        let head_host = sexp_proto::server::serve(&core.handle(),
-                                                  head_addr,
-                                                  vastatrix::ServerService::new(store.clone()))
-                            .expect("start-head");
-        println!("Head at: {:?}", head_host.local_addr());
-    }
-    if let Some(tail_addr) = value_t!(matches, "tail", SocketAddr)
-                                 .map(Some)
-                                 .unwrap_or_else(|e| {
-                                     if e.kind == clap::ErrorKind::ArgumentNotFound {
-                                         None
-                                     } else {
-                                         e.exit()
-                                     }
-                                 }) {
-        let tail_host = sexp_proto::server::serve(&core.handle(),
-                                                  tail_addr,
-                                                  vastatrix::TailService::new(store.clone()))
-                            .expect("start-tail");
+    let service = CoreService::new();
 
-        println!("Tail at: {:?}", tail_host.local_addr());
-    }
-    println!("running");
+    let server = service.into_server(&core.handle(), head_addr, tail_addr).expect("start server");
+    println!("running: {:?}", server);
     core.run(futures::empty::<(), ()>()).expect("run read");
 }

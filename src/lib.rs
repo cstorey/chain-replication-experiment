@@ -22,6 +22,7 @@ mod replica;
 mod tail;
 mod thick_client;
 mod store;
+pub mod hosting;
 
 pub use replica::server::ServerService;
 pub use replica::LogPos;
