@@ -7,6 +7,16 @@ use std::fmt;
 
 use proto;
 
+pub trait Host : Sized {
+    type Addr;
+
+    fn build_server(service: CoreService,
+                    handle: &Handle,
+                    head_addr: Self::Addr,
+                    tail_addr: Self::Addr)
+                    -> Result<Self, io::Error>;
+}
+
 #[derive(Debug)]
 pub struct CoreService {
     head: ServerService<RamStore>,
@@ -36,13 +46,17 @@ impl CoreService {
             tail: TailService::new(store.clone()),
         }
     }
+}
 
-    pub fn into_server(self,
-                       handle: &Handle,
-                       head_addr: SocketAddr,
-                       tail_addr: SocketAddr)
-                       -> Result<SexpHost, io::Error> {
-        let CoreService { head, tail } = self;
+impl Host for SexpHost {
+    type Addr = SocketAddr;
+
+    fn build_server(service: CoreService,
+                    handle: &Handle,
+                    head_addr: Self::Addr,
+                    tail_addr: Self::Addr)
+                    -> Result<Self, io::Error> {
+        let CoreService { head, tail } = service;
         let head_host = try!(sexp_proto::server::serve(handle, head_addr, head));
         let tail_host = try!(sexp_proto::server::serve(handle, tail_addr, tail));
 
@@ -52,5 +66,3 @@ impl CoreService {
         })
     }
 }
-
-impl SexpHost {}
