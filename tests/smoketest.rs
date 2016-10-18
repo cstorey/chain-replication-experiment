@@ -25,7 +25,7 @@ fn smoketest() {
 
     let local_anon_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    let server = SexpHost::build_server(service,
+    let server = SexpHost.build_server(service,
                                         &core.handle(),
                                         local_anon_addr.clone(),
                                         local_anon_addr.clone())
@@ -33,11 +33,11 @@ fn smoketest() {
     println!("running: {:?}", server);
 
     info!("Head at: {:?}, tail at: {:?}",
-          server.head_addr(),
-          server.tail_addr());
+          server.head,
+          server.tail);
     let client = vastatrix::ThickClient::new(core.handle(),
-                                             &server.head_addr(),
-                                             &server.tail_addr());
+                                             &server.head,
+                                             &server.tail);
 
     let f = client.log_item(b"hello".to_vec())
                   .and_then(|pos0| {

@@ -3,21 +3,22 @@ use {RamStore, sexp_proto, TailService, ServerService};
 
 use std::net::SocketAddr;
 use std::io;
-use std::fmt;
-
-use proto;
 
 pub trait Host : Sized {
     type Addr;
 
-    fn build_server(service: CoreService,
+    fn build_server(&mut self,
+                    service: CoreService,
                     handle: &Handle,
                     head_addr: Self::Addr,
                     tail_addr: Self::Addr)
-                    -> Result<Self, io::Error>;
+                    -> Result<HostConfig<Self::Addr>, io::Error>;
+}
 
-    fn head_addr(&self) -> Self::Addr;
-    fn tail_addr(&self) -> Self::Addr;
+#[derive(Debug, Clone)]
+pub struct HostConfig<A> {
+    pub head: A,
+    pub tail: A,
 }
 
 #[derive(Debug)]
@@ -26,19 +27,7 @@ pub struct CoreService {
     tail: TailService<RamStore>,
 }
 
-pub struct SexpHost {
-    head: proto::server::ServerHandle,
-    tail: proto::server::ServerHandle,
-}
-
-impl fmt::Debug for SexpHost {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.debug_struct("SexpHost")
-           .field("head/addr", &self.head.local_addr())
-           .field("tail/addr", &self.tail.local_addr())
-           .finish()
-    }
-}
+pub struct SexpHost;
 
 impl CoreService {
     pub fn new() -> Self {
@@ -54,24 +43,19 @@ impl CoreService {
 impl Host for SexpHost {
     type Addr = SocketAddr;
 
-    fn build_server(service: CoreService,
+    fn build_server(&mut self,
+                    service: CoreService,
                     handle: &Handle,
                     head_addr: Self::Addr,
                     tail_addr: Self::Addr)
-                    -> Result<Self, io::Error> {
+                    -> Result<HostConfig<Self::Addr>, io::Error> {
         let CoreService { head, tail } = service;
         let head_host = try!(sexp_proto::server::serve(handle, head_addr, head));
         let tail_host = try!(sexp_proto::server::serve(handle, tail_addr, tail));
 
-        Ok(SexpHost {
-            head: head_host,
-            tail: tail_host,
+        Ok(HostConfig {
+            head: head_host.local_addr().clone(),
+            tail: tail_host.local_addr().clone(),
         })
-    }
-    fn head_addr(&self) -> Self::Addr {
-        self.head.local_addr().clone()
-    }
-    fn tail_addr(&self) -> Self::Addr {
-        self.tail.local_addr().clone()
     }
 }

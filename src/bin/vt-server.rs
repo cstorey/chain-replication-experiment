@@ -32,8 +32,8 @@ fn main() {
 
     let service = CoreService::new();
 
-    let server = SexpHost::build_server(service, &core.handle(), head_addr, tail_addr)
-                     .expect("start server");
+    let server = SexpHost.build_server(service, &core.handle(), head_addr, tail_addr)
+                         .expect("start server");
     println!("running: {:?}", server);
     core.run(futures::empty::<(), ()>()).expect("run read");
 }
