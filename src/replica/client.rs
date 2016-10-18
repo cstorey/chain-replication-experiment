@@ -8,8 +8,9 @@ use std::net::SocketAddr;
 use std::fmt;
 use Error;
 
+pub type InnerClient = sclient::Client<ReplicaRequest, ReplicaResponse>;
 #[derive(Debug)]
-pub struct ReplicaClient(Mutex<sclient::Client<ReplicaRequest, ReplicaResponse>>);
+pub struct ReplicaClient(Mutex<InnerClient>);
 
 pub struct ReplicaClientFut(BoxFuture<ReplicaResponse, sexp_proto::Error>);
 
@@ -22,9 +23,12 @@ impl Future for ReplicaClientFut {
 }
 
 impl ReplicaClient {
-    pub fn new(handle: Handle, target: &SocketAddr) -> Self {
+    pub fn connect(handle: Handle, target: &SocketAddr) -> Self {
         let client0 = sclient::connect(handle, target);
-        ReplicaClient(Mutex::new(client0))
+        Self::new(client0)
+    }
+    pub fn new(client: InnerClient) -> Self {
+        ReplicaClient(Mutex::new(client))
     }
 }
 

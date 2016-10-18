@@ -35,8 +35,8 @@ pub struct FetchNextFut<F>(F);
 
 impl ThickClient<ReplicaClient, TailClient> {
     pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
-        Self::build(ReplicaClient::new(handle.clone(), head),
-                    TailClient::new(handle, tail))
+        Self::build(ReplicaClient::connect(handle.clone(), head),
+                    TailClient::connect(handle, tail))
     }
 }
 

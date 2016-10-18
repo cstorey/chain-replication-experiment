@@ -7,9 +7,10 @@ use std::sync::Mutex;
 use std::net::SocketAddr;
 use Error;
 
-// Currently, this is intended to be
+
+pub type InnerClient = sclient::Client<TailRequest, TailResponse>;
 #[derive(Debug)]
-pub struct TailClient(Mutex<sclient::Client<TailRequest, TailResponse>>);
+pub struct TailClient(Mutex<InnerClient>);
 
 pub struct TailClientFut(BoxFuture<TailResponse, sexp_proto::Error>);
 
@@ -22,9 +23,12 @@ impl Future for TailClientFut {
 }
 
 impl TailClient {
-    pub fn new(handle: Handle, target: &SocketAddr) -> Self {
+    pub fn connect(handle: Handle, target: &SocketAddr) -> Self {
         let client0 = sclient::connect(handle, target);
-        TailClient(Mutex::new(client0))
+        Self::new(client0)
+    }
+    pub fn new(client: InnerClient) -> Self {
+        TailClient(Mutex::new(client))
     }
 }
 
