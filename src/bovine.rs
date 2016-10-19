@@ -1,19 +1,12 @@
-use tokio::reactor::Handle;
-use {RamStore, sexp_proto, TailService, ServerService};
-use service::{Service, NewService, simple_service};
+use service::{Service, NewService};
 use tokio::io::FramedIo;
-use futures::{self, Poll, Async, Future, stream, BoxFuture};
+use futures::{self, Poll, Async, Future, BoxFuture};
 use proto;
 
-use std::net::SocketAddr;
 use std::io;
 use std::sync::{Mutex, Arc};
 
 use std::collections::{BTreeMap, VecDeque};
-use void::Void;
-use take::Take;
-use std::marker::PhantomData;
-use std::fmt;
 
 use hosting::{HostConfig, Host, CoreService, SchedHandle};
 
@@ -173,7 +166,6 @@ impl<S: Service> SphericalBovine<S>
 
     fn connect(&self)
                -> Result<BovineHostClient<BovinePort<S::Request, Result<S::Response, S::Error>>>, io::Error> {
-        let cloned_ref = self.inner.clone();
         let mut inner = self.inner.lock().expect("lock");
 
         let n = inner.connections.keys().rev().next().map(|n| n + 1).unwrap_or(0);
@@ -220,16 +212,16 @@ impl<S: Service, H: SchedHandle> Host<H> for SphericalBovine<S> {
     fn build_server(&mut self,
                     _service: CoreService,
                     _handle: &H,
-                    head_addr: Self::Addr,
-                    tail_addr: Self::Addr)
+                    _head_addr: Self::Addr,
+                    _tail_addr: Self::Addr)
                     -> Result<HostConfig<Self::Addr>, io::Error> {
         // let CoreService { head, tail } = service;
         let _head_host = unimplemented!();
         let _tail_host = unimplemented!();
 
         Ok(HostConfig {
-            head: head_addr,
-            tail: tail_addr,
+            head: _head_addr,
+            tail: _tail_addr,
         })
     }
 }
@@ -276,7 +268,6 @@ impl<S, R> FramedIo for BovinePort<S, R> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio::reactor::Core;
     use service::{simple_service, Service};
     use std::io;
     use env_logger;
@@ -284,7 +275,6 @@ mod test {
     use futures::task::{self, Unpark};
     use std::sync::Arc;
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct Unparker;
 
@@ -336,7 +326,6 @@ mod test {
     #[test]
     fn should_go_moo() {
         env_logger::init().unwrap_or(());
-        let mut core = Core::new().expect("Core::new");
         let service = simple_service(|n: usize| -> Result<usize, io::Error> {
             debug!("Adding: {:?}", n);
             Ok(n + 1)
@@ -344,12 +333,9 @@ mod test {
 
         let net = SphericalBovine::new(service);
 
-        let handle = core.handle();
         let client = net.connect().expect("connect");
 
         let mut sched = Scheduler::new();
-
-        let running = Arc::new(AtomicBool::new(false));
 
         sched.spawn(net.boxed());
 

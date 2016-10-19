@@ -1,19 +1,8 @@
 use tokio::reactor::Handle;
 use {RamStore, sexp_proto, TailService, ServerService};
-use service::{Service, NewService, simple_service};
-use tokio::io::FramedIo;
-use futures::{self, Poll, Async, Future, stream, BoxFuture};
-use proto::pipeline::{self, Frame};
-use proto::{self, Message};
 
 use std::net::SocketAddr;
 use std::io;
-use std::sync::{Mutex, Arc};
-
-use std::collections::{BTreeMap, VecDeque};
-use void::Void;
-use take::Take;
-use std::marker::PhantomData;
 
 pub trait SchedHandle {}
 
