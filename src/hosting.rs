@@ -2,7 +2,7 @@ use tokio::reactor::Handle;
 use {RamStore, sexp_proto, TailService, ServerService};
 use service::{Service, NewService, simple_service};
 use tokio::io::FramedIo;
-use futures::{Poll, Async, Future, stream, BoxFuture};
+use futures::{self, Poll, Async, Future, stream, BoxFuture};
 use proto::pipeline::{self, Frame};
 use proto::{self, Message};
 
@@ -12,6 +12,7 @@ use std::sync::{Mutex, Arc};
 
 use std::collections::{BTreeMap, VecDeque};
 use void::Void;
+use take::Take;
 use std::marker::PhantomData;
 
 pub trait Host: Sized {
@@ -215,6 +216,7 @@ mod test {
     use proto::{self, pipeline, Message};
     use service::{simple_service, Service};
     use void::Void;
+    use take::Take;
     use futures;
     use std::io;
 
@@ -227,10 +229,21 @@ mod test {
         let net = SphericalBovine::new(service);
 
         let handle = core.handle();
-        let client : proto::Client<usize, usize, futures::stream::Empty<Void, io::Error>, io::Error> =
-            pipeline::connect(|| net.connect_transport(&handle), &core.handle());
+        let client_transport = net.connect_transport(&handle).expect("connect_transport");
+        let new_transport = Take::new(move || Ok(client_transport));
+        let _: &pipeline::NewTransport<In = Message<usize, _>,
+                                       Out = usize,
+                                       BodyIn = Void,
+                                       BodyOut = Void,
+                                       Error = io::Error,
+                                       Item = BovinePort<_, _>,
+                                       Future = futures::Done<_, _>> = &new_transport;
+        let client: proto::Client<_, _, futures::stream::Empty<Void, io::Error>, io::Error> =
+            pipeline::connect(new_transport, handle);
 
-        let f = client.call(Message::WithoutBody(42));
+        // let client : proto::Client<usize, usize, futures::stream::Empty<Void, io::Error>, io::Error> = pipeline::connect(|| , &core.handle());
+
+        let f = client.call(Message::WithoutBody(Message::WithoutBody(42)));
 
         let ret = core.run(f).expect("run");
         assert_eq!(ret, 42);
