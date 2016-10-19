@@ -15,7 +15,7 @@ use take::Take;
 use std::marker::PhantomData;
 use std::fmt;
 
-use hosting::{HostConfig, Host, CoreService};
+use hosting::{HostConfig, Host, CoreService, SchedHandle};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BovineAddr(pub usize);
@@ -214,12 +214,12 @@ impl<S: Service> Future for SphericalBovine<S> {
     }
 }
 
-impl<S: Service> Host for SphericalBovine<S> {
+impl<S: Service, H: SchedHandle> Host<H> for SphericalBovine<S> {
     type Addr = BovineAddr;
 
     fn build_server(&mut self,
                     _service: CoreService,
-                    _handle: &Handle,
+                    _handle: &H,
                     head_addr: Self::Addr,
                     tail_addr: Self::Addr)
                     -> Result<HostConfig<Self::Addr>, io::Error> {
@@ -280,15 +280,56 @@ mod test {
     use service::{simple_service, Service};
     use std::io;
     use env_logger;
-    use futures::{Async, Future};
+    use futures::{Async, Future, BoxFuture};
     use futures::task::{self, Unpark};
     use std::sync::Arc;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct Unparker;
 
     impl Unpark for Unparker {
         fn unpark(&self) {
             debug!("Unpark!");
+        }
+    }
+
+    struct Scheduler {
+        tasks: VecDeque<task::Spawn<BoxFuture<(), ()>>>,
+    }
+
+    impl Scheduler {
+        fn new() -> Self {
+            Scheduler { tasks: VecDeque::new() }
+        }
+
+        fn spawn<F: Future<Item = (), Error = ()> + 'static + Send>(&mut self, f: F) {
+            self.tasks.push_back(task::spawn(f.boxed()));
+        }
+
+        fn run<F: Future<Item = (), Error = ()> + 'static + Send>(&mut self, f: F) {
+            let unparker = Arc::new(Unparker);
+            let mut foreground = VecDeque::new();
+            foreground.push_back(task::spawn(f.boxed()));
+
+            loop {
+                for q in &mut [&mut foreground, &mut self.tasks] {
+                    if let Some(mut t) = q.pop_front() {
+                        match t.poll_future(unparker.clone()) {
+                            Ok(Async::NotReady) => q.push_back(t),
+                            Ok(Async::Ready(())) => { }
+                            Err(e) => panic!("Task failed: {:?}", e),
+                        };
+                    }
+                }
+
+                debug!("Foreground: {:?}; Background tasks: {:?}",
+                       foreground.len(),
+                       self.tasks.len());
+                if foreground.is_empty() {
+                    break;
+                }
+            }
         }
     }
 
@@ -306,22 +347,19 @@ mod test {
         let handle = core.handle();
         let client = net.connect().expect("connect");
 
-        let mut f = task::spawn(client.call(42));
-        let mut net = task::spawn(net);
-        loop {
-            match net.poll_future(Arc::new(Unparker)) {
-                Ok(Async::NotReady) => (),
-                Ok(Async::Ready(())) => panic!("Network terminated"),
-                Err(e) => panic!("Network failed: {:?}", e),
-            };
-            match f.poll_future(Arc::new(Unparker)) {
-                Ok(Async::NotReady) => (),
-                Ok(Async::Ready(val)) => {
-                    assert_eq!(val.expect("result"), 43);
-                    break;
-                }
-                Err(e) => panic!("Addition failed: {:?}", e),
-            }
-        }
+        let mut sched = Scheduler::new();
+
+        let running = Arc::new(AtomicBool::new(false));
+
+        sched.spawn(net.boxed());
+
+        let t = client.call(42)
+            .map(move |val| {
+                info!("42+1 => {:?}", val);
+                assert_eq!(val.expect("result"), 43);
+            })
+            .map_err(|e| panic!("Call error: {:?}", e));
+
+        sched.run(t)
     }
 }

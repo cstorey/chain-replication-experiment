@@ -15,12 +15,14 @@ use void::Void;
 use take::Take;
 use std::marker::PhantomData;
 
-pub trait Host: Sized {
+pub trait SchedHandle {}
+
+pub trait Host<H: SchedHandle>: Sized {
     type Addr;
 
     fn build_server(&mut self,
                     service: CoreService,
-                    handle: &Handle,
+                    handle: &H,
                     head_addr: Self::Addr,
                     tail_addr: Self::Addr)
                     -> Result<HostConfig<Self::Addr>, io::Error>;
@@ -51,7 +53,7 @@ impl CoreService {
     }
 }
 
-impl Host for SexpHost {
+impl Host<Handle> for SexpHost {
     type Addr = SocketAddr;
 
     fn build_server(&mut self,
@@ -70,3 +72,5 @@ impl Host for SexpHost {
         })
     }
 }
+
+impl SchedHandle for Handle {}
