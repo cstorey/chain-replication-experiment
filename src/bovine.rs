@@ -3,8 +3,7 @@ use {RamStore, sexp_proto, TailService, ServerService};
 use service::{Service, NewService, simple_service};
 use tokio::io::FramedIo;
 use futures::{self, Poll, Async, Future, stream, BoxFuture};
-use proto::pipeline::{self, Frame};
-use proto::{self, Message};
+use proto;
 
 use std::net::SocketAddr;
 use std::io;
@@ -14,6 +13,7 @@ use std::collections::{BTreeMap, VecDeque};
 use void::Void;
 use take::Take;
 use std::marker::PhantomData;
+use std::fmt;
 
 use hosting::{HostConfig, Host, CoreService};
 
@@ -25,7 +25,7 @@ pub struct InnerBovine<S: Service> {
                                 Response = S::Response,
                                 Item = S,
                                 Error = S::Error> + Send>,
-    connections: BTreeMap<usize, ()>,
+    connections: BTreeMap<usize, BoxFuture<(), io::Error>>,
 }
 
 pub struct SphericalBovine<S: Service> {
@@ -33,6 +33,123 @@ pub struct SphericalBovine<S: Service> {
 }
 
 pub struct BovinePort<S, R>(Arc<Mutex<VecDeque<S>>>, Arc<Mutex<VecDeque<R>>>);
+
+pub struct BovineHostTask<S: Service, T> {
+    service: S,
+    transport: T,
+    pending: Option<S::Future>,
+}
+
+impl<S: Service, T> BovineHostTask<S, T> {
+    fn new(service: S, transport: T) -> Self {
+        BovineHostTask {
+            service: service,
+            transport: transport,
+            pending: None,
+        }
+    }
+}
+
+pub struct BovineHostClient<T: FramedIo> {
+    transport: Arc<Mutex<T>>,
+    queue: Arc<Mutex<VecDeque<futures::Complete<T::Out>>>>,
+}
+
+impl<T: FramedIo> BovineHostClient<T> {
+    fn new(transport: T) -> Self {
+        BovineHostClient {
+            transport: Arc::new(Mutex::new(transport)),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+}
+
+impl<S: Service, T: FramedIo<Out=S::Request, In=Result<S::Response, S::Error>>> Future for BovineHostTask<S, T> {
+    type Item = ();
+    type Error = io::Error;
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        trace!("BovineHostTask#poll");
+        loop {
+            if self.transport.poll_write().is_ready() {
+                if let Some(mut f) = self.pending.take() {
+                    trace!("has pending");
+                    match f.poll() {
+                        Ok(Async::Ready(resp)) => {
+                            trace!("-> done");
+                            self.transport.write(Ok(resp)).expect("write resp");
+                        }
+                        Err(e) => {
+                            trace!("-> error");
+                            self.transport.write(Err(e)).expect("write resp");
+                        }
+                        Ok(Async::NotReady) => {
+                            self.pending = Some(f);
+                        }
+                    }
+                }
+            }
+            assert!(self.pending.is_none());
+            let req = try_ready!(self.transport.read());
+            trace!("-> new req");
+            let resp_f = self.service.call(req);
+            self.pending = Some(resp_f);
+        }
+    }
+}
+
+pub struct BovineClientFut<T: FramedIo> {
+    inner: futures::Oneshot<T::Out>,
+    transport: Arc<Mutex<T>>,
+    queue: Arc<Mutex<VecDeque<futures::Complete<T::Out>>>>,
+}
+
+impl<T: FramedIo> Service for BovineHostClient<T> {
+    type Request = T::In;
+    type Response = T::Out;
+    type Error = futures::Canceled;
+    type Future = BovineClientFut<T>;
+
+    fn poll_ready(&self) -> Async<()> {
+        trace!("BovineHostClient#poll_ready");
+        self.transport.lock().expect("lock").poll_write()
+    }
+
+    fn call(&self, _req: Self::Request) -> Self::Future {
+        trace!("BovineHostClient#call");
+        let (c, p) = futures::oneshot();
+        {
+            let mut q = self.queue.lock().expect("lock");
+            self.transport.lock().expect("lock").write(_req).expect("write");
+            q.push_back(c);
+        }
+        BovineClientFut {
+            inner: p,
+            transport: self.transport.clone(),
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<T: FramedIo> Future for BovineClientFut<T> {
+    type Item = T::Out;
+    type Error = futures::Canceled;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let &mut BovineClientFut { ref mut inner, ref mut transport, ref mut queue } = self;
+        {
+            let mut q = queue.lock().expect("lock queue");
+            let mut t = transport.lock().expect("lock transport");
+            if let Some(c) = q.pop_front() {
+                match t.read() {
+                    Ok(Async::Ready(val)) => c.complete(val),
+                    Ok(Async::NotReady) => q.push_front(c),
+                    Err(e) => panic!("Unexpected error on read: {:?}", e),
+                }
+            }
+        }
+        inner.poll()
+    }
+}
 
 impl<S: Service> SphericalBovine<S>
     where S::Request: Send + 'static,
@@ -54,17 +171,8 @@ impl<S: Service> SphericalBovine<S>
         SphericalBovine { inner: Arc::new(Mutex::new(inner)) }
     }
 
-    fn connect_transport(&self,
-                         handle: &Handle)
-                         -> Result<BovinePort<Frame<Message<S::Request,
-                                                            stream::Empty<Void, Void>>,
-                                                    Void,
-                                                    S::Error>,
-                                              Frame<Message<S::Response,
-                                                            stream::Empty<Void, Void>>,
-                                                    Void,
-                                                    S::Error>>,
-                                   io::Error> {
+    fn connect(&self)
+               -> Result<BovineHostClient<BovinePort<S::Request, Result<S::Response, S::Error>>>, io::Error> {
         let cloned_ref = self.inner.clone();
         let mut inner = self.inner.lock().expect("lock");
 
@@ -78,24 +186,31 @@ impl<S: Service> SphericalBovine<S>
         let client_transport = BovinePort(cts.clone(), stc.clone());
 
         let service = try!(inner.new_service.new_service());
-        let service = simple_service(move |req: Message<S::Request, _>| -> BoxFuture<Message<S::Response,
-                                                                stream::Empty<Void, S::Error>>,
-                                                        S::Error> {
-            service.call(req.into_inner()).map(Message::WithoutBody).boxed()
-        });
 
-        let _: &pipeline::Transport<In = S::Response, /* Message<S::Response, stream::Empty<Void, Void>>, */
-                                    Out = Message<S::Request, stream::Empty<Void, Void>>,
-                                    BodyIn = Void,
-                                    BodyOut = Void,
-                                    Error = S::Error> = &service_transport;
+        let t = BovineHostTask::new(service, service_transport);
 
-        let task_f = try!(pipeline::Server::new(service, service_transport));
-        let () = handle.spawn(task_f.map_err(|e| panic!("transport error? {:?}", e)));
+        inner.connections.insert(n, t.boxed());
 
-        inner.connections.insert(n, ());
-        // Ok(client_transport)
-        unimplemented!()
+        let c = BovineHostClient::new(client_transport);
+        Ok(c)
+    }
+}
+impl<S: Service> Future for SphericalBovine<S> {
+    type Item = ();
+    type Error = ();
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        trace!("SphericalBovine#poll");
+        let mut inner = self.inner.lock().expect("lock");
+        for (addr, serv) in inner.connections.iter_mut() {
+            trace!("-> SphericalBovine@{:?}#poll", addr);
+            match serv.poll() {
+                Ok(Async::Ready(())) => unimplemented!(),
+                Ok(Async::NotReady) => (),
+                Err(e) => panic!("service {:?} failed with {:?}", addr, e),
+            };
+            trace!("<- SphericalBovine@{:?}#poll", addr);
+        }
+        Ok(Async::NotReady)
     }
 }
 
@@ -124,31 +239,36 @@ impl<S, R> FramedIo for BovinePort<S, R> {
     type Out = R;
 
     fn poll_read(&mut self) -> Async<()> {
-        let &mut BovinePort(ref inner, ref id) = self;
+        trace!("BovinePort#poll_read");
+        // let &mut BovinePort(ref inner, ref id) = self;
         unimplemented!()
     }
     fn read(&mut self) -> Poll<Self::Out, io::Error> {
-        let &mut BovinePort(ref inner, ref id) = self;
-        // unimplemented!()
-        Ok(Async::NotReady)
+        trace!("BovinePort#read");
+        let &mut BovinePort(_, ref recv) = self;
+        let mut recv = recv.lock().expect("lock");
+        trace!("recv queue pre: {:?}", recv.len());
+        if let Some(res) = recv.pop_front() {
+            debug!("-> value");
+            Ok(Async::Ready(res))
+        } else {
+            Ok(Async::NotReady)
+        }
     }
     fn poll_write(&mut self) -> Async<()> {
-        let &mut BovinePort(ref inner, ref id) = self;
-        let inner = inner.lock().expect("lock");
-        // let ref service = inner.connections[id];
-        // service.poll_ready()
-        unimplemented!()
+        trace!("BovinePort#poll_write");
+        Async::Ready(())
     }
-    fn write(&mut self, _msg: Self::In) -> Poll<(), io::Error> {
-        let &mut BovinePort(ref inner, ref id) = self;
-        let inner = inner.lock().expect("lock");
-        // Not quite right, should be a pipeline/ FramedIo thingy.
-        // let ref blah: S = inner.connections[id];
-        unimplemented!();
+    fn write(&mut self, msg: Self::In) -> Poll<(), io::Error> {
+        trace!("BovinePort#write");
+        let &mut BovinePort(ref send, _) = self;
+        let mut send = send.lock().expect("lock");
+        send.push_back(msg);
+        trace!("send queue post: {:?}", send.len());
         Ok(Async::Ready(()))
     }
     fn flush(&mut self) -> Poll<(), io::Error> {
-        let &mut BovinePort(ref inner, ref id) = self;
+        // let &mut BovinePort(ref inner, ref id) = self;
         Ok(Async::Ready(()))
     }
 }
@@ -156,40 +276,52 @@ impl<S, R> FramedIo for BovinePort<S, R> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio::reactor::{Core, Handle};
-    use proto::{self, pipeline, Message};
+    use tokio::reactor::Core;
     use service::{simple_service, Service};
-    use void::Void;
-    use take::Take;
-    use futures;
     use std::io;
+    use env_logger;
+    use futures::{Async, Future};
+    use futures::task::{self, Unpark};
+    use std::sync::Arc;
 
-    #[cfg(never)]
+    struct Unparker;
+
+    impl Unpark for Unparker {
+        fn unpark(&self) {
+            debug!("Unpark!");
+        }
+    }
+
     #[test]
     fn should_go_moo() {
+        env_logger::init().unwrap_or(());
         let mut core = Core::new().expect("Core::new");
-        let service = simple_service(|n: usize| -> Result<usize, ()> { Ok(n + 1) });
+        let service = simple_service(|n: usize| -> Result<usize, io::Error> {
+            debug!("Adding: {:?}", n);
+            Ok(n + 1)
+        });
 
         let net = SphericalBovine::new(service);
 
         let handle = core.handle();
-        let client_transport = net.connect_transport(&handle).expect("connect_transport");
-        let new_transport = Take::new(move || Ok(client_transport));
-        let _: &pipeline::NewTransport<In = Message<usize, _>,
-                                       Out = usize,
-                                       BodyIn = Void,
-                                       BodyOut = Void,
-                                       Error = io::Error,
-                                       Item = BovinePort<_, _>,
-                                       Future = futures::Done<_, _>> = &new_transport;
-        let client: proto::Client<_, _, futures::stream::Empty<Void, io::Error>, io::Error> =
-            pipeline::connect(new_transport, handle);
+        let client = net.connect().expect("connect");
 
-        // let client : proto::Client<usize, usize, futures::stream::Empty<Void, io::Error>, io::Error> = pipeline::connect(|| , &core.handle());
-
-        let f = client.call(Message::WithoutBody(Message::WithoutBody(42)));
-
-        let ret = core.run(f).expect("run");
-        assert_eq!(ret, 42);
+        let mut f = task::spawn(client.call(42));
+        let mut net = task::spawn(net);
+        loop {
+            match net.poll_future(Arc::new(Unparker)) {
+                Ok(Async::NotReady) => (),
+                Ok(Async::Ready(())) => panic!("Network terminated"),
+                Err(e) => panic!("Network failed: {:?}", e),
+            };
+            match f.poll_future(Arc::new(Unparker)) {
+                Ok(Async::NotReady) => (),
+                Ok(Async::Ready(val)) => {
+                    assert_eq!(val.expect("result"), 43);
+                    break;
+                }
+                Err(e) => panic!("Addition failed: {:?}", e),
+            }
+        }
     }
 }
