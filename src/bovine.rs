@@ -352,28 +352,26 @@ mod test {
             self.tasks.push_back(task::spawn(f.boxed()));
         }
 
-        fn run<F: Future<Item = (), Error = ()> + 'static + Send>(&mut self, f: F) {
+        fn run<R, F: Future<Item = R, Error = ()> + 'static + Send>(&mut self, f: F) -> R {
             let unparker = Arc::new(Unparker);
-            let mut foreground = VecDeque::new();
-            foreground.push_back(task::spawn(f.boxed()));
+            let mut foreground = task::spawn(f.boxed());
 
             loop {
-                for q in &mut [&mut foreground, &mut self.tasks] {
-                    if let Some(mut t) = q.pop_front() {
-                        match t.poll_future(unparker.clone()) {
-                            Ok(Async::NotReady) => q.push_back(t),
-                            Ok(Async::Ready(())) => { }
-                            Err(e) => panic!("Task failed: {:?}", e),
-                        };
-                    }
+                if let Some(mut t) = self.tasks.pop_front() {
+                    match t.poll_future(unparker.clone()) {
+                        Ok(Async::NotReady) => self.tasks.push_back(t),
+                        Ok(Async::Ready(())) => { }
+                        Err(e) => panic!("Task failed: {:?}", e),
+                    };
                 }
 
-                debug!("Foreground: {:?}; Background tasks: {:?}",
-                       foreground.len(),
-                       self.tasks.len());
-                if foreground.is_empty() {
-                    break;
-                }
+                match foreground.poll_future(unparker.clone()) {
+                    Ok(Async::NotReady) => {}
+                    Ok(Async::Ready(val)) => return val,
+                    Err(e) => panic!("Task failed: {:?}", e),
+                };
+
+                debug!("Background tasks: {:?}", self.tasks.len());
             }
         }
     }
@@ -396,13 +394,11 @@ mod test {
         sched.spawn(net.boxed());
 
         let t = client.call(42)
-            .map(move |val| {
-                info!("42+1 => {:?}", val);
-                assert_eq!(val, 43);
-            })
             .map_err(|e| panic!("Call error: {:?}", e));
 
-        sched.run(t)
+        let val = sched.run(t);
+        info!("42+1 => {:?}", val);
+        assert_eq!(val, 43);
     }
 
     #[test]
@@ -420,15 +416,11 @@ mod test {
         let mut sched = Scheduler::new();
         sched.spawn(net.boxed());
 
-        let t = client0.call(42)
-            .join(client1.call(42))
-            .map(move |vals| {
-                info!("42+-1 => {:?}", vals);
-                assert_eq!(vals, (43, 41));
-            })
-            .map_err(|e| panic!("Call error: {:?}", e));
+        let t = client0.call(42).join(client1.call(42)).map_err(|e| panic!("Call error: {:?}", e));
 
-        sched.run(t)
+        let vals = sched.run(t);
+        info!("42+-1 => {:?}", vals);
+        assert_eq!(vals, (43, 41));
     }
 
     #[derive(Clone)]
@@ -449,11 +441,14 @@ mod test {
         fn call(&self, req: Self::Request) -> BoxFuture<Self::Response, Self::Error> {
             debug!("SexpAdaptor#call -> : {:?}", String::from_utf8_lossy(&req));
             let req = sexp::from_bytes(&req).expect("from_bytes");
-            self.0.call(req).map(|res| {
+            self.0
+                .call(req)
+                .map(|res| {
                     let res = sexp::as_bytes(&res).expect("as_bytes");
                     debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
                     res
-            }).boxed()
+                })
+                .boxed()
         }
     }
 
@@ -481,10 +476,13 @@ mod test {
         fn call(&self, req: Self::Request) -> BoxFuture<Self::Response, Self::Error> {
             let req = sexp::as_bytes(&req).expect("as_bytes");
             debug!("SexpClient#call -> : {:?}", String::from_utf8_lossy(&req));
-            self.0.call(req).map(|res| {
-            debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
+            self.0
+                .call(req)
+                .map(|res| {
+                    debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
                     sexp::from_bytes(&res).expect("from_bytes")
-                    }).boxed()
+                })
+                .boxed()
         }
     }
 
@@ -498,12 +496,12 @@ mod test {
         });
 
         let mut net: SphericalBovine<Vec<u8>, Vec<u8>, _> = SphericalBovine::new();
-        let _: &Service<Request = usize, Response = usize, Future = _, Error = io::Error> = &service;
+        let _: &Service<Request = usize, Response = usize, Future = _, Error = io::Error> =
+            &service;
         let addr = net.listen(SexpAdaptor(service));
 
         let client = net.connect(addr).expect("connect");
-        let _: &Service<Request = Vec<u8>, Response = Vec<u8>, Future = _, Error = _> =
-            &client;
+        let _: &Service<Request = Vec<u8>, Response = Vec<u8>, Future = _, Error = _> = &client;
 
         let client = SexpClient(client, PhantomData);
         let _: &Service<Request = usize, Response = usize, Future = _, Error = io::Error> = &client;
@@ -511,13 +509,10 @@ mod test {
         let mut sched = Scheduler::new();
         sched.spawn(net.boxed());
 
-        let t = Service::call(&client, 42)
-            .map(move |val| {
-                info!("42+1 => {:?}", val);
-                assert_eq!(val, 43);
-            })
-            .map_err(|e| panic!("Call error: {:?}", e));
+        let t = Service::call(&client, 42).map_err(|e| panic!("Call error: {:?}", e));
 
-        sched.run(t)
+        let val = sched.run(t);
+        info!("42+1 => {:?}", val);
+        assert_eq!(val, 43);
     }
 }
