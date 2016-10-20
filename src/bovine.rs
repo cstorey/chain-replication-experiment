@@ -1,7 +1,6 @@
 use service::{Service, NewService};
 use tokio::io::FramedIo;
 use futures::{self, Poll, Async, Future, BoxFuture};
-use proto;
 
 use std::io;
 use std::sync::{Mutex, Arc};
@@ -100,10 +99,10 @@ pub struct BovineClientFut<T: FramedIo> {
     queue: Arc<Mutex<VecDeque<futures::Complete<T::Out>>>>,
 }
 
-impl<T: FramedIo> Service for BovineHostClient<T> {
+impl<T: FramedIo<Out = Result<R, E>>, R, E> Service for BovineHostClient<T> {
     type Request = T::In;
-    type Response = T::Out;
-    type Error = futures::Canceled;
+    type Response = R;
+    type Error = E;
     type Future = BovineClientFut<T>;
 
     fn poll_ready(&self) -> Async<()> {
@@ -127,9 +126,9 @@ impl<T: FramedIo> Service for BovineHostClient<T> {
     }
 }
 
-impl<T: FramedIo> Future for BovineClientFut<T> {
-    type Item = T::Out;
-    type Error = futures::Canceled;
+impl<T: FramedIo<Out = Result<R, E>>, R, E> Future for BovineClientFut<T> {
+    type Item = R;
+    type Error = E;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let &mut BovineClientFut { ref mut inner, ref mut transport, ref mut queue } = self;
@@ -144,7 +143,12 @@ impl<T: FramedIo> Future for BovineClientFut<T> {
                 }
             }
         }
-        inner.poll()
+        match inner.poll() {
+            Ok(Async::Ready(Ok(r))) => Ok(Async::Ready(r)),
+            Ok(Async::Ready(Err(e))) => Err(e),
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Err(e) => panic!("Fixme: {:?}", e),
+        }
     }
 }
 
@@ -322,7 +326,7 @@ mod test {
     use service::{simple_service, Service};
     use std::io;
     use env_logger;
-    use futures::{Async, Future, BoxFuture};
+    use futures::{Async, Future, BoxFuture, Poll};
     use futures::task::{self, Unpark};
     use std::sync::Arc;
     use std::collections::VecDeque;
@@ -394,7 +398,7 @@ mod test {
         let t = client.call(42)
             .map(move |val| {
                 info!("42+1 => {:?}", val);
-                assert_eq!(val.expect("result"), 43);
+                assert_eq!(val, 43);
             })
             .map_err(|e| panic!("Call error: {:?}", e));
 
@@ -417,11 +421,100 @@ mod test {
         sched.spawn(net.boxed());
 
         let t = client0.call(42)
-            .map(|r| r.expect("result0"))
-            .join(client1.call(42).map(|r| r.expect("result1")))
+            .join(client1.call(42))
             .map(move |vals| {
                 info!("42+-1 => {:?}", vals);
                 assert_eq!(vals, (43, 41));
+            })
+            .map_err(|e| panic!("Call error: {:?}", e));
+
+        sched.run(t)
+    }
+
+    #[derive(Clone)]
+    struct SexpAdaptor<S>(S);
+    impl<S: Service> Service for SexpAdaptor<S>
+        where S::Request: de::Deserialize,
+              S::Response: ser::Serialize,
+              S::Future: Send + 'static
+    {
+        type Request = Vec<u8>;
+        type Response = Vec<u8>;
+        type Error = S::Error;
+        type Future = BoxFuture<Self::Request, S::Error>;
+
+        fn poll_ready(&self) -> Async<()> {
+            self.0.poll_ready()
+        }
+        fn call(&self, req: Self::Request) -> BoxFuture<Self::Response, Self::Error> {
+            debug!("SexpAdaptor#call -> : {:?}", String::from_utf8_lossy(&req));
+            let req = sexp::from_bytes(&req).expect("from_bytes");
+            self.0.call(req).map(|res| {
+                    let res = sexp::as_bytes(&res).expect("as_bytes");
+                    debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
+                    res
+            }).boxed()
+        }
+    }
+
+
+    #[derive(Clone)]
+    struct SexpClient<I, S, R>(I, PhantomData<(S, R)>);
+    use serde::{ser, de};
+    use spki_sexp as sexp;
+    use std::fmt;
+    use std::marker::PhantomData;
+
+    impl<I: Service<Request = Vec<u8>, Response = Vec<u8>>, S, R> Service for SexpClient<I, S, R>
+        where S: ser::Serialize,
+              R: de::Deserialize,
+              I::Future: Send + 'static
+    {
+        type Request = S;
+        type Response = R;
+        type Error = I::Error;
+        type Future = BoxFuture<Self::Response, I::Error>;
+
+        fn poll_ready(&self) -> Async<()> {
+            self.0.poll_ready()
+        }
+        fn call(&self, req: Self::Request) -> BoxFuture<Self::Response, Self::Error> {
+            let req = sexp::as_bytes(&req).expect("as_bytes");
+            debug!("SexpClient#call -> : {:?}", String::from_utf8_lossy(&req));
+            self.0.call(req).map(|res| {
+            debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
+                    sexp::from_bytes(&res).expect("from_bytes")
+                    }).boxed()
+        }
+    }
+
+
+    #[test]
+    fn should_work_with_type_adaptors() {
+        env_logger::init().unwrap_or(());
+        let service = simple_service(|n: usize| -> Result<usize, io::Error> {
+            debug!("Adding: {:?}", n);
+            Ok(n + 1)
+        });
+
+        let mut net: SphericalBovine<Vec<u8>, Vec<u8>, _> = SphericalBovine::new();
+        let _: &Service<Request = usize, Response = usize, Future = _, Error = io::Error> = &service;
+        let addr = net.listen(SexpAdaptor(service));
+
+        let client = net.connect(addr).expect("connect");
+        let _: &Service<Request = Vec<u8>, Response = Vec<u8>, Future = _, Error = _> =
+            &client;
+
+        let client = SexpClient(client, PhantomData);
+        let _: &Service<Request = usize, Response = usize, Future = _, Error = io::Error> = &client;
+
+        let mut sched = Scheduler::new();
+        sched.spawn(net.boxed());
+
+        let t = Service::call(&client, 42)
+            .map(move |val| {
+                info!("42+1 => {:?}", val);
+                assert_eq!(val, 43);
             })
             .map_err(|e| panic!("Call error: {:?}", e));
 
