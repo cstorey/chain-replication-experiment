@@ -14,6 +14,7 @@ use futures::Future;
 use vastatrix::LogPos;
 
 use vastatrix::hosting::*;
+use vastatrix::bovine;
 
 #[test]
 fn smoketest_tcp() {
@@ -64,13 +65,11 @@ fn smoketest_tcp() {
 fn smoketest_bovine() {
     env_logger::init().unwrap_or(());
 
-    let mut core = Core::new().unwrap();
+    let mut core = bovine::SphericalBovine::new();
 
     let service = CoreService::new();
 
-    let net = SphericalBovine::new();
-
-    let server = net.build_server(service, &core.handle(), 0, 1).expect("start server");
+    let server = core.build_server(service, &core.handle(), 0, 1).expect("start server");
     println!("running: {:?}", server);
 
     info!("Head at: {:?}, tail at: {:?}", server.head, server.tail);

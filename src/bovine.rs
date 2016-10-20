@@ -389,13 +389,39 @@ mod test {
         let client = net.connect(addr).expect("connect");
 
         let mut sched = Scheduler::new();
-
         sched.spawn(net.boxed());
 
         let t = client.call(42)
             .map(move |val| {
                 info!("42+1 => {:?}", val);
                 assert_eq!(val.expect("result"), 43);
+            })
+            .map_err(|e| panic!("Call error: {:?}", e));
+
+        sched.run(t)
+    }
+
+    #[test]
+    fn should_support_different_service_types() {
+        // Common message type (eg: ByteBufs) but differet types of service.
+        let mut net = SphericalBovine::new();
+        let adder = simple_service(|n: usize| -> Result<usize, io::Error> { Ok(n + 1) });
+        let subber = simple_service(|n: usize| -> Result<usize, io::Error> { Ok(n - 1) });
+        let serv_addr0 = net.listen(adder);
+        let serv_addr1 = net.listen(subber);
+
+        let client0 = net.connect(serv_addr0).expect("connect");
+        let client1 = net.connect(serv_addr1).expect("connect");
+
+        let mut sched = Scheduler::new();
+        sched.spawn(net.boxed());
+
+        let t = client0.call(42)
+            .map(|r| r.expect("result0"))
+            .join(client1.call(42).map(|r| r.expect("result1")))
+            .map(move |vals| {
+                info!("42+-1 => {:?}", vals);
+                assert_eq!(vals, (43, 41));
             })
             .map_err(|e| panic!("Call error: {:?}", e));
 
