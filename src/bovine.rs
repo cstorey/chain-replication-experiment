@@ -13,16 +13,20 @@ use hosting::{HostConfig, Host, CoreService, SchedHandle};
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BovineAddr(pub usize);
 
-pub struct InnerBovine<S: Service> {
-    new_service: Box<NewService<Request = S::Request,
-                                Response = S::Response,
-                                Item = S,
-                                Error = S::Error> + Send>,
-    connections: BTreeMap<usize, BoxFuture<(), io::Error>>,
+type Thing<S, R, E> = Box<NewService<Request = S, Response = R, Error = E,
+                           Item = Box<Service<Request = S, Response = R, Error = E, Future=BoxFuture<R, E>> + Send>,
+                           > + Send>;
+
+pub struct InnerBovine<S, R, E> {
+    new_services: BTreeMap<BovineAddr, Box<NewService<Request = S, Response = R, Error = E,
+                           Item = Box<Service<Request = S, Response = R, Error = E, Future=BoxFuture<R, E>> + Send>,
+                           > + Send>>,
+    connections: BTreeMap<BovineAddr, BoxFuture<(), io::Error>>,
 }
 
-pub struct SphericalBovine<S: Service> {
-    inner: Arc<Mutex<InnerBovine<S>>>,
+
+pub struct SphericalBovine<S, R, E> {
+    inner: Arc<Mutex<InnerBovine<S, R, E>>>,
 }
 
 pub struct BovinePort<S, R>(Arc<Mutex<VecDeque<S>>>, Arc<Mutex<VecDeque<R>>>);
@@ -144,32 +148,79 @@ impl<T: FramedIo> Future for BovineClientFut<T> {
     }
 }
 
-impl<S: Service> SphericalBovine<S>
-    where S::Request: Send + 'static,
-          S::Response: Send + 'static,
-          S::Future: Send + 'static,
-          S: Send + Sync + 'static,
-          S::Error: From<proto::Error<S::Error>> + Send + 'static
+
+struct ServiceBoxer<N>(N);
+struct ServiceBox<S>(S);
+
+impl<N: NewService> NewService for ServiceBoxer<N>
+    where N::Item: Send + 'static,
+          <N::Item as Service>::Future: Send + 'static
 {
-    pub fn new<N>(service: N) -> Self
-        where N: NewService<Request = S::Request,
-                            Response = S::Response,
-                            Item = S,
-                            Error = S::Error> + Send + 'static
-    {
+    type Request = N::Request;
+    type Response = N::Response;
+    type Error = N::Error;
+    type Item = Box<Service<Request = N::Request,
+                Response = N::Response,
+                Error = N::Error,
+                Future = BoxFuture<N::Response, N::Error>> + Send>;
+    fn new_service(&self) -> Result<Self::Item, io::Error> {
+        let s = try!(self.0.new_service());
+        Ok(Box::new(ServiceBox(s)))
+    }
+}
+
+impl<S: Service> Service for ServiceBox<S>
+    where S::Future: Send + 'static
+{
+    type Request = S::Request;
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = BoxFuture<S::Response, S::Error>;
+
+    fn poll_ready(&self) -> Async<()> {
+        self.0.poll_ready()
+    }
+    fn call(&self, req: Self::Request) -> Self::Future {
+        self.0.call(req).boxed()
+    }
+}
+
+impl<S, R, E> SphericalBovine<S, R, E>
+    where S: Send + 'static,
+          R: Send + 'static,
+          E: Send + 'static
+{
+    pub fn new() -> Self {
         let inner = InnerBovine {
-            new_service: Box::new(service),
+            new_services: BTreeMap::new(),
             connections: BTreeMap::new(),
         };
         SphericalBovine { inner: Arc::new(Mutex::new(inner)) }
     }
 
-    fn connect(&self)
-               -> Result<BovineHostClient<BovinePort<S::Request, Result<S::Response, S::Error>>>, io::Error> {
+    pub fn listen<N>(&mut self, service: N) -> BovineAddr
+        where N: NewService<Request = S, Response = R, Error = E> + Send + 'static,
+              N::Item: Send + 'static,
+              <N::Item as Service>::Future: Send + 'static
+    {
         let mut inner = self.inner.lock().expect("lock");
 
-        let n = inner.connections.keys().rev().next().map(|n| n + 1).unwrap_or(0);
-        assert!(inner.connections.get(&n).is_none());
+        let n = inner.new_services.keys().rev().next().map(|n| n.0 + 1).unwrap_or(0);
+        let addr = BovineAddr(n);
+        assert!(inner.new_services.get(&addr).is_none());
+
+        inner.new_services.insert(addr.clone(), Box::new(ServiceBoxer(service)));
+        addr
+    }
+
+    fn connect(&self,
+               listener: BovineAddr)
+               -> Result<BovineHostClient<BovinePort<S, Result<R, E>>>, io::Error> {
+        let mut inner = self.inner.lock().expect("lock");
+
+        let n = inner.connections.keys().rev().next().map(|n| n.0 + 1).unwrap_or(0);
+        let addr = BovineAddr(n);
+        assert!(inner.connections.get(&addr).is_none());
 
         let cts = Arc::new(Mutex::new(VecDeque::new()));
         let stc = Arc::new(Mutex::new(VecDeque::new()));
@@ -177,17 +228,17 @@ impl<S: Service> SphericalBovine<S>
         let service_transport = BovinePort(stc.clone(), cts.clone());
         let client_transport = BovinePort(cts.clone(), stc.clone());
 
-        let service = try!(inner.new_service.new_service());
+        let service = try!(inner.new_services[&listener].new_service());
 
         let t = BovineHostTask::new(service, service_transport);
 
-        inner.connections.insert(n, t.boxed());
+        inner.connections.insert(addr, t.boxed());
 
         let c = BovineHostClient::new(client_transport);
         Ok(c)
     }
 }
-impl<S: Service> Future for SphericalBovine<S> {
+impl<S, R, E> Future for SphericalBovine<S, R, E> {
     type Item = ();
     type Error = ();
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -206,7 +257,7 @@ impl<S: Service> Future for SphericalBovine<S> {
     }
 }
 
-impl<S: Service, H: SchedHandle> Host<H> for SphericalBovine<S> {
+impl<S, R, E, H: SchedHandle> Host<H> for SphericalBovine<S, R, E> {
     type Addr = BovineAddr;
 
     fn build_server(&mut self,
@@ -331,9 +382,11 @@ mod test {
             Ok(n + 1)
         });
 
-        let net = SphericalBovine::new(service);
+        let mut net = SphericalBovine::new();
 
-        let client = net.connect().expect("connect");
+        let addr = net.listen(service);
+
+        let client = net.connect(addr).expect("connect");
 
         let mut sched = Scheduler::new();
 
