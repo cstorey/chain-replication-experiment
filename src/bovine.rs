@@ -4,6 +4,10 @@ use futures::{self, Poll, Async, Future, BoxFuture};
 
 use std::io;
 use std::sync::{Mutex, Arc};
+use serde::{ser, de};
+use spki_sexp as sexp;
+use std::fmt;
+use std::marker::PhantomData;
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -320,6 +324,64 @@ impl<S, R> FramedIo for BovinePort<S, R> {
     }
 }
 
+#[derive(Clone)]
+pub struct SexpAdaptor<S>(S);
+impl<S: Service> Service for SexpAdaptor<S>
+    where S::Request: de::Deserialize,
+          S::Response: ser::Serialize,
+          S::Future: Send + 'static
+{
+    type Request = Vec<u8>;
+    type Response = Vec<u8>;
+    type Error = S::Error;
+    type Future = BoxFuture<Self::Request, S::Error>;
+
+    fn poll_ready(&self) -> Async<()> {
+        self.0.poll_ready()
+    }
+    fn call(&self, req: Self::Request) -> BoxFuture<Self::Response, Self::Error> {
+        debug!("SexpAdaptor#call -> : {:?}", String::from_utf8_lossy(&req));
+        let req = sexp::from_bytes(&req).expect("from_bytes");
+        self.0
+            .call(req)
+            .map(|res| {
+                let res = sexp::as_bytes(&res).expect("as_bytes");
+                debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
+                res
+            })
+            .boxed()
+    }
+}
+
+
+#[derive(Clone)]
+pub struct SexpClient<I, S, R>(I, PhantomData<(S, R)>);
+impl<I: Service<Request = Vec<u8>, Response = Vec<u8>>, S, R> Service for SexpClient<I, S, R>
+    where S: ser::Serialize,
+          R: de::Deserialize,
+          I::Future: Send + 'static
+{
+    type Request = S;
+    type Response = R;
+    type Error = I::Error;
+    type Future = BoxFuture<Self::Response, I::Error>;
+
+    fn poll_ready(&self) -> Async<()> {
+        self.0.poll_ready()
+    }
+    fn call(&self, req: Self::Request) -> BoxFuture<Self::Response, Self::Error> {
+        let req = sexp::as_bytes(&req).expect("as_bytes");
+        debug!("SexpClient#call -> : {:?}", String::from_utf8_lossy(&req));
+        self.0
+            .call(req)
+            .map(|res| {
+                debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
+                sexp::from_bytes(&res).expect("from_bytes")
+            })
+            .boxed()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -330,6 +392,7 @@ mod test {
     use futures::task::{self, Unpark};
     use std::sync::Arc;
     use std::collections::VecDeque;
+    use std::marker::PhantomData;
 
     struct Unparker;
 
@@ -421,69 +484,6 @@ mod test {
         let vals = sched.run(t);
         info!("42+-1 => {:?}", vals);
         assert_eq!(vals, (43, 41));
-    }
-
-    #[derive(Clone)]
-    struct SexpAdaptor<S>(S);
-    impl<S: Service> Service for SexpAdaptor<S>
-        where S::Request: de::Deserialize,
-              S::Response: ser::Serialize,
-              S::Future: Send + 'static
-    {
-        type Request = Vec<u8>;
-        type Response = Vec<u8>;
-        type Error = S::Error;
-        type Future = BoxFuture<Self::Request, S::Error>;
-
-        fn poll_ready(&self) -> Async<()> {
-            self.0.poll_ready()
-        }
-        fn call(&self, req: Self::Request) -> BoxFuture<Self::Response, Self::Error> {
-            debug!("SexpAdaptor#call -> : {:?}", String::from_utf8_lossy(&req));
-            let req = sexp::from_bytes(&req).expect("from_bytes");
-            self.0
-                .call(req)
-                .map(|res| {
-                    let res = sexp::as_bytes(&res).expect("as_bytes");
-                    debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
-                    res
-                })
-                .boxed()
-        }
-    }
-
-
-    #[derive(Clone)]
-    struct SexpClient<I, S, R>(I, PhantomData<(S, R)>);
-    use serde::{ser, de};
-    use spki_sexp as sexp;
-    use std::fmt;
-    use std::marker::PhantomData;
-
-    impl<I: Service<Request = Vec<u8>, Response = Vec<u8>>, S, R> Service for SexpClient<I, S, R>
-        where S: ser::Serialize,
-              R: de::Deserialize,
-              I::Future: Send + 'static
-    {
-        type Request = S;
-        type Response = R;
-        type Error = I::Error;
-        type Future = BoxFuture<Self::Response, I::Error>;
-
-        fn poll_ready(&self) -> Async<()> {
-            self.0.poll_ready()
-        }
-        fn call(&self, req: Self::Request) -> BoxFuture<Self::Response, Self::Error> {
-            let req = sexp::as_bytes(&req).expect("as_bytes");
-            debug!("SexpClient#call -> : {:?}", String::from_utf8_lossy(&req));
-            self.0
-                .call(req)
-                .map(|res| {
-                    debug!("SexpClient#call <- : {:?}", String::from_utf8_lossy(&res));
-                    sexp::from_bytes(&res).expect("from_bytes")
-                })
-                .boxed()
-        }
     }
 
 
