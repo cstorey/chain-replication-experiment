@@ -26,10 +26,9 @@ mod store;
 pub mod hosting;
 pub mod bovine;
 
-pub use replica::server::ServerService;
 pub use replica::LogPos;
-pub use tail::server::TailService;
-pub use tail::client::TailClient;
+pub use tail::{TailService, TailClient, TailRequest, TailResponse};
+pub use replica::{ServerService, ReplicaClient, ReplicaRequest, ReplicaResponse};
 pub use thick_client::{ThickClient, ThickClientTcp};
 pub use errors::*;
 pub use store::{RamStore, Store};

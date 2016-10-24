@@ -1,10 +1,9 @@
 use tokio::reactor::Handle;
 use futures::{Future, Poll, Async};
 use std::net::SocketAddr;
-use replica::client::ReplicaClient;
-use tail::client::TailClient;
-use tail::{TailRequest, TailResponse};
-use replica::{LogPos, ReplicaRequest, ReplicaResponse};
+use {ReplicaClient, TailClient};
+use {TailRequest, TailResponse};
+use {LogPos, ReplicaRequest, ReplicaResponse};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
 use Error;
@@ -44,7 +43,7 @@ impl<H, T> ThickClient<H, T>
     where H: Service<Request = ReplicaRequest, Response = ReplicaResponse>,
           T: Service<Request = TailRequest, Response = TailResponse>
 {
-    fn build(head: H, tail: T) -> Self {
+    pub fn build(head: H, tail: T) -> Self {
         ThickClient {
             head: Arc::new(head),
             tail: Arc::new(tail),

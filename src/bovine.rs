@@ -1,6 +1,7 @@
 use service::{Service, NewService};
 use tokio::io::FramedIo;
 use futures::{self, Poll, Async, Future, BoxFuture};
+use futures::task::{self, Unpark};
 
 use std::io;
 use std::sync::{Mutex, Arc};
@@ -382,6 +383,54 @@ impl<I: Service<Request = Vec<u8>, Response = Vec<u8>>, S, R> Service for SexpCl
     }
 }
 
+struct Unparker;
+
+impl Unpark for Unparker {
+    fn unpark(&self) {
+        debug!("Unpark!");
+    }
+}
+
+
+pub struct Scheduler {
+    tasks: VecDeque<task::Spawn<BoxFuture<(), ()>>>,
+}
+
+impl Scheduler {
+    pub fn new() -> Self {
+        Scheduler { tasks: VecDeque::new() }
+    }
+
+    pub fn spawn<F: Future<Item = (), Error = ()> + 'static + Send>(&mut self, f: F) {
+        self.tasks.push_back(task::spawn(f.boxed()));
+    }
+
+    fn run<R, F: Future<Item = R, Error = ()> + 'static + Send>(&mut self, f: F) -> R {
+        let unparker = Arc::new(Unparker);
+        let mut foreground = task::spawn(f.boxed());
+
+        loop {
+            if let Some(mut t) = self.tasks.pop_front() {
+                match t.poll_future(unparker.clone()) {
+                    Ok(Async::NotReady) => self.tasks.push_back(t),
+                    Ok(Async::Ready(())) => { }
+                    Err(e) => panic!("Task failed: {:?}", e),
+                };
+            }
+
+            match foreground.poll_future(unparker.clone()) {
+                Ok(Async::NotReady) => {}
+                Ok(Async::Ready(val)) => return val,
+                Err(e) => panic!("Task failed: {:?}", e),
+            };
+
+            debug!("Background tasks: {:?}", self.tasks.len());
+        }
+    }
+}
+
+impl SchedHandle for Scheduler {}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -389,55 +438,9 @@ mod test {
     use std::io;
     use env_logger;
     use futures::{Async, Future, BoxFuture, Poll};
-    use futures::task::{self, Unpark};
     use std::sync::Arc;
     use std::collections::VecDeque;
     use std::marker::PhantomData;
-
-    struct Unparker;
-
-    impl Unpark for Unparker {
-        fn unpark(&self) {
-            debug!("Unpark!");
-        }
-    }
-
-    struct Scheduler {
-        tasks: VecDeque<task::Spawn<BoxFuture<(), ()>>>,
-    }
-
-    impl Scheduler {
-        fn new() -> Self {
-            Scheduler { tasks: VecDeque::new() }
-        }
-
-        fn spawn<F: Future<Item = (), Error = ()> + 'static + Send>(&mut self, f: F) {
-            self.tasks.push_back(task::spawn(f.boxed()));
-        }
-
-        fn run<R, F: Future<Item = R, Error = ()> + 'static + Send>(&mut self, f: F) -> R {
-            let unparker = Arc::new(Unparker);
-            let mut foreground = task::spawn(f.boxed());
-
-            loop {
-                if let Some(mut t) = self.tasks.pop_front() {
-                    match t.poll_future(unparker.clone()) {
-                        Ok(Async::NotReady) => self.tasks.push_back(t),
-                        Ok(Async::Ready(())) => { }
-                        Err(e) => panic!("Task failed: {:?}", e),
-                    };
-                }
-
-                match foreground.poll_future(unparker.clone()) {
-                    Ok(Async::NotReady) => {}
-                    Ok(Async::Ready(val)) => return val,
-                    Err(e) => panic!("Task failed: {:?}", e),
-                };
-
-                debug!("Background tasks: {:?}", self.tasks.len());
-            }
-        }
-    }
 
     #[test]
     fn should_go_moo() {

@@ -15,6 +15,8 @@ use vastatrix::LogPos;
 
 use vastatrix::hosting::*;
 use vastatrix::bovine;
+use vastatrix::{TailRequest, TailResponse, ReplicaRequest, ReplicaResponse};
+use vastatrix::{TailClient, ReplicaClient};
 
 #[test]
 fn smoketest_tcp() {
@@ -65,23 +67,25 @@ fn smoketest_tcp() {
 fn smoketest_bovine() {
     env_logger::init().unwrap_or(());
 
-    let mut core = bovine::SphericalBovine::new();
+    let mut net = bovine::SphericalBovine::new();
+
+    let scheduler = bovine::Scheduler::new();
 
     let service = CoreService::new();
-
-    let server = core.build_server(service, &core.handle(), 0, 1).expect("start server");
+    let server = net.build_server(service, &scheduler, bovine::BovineAddr(0), bovine::BovineAddr(1)).expect("start server");
     println!("running: {:?}", server);
 
     info!("Head at: {:?}, tail at: {:?}", server.head, server.tail);
-    let client = vastatrix::ThickClient::new(core.handle(),
-                                             &server.head,
-                                             &server.tail);
+
+    let head_client = ReplicaClient::build(&scheduler, &server.head);
+    let tail_client = TailClient::build(&scheduler, &server.tail);
+    let client = vastatrix::ThickClient::build(head_client, tail_client);
 
     let f = client.log_item(b"hello".to_vec())
                   .and_then(|pos0| {
                       client.log_item(b"world".to_vec()).map(move |pos1| (pos0, pos1))
                   });
-    let (wpos0, wpos1) = core.run(f).expect("run write");
+    let (wpos0, wpos1) = scheduler.run(f).expect("run write");
 
     info!("Wrote to offset:{:?}", (wpos0, wpos1));
 
@@ -90,7 +94,7 @@ fn smoketest_bovine() {
                            client.fetch_next(pos0).map(move |second| vec![(pos0, val0), second])
                        });
 
-    let read = core.run(item_f).expect("run read");
+    let read = scheduler.run(item_f).expect("run read");
     info!("Got: {:?}", read);
 
     assert_eq!(read,
