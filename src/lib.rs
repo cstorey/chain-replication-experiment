@@ -31,4 +31,4 @@ pub use tail::{TailService, TailClient, TailRequest, TailResponse};
 pub use replica::{ServerService, ReplicaClient, ReplicaRequest, ReplicaResponse};
 pub use thick_client::{ThickClient, ThickClientTcp};
 pub use errors::*;
-pub use store::{RamStore, Store};
+pub use store::{RamStore, Store, StoreKey};
