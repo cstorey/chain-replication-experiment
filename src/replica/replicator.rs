@@ -89,7 +89,6 @@ impl<S: Store, D> Future for Replicator<S, D>
                         Async::Ready((off, val)) => {
                             debug!("Fetched: {:?}", (&off, &val));
                             if let &LogEntry::Config(ref conf) = &val {
-                                // let conf: HostConfig<SocketAddr> = try!(sexp::from_bytes(&val));
                                 debug!("logged Config message: {:?}", conf);
                                 // FIXME: Well, this is blatantly wrong.
                                 self.downstream_addr = Some(conf.head);
@@ -112,7 +111,20 @@ impl<S: Store, D> Future for Replicator<S, D>
                         }
                     }
                 }
-                ReplicatorState::Forwarding(_) => unimplemented!(),
+                ReplicatorState::Forwarding(mut f) => {
+                    match try!(f.poll()) {
+                        Async::NotReady => {
+                            self.state = ReplicatorState::Forwarding(f);
+                            return Ok(Async::NotReady);
+                        }
+                        Async::Ready(ReplicaResponse::Done(pos)) => {
+                            debug!("woo! {:?}", pos);
+                        }
+                        Async::Ready(ReplicaResponse::BadSequence(pos)) => {
+                            panic!("ARGH! {:?}", pos);
+                        }
+                    }
+                }
             }
         }
     }
@@ -139,8 +151,31 @@ mod test {
     use tokio_timer;
     use env_logger;
 
+    struct MyMagicalDownstream {
+        send: channel::Sender<((SocketAddr, ReplicaRequest), futures::Complete<ReplicaResponse>)>,
+    }
+
+    impl Service for MyMagicalDownstream {
+        type Request = (SocketAddr, ReplicaRequest);
+        type Response = ReplicaResponse;
+        type Error = io::Error;
+        type Future = BoxFuture<ReplicaResponse, io::Error>;
+        fn poll_ready(&self) -> Async<()> {
+            Async::Ready(())
+        }
+        fn call(&self, req: Self::Request) -> Self::Future {
+            let (c, p) = futures::oneshot();
+            match self.send.send((req, c)) {
+                Ok(()) => (),
+                Err(e) => return futures::failed(e).boxed(),
+            };
+            p.map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+                .boxed()
+        }
+    }
+
     #[test]
-    #[ignore] // WIP
+    // #[ignore] // WIP
     fn should_start_replicating_to_downstream_on_committed_config_message() {
         env_logger::init().unwrap_or(());
         let store = RamStore::new();
@@ -149,29 +184,7 @@ mod test {
         let mut core = Core::new().expect("core::new");
         let (tx, rx) = channel::channel(&core.handle()).expect("channel");
 
-        struct MyMagicalDownstream {
-            send: channel::Sender<((SocketAddr, ReplicaRequest),
-                                   futures::Complete<ReplicaResponse>)>,
-        }
 
-        impl Service for MyMagicalDownstream {
-            type Request = (SocketAddr, ReplicaRequest);
-            type Response = ReplicaResponse;
-            type Error = io::Error;
-            type Future = BoxFuture<ReplicaResponse, io::Error>;
-            fn poll_ready(&self) -> Async<()> {
-                Async::Ready(())
-            }
-            fn call(&self, req: Self::Request) -> Self::Future {
-                let (c, p) = futures::oneshot();
-                match self.send.send((req, c)) {
-                    Ok(()) => (),
-                    Err(e) => return futures::failed(e).boxed(),
-                };
-                p.map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
-                    .boxed()
-            }
-        }
         let downstream = MyMagicalDownstream { send: tx };
 
         let replica = Replicator::new(store.clone(), downstream);
@@ -189,7 +202,7 @@ mod test {
         };
 
         debug!("append config message");
-        core.run(store.append_entry(off, off.next(), LogEntry::Config(config)))
+        core.run(store.append_entry(off, off.next(), LogEntry::Config(config.clone())))
             .expect("append");
 
 
@@ -198,9 +211,13 @@ mod test {
         debug!("wait for stub message");
         let (data, rx) = core.run(f).expect("receive downstream");
         let ((addr, msg), completer) = data.expect("Some message");
-        println!("Some: {:?}", (addr, msg));
+        println!("Some: {:?}", (&addr, &msg));
         // Expect that the target at `head_addr` receives a set of replication messages.
-
-        assert!(false)
+        let (assumed, off, entry) = match msg {
+            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
+                (assumed_offset, entry_offset, datum)
+            }
+        };
+        assert_eq!((addr, entry), (head_addr, LogEntry::Config(config)));
     }
 }
