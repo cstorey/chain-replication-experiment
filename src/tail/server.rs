@@ -36,7 +36,7 @@ impl<S: Store + Send> Service for TailService<S>
             TailRequest::FetchNextAfter(pos) => {
                 self.store
                     .fetch_next(pos)
-                    .map(|(pos, _key, val)| match val {
+                    .map(|(pos, val)| match val {
                         LogEntry::Data(val) => TailResponse::NextItem(pos, val),
                         LogEntry::Config(_) => unimplemented!(),
                     })
@@ -57,7 +57,7 @@ mod test {
     use futures::{Async, task};
     use service::Service;
     use replica::{LogPos, LogEntry};
-    use store::{Store, RamStore, StoreKey};
+    use store::{Store, RamStore};
     use tail::messages::*;
     use super::*;
     use std::sync::Arc;
@@ -91,7 +91,7 @@ mod test {
         let mut resp = task::spawn(tail.call(TailRequest::FetchNextAfter(LogPos::zero())));
         let next = LogPos::zero().next();
         let entry = LogEntry::Data(b"foo".to_vec());
-        task::spawn(store.append_entry(LogPos::zero(), next, StoreKey::Data, entry))
+        task::spawn(store.append_entry(LogPos::zero(), next, entry))
             .wait_future()
             .expect("append_entry 1");
 

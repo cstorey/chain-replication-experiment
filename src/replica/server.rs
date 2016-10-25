@@ -1,7 +1,7 @@
 use service::Service;
 use futures::{Async, Poll, Future};
 use super::{ReplicaRequest, ReplicaResponse, LogEntry, LogPos};
-use store::{Store, StoreKey};
+use store::Store;
 use spki_sexp as sexp;
 
 use errors::{Error, ErrorKind};
@@ -37,12 +37,8 @@ impl<S: Store> Service for ServerService<S> {
         debug!("ReplicaResponse#service: {:?}", req);
         match req {
             ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
-                let key = match &datum {
-                    &LogEntry::Data(_) => StoreKey::Data,
-                    &LogEntry::Config(_) => StoreKey::Meta,
-                };
                 let append_fut = self.store
-                    .append_entry(assumed_offset, entry_offset, key, datum);
+                    .append_entry(assumed_offset, entry_offset, datum);
                 ReplicaFut::Append(append_fut, entry_offset)
             }
         }

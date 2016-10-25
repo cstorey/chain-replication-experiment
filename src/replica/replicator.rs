@@ -1,6 +1,6 @@
 use futures::{Poll, Future, Async, BoxFuture};
 use tokio_service::Service;
-use store::{Store, StoreKey};
+use store::Store;
 use {LogPos, Error};
 use std::net::SocketAddr;
 use std::io;
@@ -86,8 +86,8 @@ impl<S: Store, D> Future for Replicator<S, D>
                             self.state = ReplicatorState::Fetching(fetch_f);
                             return Ok(Async::NotReady);
                         }
-                        Async::Ready((off, key, val)) => {
-                            debug!("Fetched: {:?}", (&off, &key, &val));
+                        Async::Ready((off, val)) => {
+                            debug!("Fetched: {:?}", (&off, &val));
                             if let &LogEntry::Config(ref conf) = &val {
                                 // let conf: HostConfig<SocketAddr> = try!(sexp::from_bytes(&val));
                                 debug!("logged Config message: {:?}", conf);
@@ -127,7 +127,7 @@ mod test {
     use service::Service;
     use tokio::channel;
     use replica::LogPos;
-    use store::{RamStore, Store, StoreKey};
+    use store::{RamStore, Store};
     use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig};
     use std::net::SocketAddr;
     use super::*;
@@ -189,7 +189,7 @@ mod test {
         };
 
         debug!("append config message");
-        core.run(store.append_entry(off, off.next(), StoreKey::Meta, LogEntry::Config(config)))
+        core.run(store.append_entry(off, off.next(), LogEntry::Config(config)))
             .expect("append");
 
 
