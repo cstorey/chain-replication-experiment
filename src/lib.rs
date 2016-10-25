@@ -3,6 +3,7 @@ extern crate futures;
 extern crate tokio_core as tokio;
 extern crate tokio_service as service;
 extern crate tokio_proto as proto;
+extern crate tokio_timer;
 extern crate serde;
 extern crate tokio_service;
 extern crate spki_sexp;
