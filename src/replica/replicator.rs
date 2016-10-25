@@ -88,9 +88,9 @@ impl<S: Store, D> Future for Replicator<S, D>
                         }
                         Async::Ready((off, key, val)) => {
                             debug!("Fetched: {:?}", (&off, &key, &val));
-                            if key == StoreKey::Meta {
-                                let conf: HostConfig<SocketAddr> = try!(sexp::from_bytes(&val));
-                                debug!("Config message: {:?}", conf);
+                            if let &LogEntry::Config(ref conf) = &val {
+                                // let conf: HostConfig<SocketAddr> = try!(sexp::from_bytes(&val));
+                                debug!("logged Config message: {:?}", conf);
                                 // FIXME: Well, this is blatantly wrong.
                                 self.downstream_addr = Some(conf.head);
                             };
@@ -101,7 +101,7 @@ impl<S: Store, D> Future for Replicator<S, D>
                                 let req = ReplicaRequest::AppendLogEntry {
                                     assumed_offset: self.last_seen_seq,
                                     entry_offset: off,
-                                    datum: LogEntry::Data(val),
+                                    datum: val,
                                 };
                                 let f = self.downstream.call((addr, req));
                                 self.state = ReplicatorState::Forwarding(f);
@@ -189,10 +189,7 @@ mod test {
         };
 
         debug!("append config message");
-        core.run(store.append_entry(off,
-                                    off.next(),
-                                    StoreKey::Meta,
-                                    sexp::as_bytes(&config).expect("to_sexp")))
+        core.run(store.append_entry(off, off.next(), StoreKey::Meta, LogEntry::Config(config)))
             .expect("append");
 
 

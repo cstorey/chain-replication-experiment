@@ -2,6 +2,7 @@ use service::Service;
 use futures::{BoxFuture, Async, Future};
 use super::{TailRequest, TailResponse};
 use store::Store;
+use replica::LogEntry;
 
 use Error;
 
@@ -35,7 +36,10 @@ impl<S: Store + Send> Service for TailService<S>
             TailRequest::FetchNextAfter(pos) => {
                 self.store
                     .fetch_next(pos)
-                    .map(|(pos, _key, val)| TailResponse::NextItem(pos, val))
+                    .map(|(pos, _key, val)| match val {
+                        LogEntry::Data(val) => TailResponse::NextItem(pos, val),
+                        LogEntry::Config(_) => unimplemented!(),
+                    })
                     .map_err(|e| e.into())
                     .then(|r| {
                         debug!("Response: {:?}", r);
@@ -52,7 +56,7 @@ impl<S: Store + Send> Service for TailService<S>
 mod test {
     use futures::{Async, task};
     use service::Service;
-    use replica::LogPos;
+    use replica::{LogPos, LogEntry};
     use store::{Store, RamStore, StoreKey};
     use tail::messages::*;
     use super::*;
@@ -86,7 +90,8 @@ mod test {
 
         let mut resp = task::spawn(tail.call(TailRequest::FetchNextAfter(LogPos::zero())));
         let next = LogPos::zero().next();
-        task::spawn(store.append_entry(LogPos::zero(), next, StoreKey::Data, b"foo".to_vec()))
+        let entry = LogEntry::Data(b"foo".to_vec());
+        task::spawn(store.append_entry(LogPos::zero(), next, StoreKey::Data, entry))
             .wait_future()
             .expect("append_entry 1");
 

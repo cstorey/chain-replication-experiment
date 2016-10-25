@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use stable_bst::map::TreeMap;
 use std::collections::VecDeque;
 use std::fmt;
+use replica::LogEntry;
+use spki_sexp as sexp;
 
 #[derive(Debug,Clone,Eq,PartialEq,Ord,PartialOrd,Hash)]
 pub enum StoreKey {
@@ -12,18 +14,18 @@ pub enum StoreKey {
 }
 pub trait Store {
     type AppendFut: Future<Item = (), Error = Error>;
-    type FetchFut: Future<Item = (LogPos, StoreKey, Vec<u8>), Error = Error>;
+    type FetchFut: Future<Item = (LogPos, StoreKey, LogEntry), Error = Error>;
     fn append_entry(&self,
                     current: LogPos,
                     next: LogPos,
                     key: StoreKey,
-                    value: Vec<u8>)
+                    value: LogEntry)
                     -> Self::AppendFut;
     fn fetch_next(&self, current: LogPos) -> Self::FetchFut;
 }
 
 struct RamInner {
-    log: TreeMap<LogPos, (StoreKey, Vec<u8>)>,
+    log: TreeMap<LogPos, (StoreKey, LogEntry)>,
     waiters: VecDeque<task::Task>,
 }
 
@@ -61,7 +63,7 @@ impl Store for RamStore {
                     current: LogPos,
                     next: LogPos,
                     key: StoreKey,
-                    val: Vec<u8>)
+                    val: LogEntry)
                     -> Self::AppendFut {
         let inner = self.inner.clone();
         futures::lazy(move || {
@@ -100,14 +102,14 @@ impl Store for RamStore {
 }
 
 impl Future for FetchFut {
-    type Item = (LogPos, StoreKey, Vec<u8>);
+    type Item = (LogPos, StoreKey, LogEntry);
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let mut inner = self.0.lock().expect("lock");
         let next = self.1;
         trace!("Polling: {:?} for {:?}", next, *inner);
         if let Some(&(ref key, ref val)) = inner.log.get(&next) {
-            trace!("Found: {:?}:{:?}b", key, val.len());
+            trace!("Found: {:?}:{:?}", key, val);
             return Ok(Async::Ready((next, key.clone(), val.clone())));
         }
 

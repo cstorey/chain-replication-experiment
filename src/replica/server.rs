@@ -37,14 +37,12 @@ impl<S: Store> Service for ServerService<S> {
         debug!("ReplicaResponse#service: {:?}", req);
         match req {
             ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
-                let (key, val) = match datum {
-                    LogEntry::Data(data) => (StoreKey::Data, data),
-                    LogEntry::Config(config) => {
-                        (StoreKey::Meta, sexp::as_bytes(&config).expect("encode config"))
-                    }
+                let key = match &datum {
+                    &LogEntry::Data(_) => StoreKey::Data,
+                    &LogEntry::Config(_) => StoreKey::Meta,
                 };
                 let append_fut = self.store
-                    .append_entry(assumed_offset, entry_offset, key, val);
+                    .append_entry(assumed_offset, entry_offset, key, datum);
                 ReplicaFut::Append(append_fut, entry_offset)
             }
         }
