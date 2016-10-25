@@ -3,9 +3,10 @@ use futures::{Future, Poll, Async};
 use std::net::SocketAddr;
 use {ReplicaClient, TailClient};
 use {TailRequest, TailResponse};
-use {LogPos, ReplicaRequest, ReplicaResponse};
+use {LogPos, ReplicaRequest, ReplicaResponse, LogEntry};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
+use replica::HostConfig;
 use Error;
 
 #[derive(Debug)]
@@ -56,7 +57,7 @@ impl<H, T> ThickClient<H, T>
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,
             entry_offset: current.next(),
-            datum: body.clone(),
+            datum: LogEntry::Data(body.clone()),
         };
         debug!("Sending assuming: {:?}", current);
         let fut = self.head.call(req.clone());
@@ -66,6 +67,25 @@ impl<H, T> ThickClient<H, T>
             req: req,
         }
     }
+
+
+    pub fn add_peer(&self, peer: HostConfig<SocketAddr>) -> LogItemFut<H> {
+        let current = *self.last_known_head.lock().expect("lock current");
+        let req = ReplicaRequest::AppendLogEntry {
+            assumed_offset: current,
+            entry_offset: current.next(),
+            datum: LogEntry::Config(peer),
+        };
+        debug!("Sending assuming: {:?}", current);
+        let fut = self.head.call(req.clone());
+        LogItemFut {
+            head: self.head.clone(),
+            future: fut,
+            req: req,
+        }
+    }
+
+
 
     pub fn fetch_next(&self, after: LogPos) -> FetchNextFut<T::Future> {
         let req = TailRequest::FetchNextAfter(after);
@@ -121,7 +141,7 @@ mod test {
     use futures::{self, Future, BoxFuture};
     use service::simple_service;
     use tail::{TailRequest, TailResponse};
-    use replica::{LogPos, ReplicaRequest, ReplicaResponse};
+    use replica::{LogPos, LogEntry, ReplicaRequest, ReplicaResponse};
     use std::sync::{Arc, Mutex};
     use super::*;
     use Error;
@@ -151,12 +171,12 @@ mod test {
                 Some((datum.clone()))
             })
             .collect::<Vec<_>>();
-        assert_eq!(&appends.iter().collect::<Vec<_>>(), &[b"Hello"]);
+        assert_eq!(&*appends.iter().collect::<Vec<_>>(),
+                   &[&LogEntry::Data(b"Hello".to_vec())]);
     }
 
 
     #[test]
-    // #[ignore]
     fn resends_with_new_sequence_no_on_cas_failure() {
         env_logger::init().unwrap_or(());
         let head_reqs = Arc::new(Mutex::new(VecDeque::new()));
@@ -190,7 +210,8 @@ mod test {
         let r0 = appends.pop_front().unwrap();
         let r1 = appends.pop_front().unwrap();
 
-        assert_eq!((r1.0, r1.2.as_ref()), (LogPos::new(42), b"Hello".as_ref()));
+        assert_eq!((r1.0, &r1.2),
+                   (LogPos::new(42), &LogEntry::Data(b"Hello".to_vec())));
         assert_eq!(r0.2, r1.2);
         assert!(r1.0 < r1.1);
 

@@ -12,7 +12,8 @@ use std::marker::PhantomData;
 
 use std::collections::{BTreeMap, VecDeque};
 
-use hosting::{HostConfig, Host, CoreService, SchedHandle};
+use hosting::{Host, CoreService, SchedHandle};
+use replica::HostConfig;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BovineAddr(pub usize);

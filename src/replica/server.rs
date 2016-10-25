@@ -1,7 +1,8 @@
 use service::Service;
 use futures::{Async, Poll, Future};
-use super::{ReplicaRequest, ReplicaResponse, LogPos};
+use super::{ReplicaRequest, ReplicaResponse, LogEntry, LogPos};
 use store::{Store, StoreKey};
+use spki_sexp as sexp;
 
 use errors::{Error, ErrorKind};
 
@@ -36,8 +37,14 @@ impl<S: Store> Service for ServerService<S> {
         debug!("ReplicaResponse#service: {:?}", req);
         match req {
             ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
+                let (key, val) = match datum {
+                    LogEntry::Data(data) => (StoreKey::Data, data),
+                    LogEntry::Config(config) => {
+                        (StoreKey::Meta, sexp::as_bytes(&config).expect("encode config"))
+                    }
+                };
                 let append_fut = self.store
-                    .append_entry(assumed_offset, entry_offset, StoreKey::Data, datum);
+                    .append_entry(assumed_offset, entry_offset, key, val);
                 ReplicaFut::Append(append_fut, entry_offset)
             }
         }
@@ -77,7 +84,7 @@ mod test {
     use service::Service;
     use replica::LogPos;
     use store::RamStore;
-    use replica::{ReplicaRequest, ReplicaResponse};
+    use replica::{ReplicaRequest, ReplicaResponse, LogEntry};
     use super::*;
 
     #[test]
@@ -89,7 +96,7 @@ mod test {
         let resp = replica.call(ReplicaRequest::AppendLogEntry {
             assumed_offset: zero,
             entry_offset: zero.next(),
-            datum: b"foobar".to_vec(),
+            datum: LogEntry::Data(b"foobar".to_vec()),
         });
 
         assert_eq!(resp.wait().expect("append"),
@@ -105,7 +112,7 @@ mod test {
         let resp = replica.call(ReplicaRequest::AppendLogEntry {
             assumed_offset: zero.next(),
             entry_offset: zero,
-            datum: b"foobar".to_vec(),
+            datum: LogEntry::Data(b"foobar".to_vec()),
         });
 
         assert_eq!(resp.wait().expect("append"),

@@ -1,5 +1,6 @@
 use tokio::reactor::Handle;
 use {RamStore, sexp_proto, TailService, ServerService};
+use replica::HostConfig;
 
 use std::net::SocketAddr;
 use std::io;
@@ -15,12 +16,6 @@ pub trait Host<H: SchedHandle>: Sized {
                     head_addr: Self::Addr,
                     tail_addr: Self::Addr)
                     -> Result<HostConfig<Self::Addr>, io::Error>;
-}
-
-#[derive(Debug, Clone)]
-pub struct HostConfig<A> {
-    pub head: A,
-    pub tail: A,
 }
 
 #[derive(Debug)]
