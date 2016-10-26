@@ -172,7 +172,6 @@ mod test {
     }
 
     #[test]
-    // #[ignore] // WIP
     fn should_start_replicating_to_downstream_on_committed_config_message() {
         env_logger::init().unwrap_or(());
         let store = RamStore::new();
@@ -209,7 +208,6 @@ mod test {
         let (data, _rx) = core.run(f).expect("receive downstream");
         let ((addr, msg), _completer) = data.expect("Some message");
         println!("Some: {:?}", (&addr, &msg));
-        // Expect that the target at `head_addr` receives a set of replication messages.
         let (_assumed, _off, entry) = match msg {
             ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
                 (assumed_offset, entry_offset, datum)
@@ -217,4 +215,81 @@ mod test {
         };
         assert_eq!((addr, entry), (head_addr, LogEntry::Config(config)));
     }
+
+    #[test]
+    fn should_send_next_log_entry_on_okay_from_downstream() {
+        env_logger::init().unwrap_or(());
+        let store = RamStore::new();
+        let timer = tokio_timer::wheel().tick_duration(Duration::from_millis(1)).build();
+
+        let mut core = Core::new().expect("core::new");
+        let (tx, rx) = channel::channel(&core.handle()).expect("channel");
+
+
+        let downstream = MyMagicalDownstream { send: tx };
+
+        let replica = Replicator::new(store.clone(), downstream);
+
+        core.handle().spawn(replica.map_err(|e| panic!("Replicator failed!: {:?}", e)));
+        debug!("Spawned replica task");
+
+        let head_addr = "1.2.3.4:5".parse().expect("parse");
+
+        let config: HostConfig<::std::net::SocketAddr> = HostConfig {
+            head: head_addr,
+            tail: "1.2.3.6:7".parse().expect("parse"),
+        };
+
+        {
+            let off = LogPos::zero();
+            let next = off.next();
+            debug!("append config message {:?} -> {:?}", off, next);
+            core.run(store.append_entry(off, next, LogEntry::Config(config.clone())))
+                .expect("append");
+
+            let off = next;
+            let next = off.next();
+            debug!("append data message {:?} -> {:?}", off, next);
+            core.run(store.append_entry(off, next, LogEntry::Data(b"Hello world!".to_vec())))
+                .expect("append");
+        }
+
+        let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
+                              Duration::from_millis(1000));
+        debug!("wait for stub message");
+        let (data, rx) = core.run(f).expect("receive downstream");
+        let ((addr, msg), completer) = data.expect("Some message");
+        println!("Some: {:?}", (&addr, &msg));
+        // Expect that the target at `head_addr` receives a set of replication messages.
+        let (_assumed0, off0, _entry0) = match msg {
+            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
+                (assumed_offset, entry_offset, datum)
+            }
+        };
+
+        completer.complete(ReplicaResponse::Done(off0));
+
+
+        let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
+                              Duration::from_millis(1000));
+        debug!("wait for stub message");
+        let (data, _rx) = core.run(f).expect("receive downstream");
+        let ((addr, msg), _completer) = data.expect("Some message");
+        println!("Some: {:?}", (&addr, &msg));
+        // Expect that the target at `head_addr` receives a set of replication messages.
+        let (assumed1, off1, entry1) = match msg {
+            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
+                (assumed_offset, entry_offset, datum)
+            }
+        };
+
+        assert_eq!((addr, assumed1, entry1),
+                   (head_addr, off0, LogEntry::Data(b"Hello world!".to_vec())));
+        assert!(off1 > assumed1);
+    }
+
+    #[test]
+    #[ignore]
+    fn should_restart_replication_on_badsequence_from_downstream() {}
+
 }
