@@ -3,6 +3,7 @@ use sexp_proto;
 use LogPos;
 use std::io;
 use spki_sexp;
+use tokio_timer;
 
 error_chain!{
     links {
@@ -11,6 +12,7 @@ error_chain!{
 
     foreign_links {
         io::Error, Io;
+        tokio_timer::TimeoutError, Timeout;
     }
 
     errors {

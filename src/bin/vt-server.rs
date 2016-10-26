@@ -30,10 +30,7 @@ fn main() {
     let head_addr = value_t!(matches, "head", SocketAddr).unwrap_or_else(|e| e.exit());
     let tail_addr = value_t!(matches, "tail", SocketAddr).unwrap_or_else(|e| e.exit());
 
-    let service = CoreService::new();
-
-    let server = service.build_server(&core.handle(), head_addr, tail_addr)
-        .expect("start server");
+    let server = build_server(&core.handle(), head_addr, tail_addr).expect("start server");
     println!("running: {:?}", server);
     core.run(futures::empty::<(), ()>()).expect("run read");
 }

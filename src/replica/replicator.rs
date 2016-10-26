@@ -1,14 +1,13 @@
-use futures::{Poll, Future, Async, BoxFuture};
+use futures::{Poll, Future, Async};
 use tokio_service::Service;
 use store::Store;
 use {LogPos, Error};
 use std::net::SocketAddr;
-use std::io;
 use std::mem;
 use replica::{ReplicaRequest, ReplicaResponse, LogEntry};
 
 pub trait DownstreamService {
-    type Future: Future<Item = ReplicaResponse, Error = io::Error>;
+    type Future: Future<Item = ReplicaResponse, Error = Error>;
     fn call(&self, req: ReplicaRequest) -> Self::Future;
 }
 
@@ -17,16 +16,27 @@ pub trait NewDownstreamService {
     fn new_downstream(&self, addr: SocketAddr) -> Self::Item;
 }
 
-impl<D> DownstreamService for D
+impl<D, F> DownstreamService for D
     where D: Service<Request = ReplicaRequest,
                      Response = ReplicaResponse,
-                     Error = io::Error,
-                     Future = BoxFuture<ReplicaResponse, io::Error>>
+                     Error = Error,
+                     Future = F>,
+          F: Future<Item = ReplicaResponse, Error = Error> + Send
 {
     type Future = D::Future;
 
     fn call(&self, req: ReplicaRequest) -> Self::Future {
         Service::call(self, req)
+    }
+}
+
+impl<F, D> NewDownstreamService for F
+    where F: Fn(SocketAddr) -> D,
+          D: DownstreamService
+{
+    type Item = D;
+    fn new_downstream(&self, addr: SocketAddr) -> D {
+        self(addr)
     }
 }
 
@@ -147,6 +157,7 @@ mod test {
     use replica::LogPos;
     use store::{RamStore, Store};
     use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig};
+    use errors::Error;
     use std::net::SocketAddr;
     use super::*;
     use tokio::reactor::Core;
@@ -168,8 +179,8 @@ mod test {
     impl Service for MyMagicalDownstream {
         type Request = ReplicaRequest;
         type Response = ReplicaResponse;
-        type Error = io::Error;
-        type Future = BoxFuture<ReplicaResponse, io::Error>;
+        type Error = Error;
+        type Future = BoxFuture<ReplicaResponse, Error>;
         fn poll_ready(&self) -> Async<()> {
             Async::Ready(())
         }
@@ -177,9 +188,9 @@ mod test {
             let (c, p) = futures::oneshot();
             match self.send.send(((self.addr.clone(), req), c)) {
                 Ok(()) => (),
-                Err(e) => return futures::failed(e).boxed(),
+                Err(e) => return futures::failed(e.into()).boxed(),
             };
-            p.map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            p.map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe").into())
                 .boxed()
         }
     }
