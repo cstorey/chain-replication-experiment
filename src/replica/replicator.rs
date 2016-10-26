@@ -149,8 +149,9 @@ mod test {
     use tokio_timer;
     use env_logger;
 
+    type MessageType = ((SocketAddr, ReplicaRequest), futures::Complete<ReplicaResponse>);
     struct MyMagicalDownstream {
-        send: channel::Sender<((SocketAddr, ReplicaRequest), futures::Complete<ReplicaResponse>)>,
+        send: channel::Sender<MessageType>,
     }
 
     impl Service for MyMagicalDownstream {
@@ -198,18 +199,10 @@ mod test {
         let off = LogPos::zero();
         let _ = append_entry(&store, &mut core, off, LogEntry::Config(config.clone()));
 
-        let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
-                              Duration::from_millis(1000));
-        debug!("wait for stub message");
-        let (data, _rx) = core.run(f).expect("receive downstream");
-        let ((addr, msg), _completer) = data.expect("Some message");
-        println!("Some: {:?}", (&addr, &msg));
-        let (_assumed, _off, entry) = match msg {
-            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
-                (assumed_offset, entry_offset, datum)
-            }
-        };
-        assert_eq!((addr, entry), (head_addr, LogEntry::Config(config)));
+        let (_rx, _response, _assumed0, _off0, entry0) =
+            take_next_entry(rx, &head_addr, &mut core, &timer);
+
+        assert_eq!(entry0, LogEntry::Config(config));
     }
 
     #[test]
@@ -245,37 +238,16 @@ mod test {
                                  off0,
                                  LogEntry::Data(b"Hello world!".to_vec()));
 
-        let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
-                              Duration::from_millis(1000));
-        debug!("wait for stub message");
-        let (data, rx) = core.run(f).expect("receive downstream");
-        let ((addr, msg), completer) = data.expect("Some message");
-        println!("Some: {:?}", (&addr, &msg));
-        // Expect that the target at `head_addr` receives a set of replication messages.
-        let (_assumed0, off0, _entry0) = match msg {
-            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
-                (assumed_offset, entry_offset, datum)
-            }
-        };
+        let (rx, response, _assumed0, off0, _entry0) =
+            take_next_entry(rx, &head_addr, &mut core, &timer);
 
-        completer.complete(ReplicaResponse::Done(off0));
+        response.complete(ReplicaResponse::Done(off0));
 
+        let (_rx, _response, assumed1, off1, entry1) =
+            take_next_entry(rx, &head_addr, &mut core, &timer);
 
-        let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
-                              Duration::from_millis(1000));
-        debug!("wait for stub message");
-        let (data, _rx) = core.run(f).expect("receive downstream");
-        let ((addr, msg), _completer) = data.expect("Some message");
-        println!("Some: {:?}", (&addr, &msg));
-        // Expect that the target at `head_addr` receives a set of replication messages.
-        let (assumed1, off1, entry1) = match msg {
-            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
-                (assumed_offset, entry_offset, datum)
-            }
-        };
-
-        assert_eq!((addr, assumed1, entry1),
-                   (head_addr, off0, LogEntry::Data(b"Hello world!".to_vec())));
+        assert_eq!((assumed1, entry1),
+                   (off0, LogEntry::Data(b"Hello world!".to_vec())));
         assert!(off1 > assumed1);
     }
 
@@ -314,39 +286,18 @@ mod test {
                                     log_off1,
                                     LogEntry::Data(b"world!".to_vec()));
 
-        let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
-                              Duration::from_millis(1000));
-        debug!("wait for stub message");
-        let (data, rx) = core.run(f).expect("receive downstream");
-        let ((addr, msg), completer) = data.expect("Some message");
-        println!("Some: {:?}", (&addr, &msg));
-        // Expect that the target at `head_addr` receives a set of replication messages.
-        let (_assumed0, _off0, _entry0) = match msg {
-            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
-                (assumed_offset, entry_offset, datum)
-            }
-        };
+        let (rx, response, _assumed0, _off0, _entry0) =
+            take_next_entry(rx, &head_addr, &mut core, &timer);
 
         // So we expect the delivery of "world!"
         let resp = ReplicaResponse::BadSequence(log_off1);
         println!("Respond with: {:?}", resp);
-        completer.complete(resp);
+        response.complete(resp);
+        let (_rx, _response, assumed1, off1, entry1) =
+            take_next_entry(rx, &head_addr, &mut core, &timer);
 
-        let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
-                              Duration::from_millis(1000));
-        debug!("wait for stub message");
-        let (data, _rx) = core.run(f).expect("receive downstream");
-        let ((addr, msg), _completer) = data.expect("Some message");
-        println!("Some: {:?}", (&addr, &msg));
-        // Expect that the target at `head_addr` receives a set of replication messages.
-        let (assumed1, off1, entry1) = match msg {
-            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
-                (assumed_offset, entry_offset, datum)
-            }
-        };
-
-        assert_eq!((addr, assumed1, off1, entry1),
-                   (head_addr, log_off1, log_off2, LogEntry::Data(b"world!".to_vec())));
+        assert_eq!((assumed1, off1, entry1),
+                   (log_off1, log_off2, LogEntry::Data(b"world!".to_vec())));
     }
 
 
@@ -356,5 +307,29 @@ mod test {
         core.run(store.append_entry(off, next, entry))
             .expect("append");
         next
+    }
+
+    fn take_next_entry(rx: channel::Receiver<MessageType>,
+                       target: &SocketAddr,
+                       core: &mut Core,
+                       timer: &tokio_timer::Timer)
+                       -> (channel::Receiver<MessageType>,
+                           futures::Complete<ReplicaResponse>,
+                           LogPos,
+                           LogPos,
+                           LogEntry) {
+        let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
+                              Duration::from_millis(1000));
+        debug!("wait for stub message");
+        let (data, rx) = core.run(f).expect("receive downstream");
+        let ((addr, msg), response) = data.expect("Some message");
+        assert_eq!(&addr, target);
+        println!("Some: {:?}", (&addr, &msg));
+        // Expect that the target at `head_addr` receives a set of replication messages.
+        match msg {
+            ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
+                (rx, response, assumed_offset, entry_offset, datum)
+            }
+        }
     }
 }
