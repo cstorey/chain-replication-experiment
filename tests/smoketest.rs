@@ -22,6 +22,8 @@ fn smoketest_single_node() {
     env_logger::init().unwrap_or(());
 
     let mut core = Core::new().unwrap();
+    let timer = tokio_timer::wheel().tick_duration(Duration::from_millis(1)).build();
+    let timeout = Duration::from_millis(1000);
 
     let local_anon_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
@@ -43,7 +45,7 @@ fn smoketest_single_node() {
                   .and_then(|pos0| {
                       client.log_item(b"world".to_vec()).map(move |pos1| (pos0, pos1))
                   });
-    let (wpos0, wpos1) = core.run(f).expect("run write");
+    let (wpos0, wpos1) = core.run(timer.timeout(f, timeout)).expect("run write");
 
     info!("Wrote to offset:{:?}", (wpos0, wpos1));
 
@@ -52,7 +54,7 @@ fn smoketest_single_node() {
                            client.fetch_next(pos0).map(move |second| vec![(pos0, val0), second])
                        });
 
-    let read = core.run(item_f).expect("run read");
+    let read = core.run(timer.timeout(item_f, timeout)).expect("run read");
     info!("Got: {:?}", read);
 
     assert_eq!(read,
@@ -60,12 +62,10 @@ fn smoketest_single_node() {
 }
 
 #[test]
-#[ignore]
 fn smoketest_two_member_chain() {
     env_logger::init().unwrap_or(());
     let timer = tokio_timer::wheel().tick_duration(Duration::from_millis(1)).build();
     let timeout = Duration::from_millis(1000);
-
     let mut core = Core::new().unwrap();
 
     let local_anon_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
