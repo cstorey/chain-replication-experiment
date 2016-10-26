@@ -89,7 +89,7 @@ mod test {
         let resp = replica.call(ReplicaRequest::AppendLogEntry {
             assumed_offset: zero,
             entry_offset: zero.next(),
-            datum: LogEntry::Data(b"foobar".to_vec()),
+            datum: LogEntry::Data(b"foobar".to_vec().into()),
         });
 
         assert_eq!(resp.wait().expect("append"),
@@ -105,7 +105,7 @@ mod test {
         let resp = replica.call(ReplicaRequest::AppendLogEntry {
             assumed_offset: zero.next(),
             entry_offset: zero,
-            datum: LogEntry::Data(b"foobar".to_vec()),
+            datum: LogEntry::Data(b"foobar".to_vec().into()),
         });
 
         assert_eq!(resp.wait().expect("append"),

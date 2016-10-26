@@ -1,4 +1,5 @@
 use replica::LogPos;
+use serde::bytes::ByteBuf;
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum TailRequest {
@@ -6,7 +7,7 @@ pub enum TailRequest {
 }
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum TailResponse {
-    NextItem(LogPos, Vec<u8>),
+    NextItem(LogPos, ByteBuf),
 }
 impl TailResponse {
     pub fn position(&self) -> LogPos {

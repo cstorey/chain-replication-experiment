@@ -137,13 +137,13 @@ mod test {
 
         let mut resp = task::spawn(tail.call(TailRequest::FetchNextAfter(LogPos::zero())));
         let next = LogPos::zero().next();
-        let entry = LogEntry::Data(b"foo".to_vec());
+        let entry = LogEntry::Data(b"foo".to_vec().into());
         task::spawn(store.append_entry(LogPos::zero(), next, entry))
             .wait_future()
             .expect("append_entry 1");
 
         assert_eq!(resp.poll_future(null_parker()).expect("fut"),
-                   Async::Ready(TailResponse::NextItem(next, b"foo".to_vec())));
+                   Async::Ready(TailResponse::NextItem(next, b"foo".to_vec().into())));
     }
 
     #[test]
@@ -164,12 +164,12 @@ mod test {
         };
 
         let config_entry = LogEntry::Config(config);
-        let data = LogEntry::Data(b"foo".to_vec());
+        let data = LogEntry::Data(b"foo".to_vec().into());
         core.run(store.append_entry(zero, one, config_entry)
                 .and_then(|()| store.append_entry(one, two, data))).expect("append_entry");
 
         assert_eq!(resp.poll_future(null_parker()).expect("fut"),
-                   Async::Ready(TailResponse::NextItem(two, b"foo".to_vec())));
+                   Async::Ready(TailResponse::NextItem(two, b"foo".to_vec().into())));
     }
 
 

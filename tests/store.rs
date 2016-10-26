@@ -26,13 +26,13 @@ fn can_append_one() {
     let next = current.next();
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"foobar".to_vec())))
+                                   LogEntry::Data(b"foobar".to_vec().into())))
         .wait_future()
         .expect("append_entry");
     let (off, val) = task::spawn(store.fetch_next(current)).wait_future().expect("fetch");
 
     assert_eq!((off, val),
-               (next, LogEntry::Data(b"foobar".to_vec())))
+               (next, LogEntry::Data(b"foobar".to_vec().into())))
 }
 
 // FIXME: Remove keys for now?
@@ -69,13 +69,13 @@ fn fetching_one_is_lazy() {
 
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"foobar".to_vec())))
+                                   LogEntry::Data(b"foobar".to_vec().into())))
         .wait_future()
         .expect("append_entry");
 
     let (off, val) = fetch_f.wait_future().expect("fetch");
     assert_eq!((off, val),
-               (next, LogEntry::Data(b"foobar".to_vec())))
+               (next, LogEntry::Data(b"foobar".to_vec().into())))
 }
 
 #[test]
@@ -87,7 +87,7 @@ fn writes_are_lazy() {
 
     let mut store_f = task::spawn(store.append_entry(current,
                                                      next,
-                                                     LogEntry::Data(b"foobar".to_vec())));
+                                                     LogEntry::Data(b"foobar".to_vec().into())));
     let mut fetch_f = task::spawn(store.fetch_next(current));
     assert_eq!(fetch_f.poll_future(null_parker()).expect("poll-notready"),
                Async::NotReady);
@@ -95,7 +95,7 @@ fn writes_are_lazy() {
     store_f.wait_future().expect("append_entry");
 
     let (off, val) = fetch_f.wait_future().expect("fetch");
-    assert_eq!((off, val), (next, LogEntry::Data(b"foobar".to_vec())))
+    assert_eq!((off, val), (next, LogEntry::Data(b"foobar".to_vec().into())))
 }
 
 
@@ -107,14 +107,14 @@ fn can_write_many() {
     let next = current.next();
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"foo".to_vec())))
+                                   LogEntry::Data(b"foo".to_vec().into())))
         .wait_future()
         .expect("append_entry 1");
     let current = next;
     let next = next.next();
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"bar".to_vec())))
+                                   LogEntry::Data(b"bar".to_vec().into())))
         .wait_future()
         .expect("append_entry 2");
 
@@ -123,7 +123,7 @@ fn can_write_many() {
             store.fetch_next(curr).map(|(_, second)| vec![first, second])
         });
     let res = task::spawn(fetch_f).wait_future().expect("fetch");
-    assert_eq!(res, vec![LogEntry::Data(b"foo".to_vec()), LogEntry::Data(b"bar".to_vec())])
+    assert_eq!(res, vec![LogEntry::Data(b"foo".to_vec().into()), LogEntry::Data(b"bar".to_vec().into())])
 }
 
 #[test]
@@ -135,12 +135,12 @@ fn cannot_overwrite_item() {
 
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"foo".to_vec())))
+                                   LogEntry::Data(b"foo".to_vec().into())))
         .wait_future()
         .expect("append_entry 1");
     let overwrite_res = task::spawn(store.append_entry(current,
                                                        next,
-                                                       LogEntry::Data(b"bar".to_vec())))
+                                                       LogEntry::Data(b"bar".to_vec().into())))
         .wait_future();
 
     let expected_seq = head_from_error(overwrite_res.unwrap_err());
@@ -156,19 +156,19 @@ fn cannot_overwrite_history() {
 
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"foo".to_vec())))
+                                   LogEntry::Data(b"foo".to_vec().into())))
         .wait_future()
         .expect("append_entry 1");
     let current = next;
     let next = next.next();
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"bar".to_vec())))
+                                   LogEntry::Data(b"bar".to_vec().into())))
         .wait_future()
         .expect("append_entry 1");
     let overwrite_res = task::spawn(store.append_entry(LogPos::zero(),
                                                        LogPos::zero().next(),
-                                                       LogEntry::Data(b"moo".to_vec())))
+                                                       LogEntry::Data(b"moo".to_vec().into())))
         .wait_future();
 
     let expected_seq = head_from_error(overwrite_res.unwrap_err());
@@ -184,19 +184,19 @@ fn error_feedback_should_indicate_new_head() {
 
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"foo".to_vec())))
+                                   LogEntry::Data(b"foo".to_vec().into())))
         .wait_future()
         .expect("append_entry 1");
     let overwrite_res = task::spawn(store.append_entry(LogPos::zero(),
                                                        LogPos::zero().next(),
-                                                       LogEntry::Data(b"moo".to_vec())))
+                                                       LogEntry::Data(b"moo".to_vec().into())))
         .wait_future();
 
     let new_head = head_from_error(overwrite_res.unwrap_err()).expect("current sequence number");
 
     let final_write = task::spawn(store.append_entry(new_head,
                                                      new_head.next(),
-                                                     LogEntry::Data(b"moo".to_vec())))
+                                                     LogEntry::Data(b"moo".to_vec().into())))
         .wait_future();
     assert!(final_write.is_ok());
 }
@@ -211,11 +211,11 @@ fn concurrent_writes_should_be_able_to_recover() {
     // Request a write from a slow client
     let mut write_1 = task::spawn(store.append_entry(current,
                                                      next,
-                                                     LogEntry::Data(b"foo".to_vec())));
+                                                     LogEntry::Data(b"foo".to_vec().into())));
     // A second client gets there first
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Data(b"foo".to_vec())))
+                                   LogEntry::Data(b"foo".to_vec().into())))
         .wait_future()
         .expect("append_entry 1");
 
@@ -226,7 +226,7 @@ fn concurrent_writes_should_be_able_to_recover() {
     let new_head = head_from_error(overwrite_res.unwrap_err()).expect("current sequence number");
     let final_write = task::spawn(store.append_entry(new_head,
                                                      new_head.next(),
-                                                     LogEntry::Data(b"foo".to_vec())))
+                                                     LogEntry::Data(b"foo".to_vec().into())))
         .wait_future();
     assert!(final_write.is_ok());
 }
@@ -268,7 +268,7 @@ fn writes_notify_waiters() {
     println!("spawn appender");
     let mut appender = task::spawn(store.append_entry(current,
                                                       next,
-                                                      LogEntry::Data(b"foobar".to_vec())));
+                                                      LogEntry::Data(b"foobar".to_vec().into())));
 
     println!("Poll fetcher");
     assert_eq!(fetch_t.poll_future(fetch_unparker.clone()).expect("poll-notready"),

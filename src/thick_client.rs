@@ -57,7 +57,7 @@ impl<H, T> ThickClient<H, T>
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,
             entry_offset: current.next(),
-            datum: LogEntry::Data(body.clone()),
+            datum: LogEntry::Data(body.into()),
         };
         debug!("Sending assuming: {:?}", current);
         let fut = self.head.call(req.clone());
@@ -129,7 +129,7 @@ impl<F: Future<Item = TailResponse, Error = Error>> Future for FetchNextFut<F> {
         match try_ready!(self.0.poll()) {
             TailResponse::NextItem(offset, value) => {
                 debug!("Done =>{:?}", offset);
-                return Ok(Async::Ready((offset, value)));
+                return Ok(Async::Ready((offset, value.into())));
             }
         }
 
@@ -172,7 +172,7 @@ mod test {
             })
             .collect::<Vec<_>>();
         assert_eq!(&*appends.iter().collect::<Vec<_>>(),
-                   &[&LogEntry::Data(b"Hello".to_vec())]);
+                   &[&LogEntry::Data(b"Hello".to_vec().into())]);
     }
 
 
@@ -211,7 +211,7 @@ mod test {
         let r1 = appends.pop_front().unwrap();
 
         assert_eq!((r1.0, &r1.2),
-                   (LogPos::new(42), &LogEntry::Data(b"Hello".to_vec())));
+                   (LogPos::new(42), &LogEntry::Data(b"Hello".to_vec().into())));
         assert_eq!(r0.2, r1.2);
         assert!(r1.0 < r1.1);
 

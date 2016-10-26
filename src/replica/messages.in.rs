@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use serde::bytes::ByteBuf;
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct LogPos(usize);
 
@@ -10,7 +11,7 @@ pub struct HostConfig<A> {
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum LogEntry {
-    Data(Vec<u8>),
+    Data(ByteBuf),
     Config(HostConfig<SocketAddr>),
 }
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]

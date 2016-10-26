@@ -267,7 +267,7 @@ mod test {
         let _off1 = append_entry(&store,
                                  &mut core,
                                  off0,
-                                 LogEntry::Data(b"Hello world!".to_vec()));
+                                 LogEntry::Data(b"Hello world!".to_vec().into()));
 
         let (rx, response, _assumed0, off0, _entry0) =
             take_next_entry(rx, &head_addr, &mut core, &timer);
@@ -278,7 +278,7 @@ mod test {
             take_next_entry(rx, &head_addr, &mut core, &timer);
 
         assert_eq!((assumed1, entry1),
-                   (off0, LogEntry::Data(b"Hello world!".to_vec())));
+                   (off0, LogEntry::Data(b"Hello world!".to_vec().into())));
         assert!(off1 > assumed1);
     }
 
@@ -311,11 +311,11 @@ mod test {
         let log_off1 = append_entry(&store,
                                     &mut core,
                                     log_off0,
-                                    LogEntry::Data(b"Hello".to_vec()));
+                                    LogEntry::Data(b"Hello".to_vec().into()));
         let log_off2 = append_entry(&store,
                                     &mut core,
                                     log_off1,
-                                    LogEntry::Data(b"world!".to_vec()));
+                                    LogEntry::Data(b"world!".to_vec().into()));
 
         let (rx, response, _assumed0, _off0, _entry0) =
             take_next_entry(rx, &head_addr, &mut core, &timer);
@@ -328,7 +328,7 @@ mod test {
             take_next_entry(rx, &head_addr, &mut core, &timer);
 
         assert_eq!((assumed1, off1, entry1),
-                   (log_off1, log_off2, LogEntry::Data(b"world!".to_vec())));
+                   (log_off1, log_off2, LogEntry::Data(b"world!".to_vec().into())));
     }
 
 
