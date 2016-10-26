@@ -7,61 +7,65 @@ use std::io;
 use std::mem;
 use replica::{ReplicaRequest, ReplicaResponse, LogEntry};
 
-enum ReplicatorState<S: Store, D>
-    where D: DownstreamService
-{
-    Idle,
-    Fetching(S::FetchFut),
-    Forwarding(D::Future),
-}
-
 pub trait DownstreamService {
     type Future: Future<Item = ReplicaResponse, Error = io::Error>;
+    fn call(&self, req: ReplicaRequest) -> Self::Future;
+}
+
+pub trait NewDownstreamService {
+    type Item: DownstreamService;
+    fn new_downstream(&self, addr: SocketAddr) -> Self::Item;
 }
 
 impl<D> DownstreamService for D
-    where D: Service<Request = (SocketAddr, ReplicaRequest),
+    where D: Service<Request = ReplicaRequest,
                      Response = ReplicaResponse,
                      Error = io::Error,
                      Future = BoxFuture<ReplicaResponse, io::Error>>
 {
     type Future = D::Future;
+
+    fn call(&self, req: ReplicaRequest) -> Self::Future {
+        Service::call(self, req)
+    }
+}
+
+enum ReplicatorState<S: Store, N>
+    where N: NewDownstreamService
+{
+    Idle,
+    Fetching(S::FetchFut),
+    Forwarding(<N::Item as DownstreamService>::Future),
 }
 
 
-pub struct Replicator<S: Store, D: DownstreamService> {
+pub struct Replicator<S: Store, N: NewDownstreamService> {
     store: S,
-    downstream: D,
+    new_downstream: N,
+    downstream: Option<N::Item>,
     last_seen_seq: LogPos,
-    downstream_addr: Option<SocketAddr>,
-    state: ReplicatorState<S, D>,
+    state: ReplicatorState<S, N>,
 }
 
-impl<S: Store, D: DownstreamService> Replicator<S, D> {
-    pub fn new(store: S, downstream: D) -> Self {
+impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
+    pub fn new(store: S, new_downstream: N) -> Self {
         Replicator {
             store: store,
-            downstream: downstream,
+            new_downstream: new_downstream,
+            downstream: None,
             last_seen_seq: LogPos::zero(),
-            downstream_addr: None,
             state: ReplicatorState::Idle,
         }
     }
 }
 
-impl<S: Store, D: DownstreamService> Drop for Replicator<S, D> {
+impl<S: Store, N: NewDownstreamService> Drop for Replicator<S, N> {
     fn drop(&mut self) {
         debug!("Drop Replicator");
     }
 }
 
-impl<S: Store, D> Future for Replicator<S, D>
-    where S: Store,
-          D: Service<Request = (SocketAddr, ReplicaRequest),
-                     Response = ReplicaResponse,
-                     Error = io::Error,
-                     Future = BoxFuture<ReplicaResponse, io::Error>>
-{
+impl<S: Store, N: NewDownstreamService> Future for Replicator<S, N> {
     type Item = ();
     type Error = Error;
     fn poll(&mut self) -> Poll<(), Error> {
@@ -90,18 +94,20 @@ impl<S: Store, D> Future for Replicator<S, D>
                             if let &LogEntry::Config(ref conf) = &val {
                                 debug!("logged Config message: {:?}", conf);
                                 // FIXME: Well, this is blatantly wrong.
-                                self.downstream_addr = Some(conf.head);
+                                debug!("connecting downstream to: {:?}", conf.head);
+                                self.downstream = Some(self.new_downstream
+                                    .new_downstream(conf.head));
                             };
 
-                            if let Some(addr) = self.downstream_addr {
-                                debug!("Forward {:?} to: {:?}", off, addr);
-                                // XXX: Symmetry with ReplClient?
+                            if let Some(ref downstream) = self.downstream {
+                                debug!("Forward {:?}", off);
                                 let req = ReplicaRequest::AppendLogEntry {
                                     assumed_offset: self.last_seen_seq,
                                     entry_offset: off,
                                     datum: val,
                                 };
-                                let f = self.downstream.call((addr, req));
+                                let _: &DownstreamService<Future = _> = downstream;
+                                let f = downstream.call(req);
                                 self.state = ReplicatorState::Forwarding(f);
                             } else {
                                 debug!("No downstream at {:?}", off);
@@ -151,11 +157,16 @@ mod test {
 
     type MessageType = ((SocketAddr, ReplicaRequest), futures::Complete<ReplicaResponse>);
     struct MyMagicalDownstream {
+        addr: SocketAddr,
+        send: channel::Sender<MessageType>,
+    }
+
+    struct MyDownstreamBuilder {
         send: channel::Sender<MessageType>,
     }
 
     impl Service for MyMagicalDownstream {
-        type Request = (SocketAddr, ReplicaRequest);
+        type Request = ReplicaRequest;
         type Response = ReplicaResponse;
         type Error = io::Error;
         type Future = BoxFuture<ReplicaResponse, io::Error>;
@@ -164,12 +175,22 @@ mod test {
         }
         fn call(&self, req: Self::Request) -> Self::Future {
             let (c, p) = futures::oneshot();
-            match self.send.send((req, c)) {
+            match self.send.send(((self.addr.clone(), req), c)) {
                 Ok(()) => (),
                 Err(e) => return futures::failed(e).boxed(),
             };
             p.map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
                 .boxed()
+        }
+    }
+
+    impl NewDownstreamService for MyDownstreamBuilder {
+        type Item = MyMagicalDownstream;
+        fn new_downstream(&self, addr: SocketAddr) -> Self::Item {
+            MyMagicalDownstream {
+                addr: addr,
+                send: self.send.clone(),
+            }
         }
     }
 
@@ -183,7 +204,7 @@ mod test {
         let (tx, rx) = channel::channel(&core.handle()).expect("channel");
 
 
-        let downstream = MyMagicalDownstream { send: tx };
+        let downstream = MyDownstreamBuilder { send: tx };
 
         let replica = Replicator::new(store.clone(), downstream);
 
@@ -214,8 +235,7 @@ mod test {
         let mut core = Core::new().expect("core::new");
         let (tx, rx) = channel::channel(&core.handle()).expect("channel");
 
-
-        let downstream = MyMagicalDownstream { send: tx };
+        let downstream = MyDownstreamBuilder { send: tx };
 
         let replica = Replicator::new(store.clone(), downstream);
 
@@ -261,7 +281,7 @@ mod test {
         let (tx, rx) = channel::channel(&core.handle()).expect("channel");
 
 
-        let downstream = MyMagicalDownstream { send: tx };
+        let downstream = MyDownstreamBuilder { send: tx };
 
         let replica = Replicator::new(store.clone(), downstream);
 
