@@ -21,11 +21,9 @@ fn smoketest_single_node() {
 
     let mut core = Core::new().unwrap();
 
-    let service = CoreService::new();
-
     let local_anon_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    let server = SexpHost.build_server(service,
+    let server = CoreService::new().build_server(
                                         &core.handle(),
                                         local_anon_addr.clone(),
                                         local_anon_addr.clone())
@@ -68,14 +66,14 @@ fn smoketest_two_member_chain() {
 
     let local_anon_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    let server0 = SexpHost.build_server(CoreService::new(),
+    let server0 = CoreService::new().build_server(
                       &core.handle(),
                       local_anon_addr.clone(),
                       local_anon_addr.clone())
         .expect("start server");
     println!("running: {:?}", server0);
 
-    let server1 = SexpHost.build_server(CoreService::new(),
+    let server1 = CoreService::new().build_server(
                       &core.handle(),
                       local_anon_addr.clone(),
                       local_anon_addr.clone())
