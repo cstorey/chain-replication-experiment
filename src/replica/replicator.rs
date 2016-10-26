@@ -189,19 +189,14 @@ mod test {
         core.handle().spawn(replica.map_err(|e| panic!("Replicator failed!: {:?}", e)));
         debug!("Spawned replica task");
 
-        let off = LogPos::zero();
-
         let head_addr = "1.2.3.4:5".parse().expect("parse");
 
         let config: HostConfig<::std::net::SocketAddr> = HostConfig {
             head: head_addr,
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
-
-        debug!("append config message");
-        core.run(store.append_entry(off, off.next(), LogEntry::Config(config.clone())))
-            .expect("append");
-
+        let off = LogPos::zero();
+        let _ = append_entry(&store, &mut core, off, LogEntry::Config(config.clone()));
 
         let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
                               Duration::from_millis(1000));
@@ -241,19 +236,14 @@ mod test {
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
 
-        {
-            let off = LogPos::zero();
-            let next = off.next();
-            debug!("append config message {:?} -> {:?}", off, next);
-            core.run(store.append_entry(off, next, LogEntry::Config(config.clone())))
-                .expect("append");
-
-            let off = next;
-            let next = off.next();
-            debug!("append data message {:?} -> {:?}", off, next);
-            core.run(store.append_entry(off, next, LogEntry::Data(b"Hello world!".to_vec())))
-                .expect("append");
-        }
+        let off0 = append_entry(&store,
+                                &mut core,
+                                LogPos::zero(),
+                                LogEntry::Config(config.clone()));
+        let _off1 = append_entry(&store,
+                                 &mut core,
+                                 off0,
+                                 LogEntry::Data(b"Hello world!".to_vec()));
 
         let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
                               Duration::from_millis(1000));
@@ -313,23 +303,16 @@ mod test {
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
 
-        let off = LogPos::zero();
-        let next = off.next();
-        debug!("append config message {:?} -> {:?}", off, next);
-        core.run(store.append_entry(off, next, LogEntry::Config(config.clone())))
-            .expect("append");
-
-        let off = next;
-        let next = off.next();
-        debug!("append data message {:?} -> {:?}", off, next);
-        core.run(store.append_entry(off, next, LogEntry::Data(b"Hello".to_vec())))
-            .expect("append");
-
-        let off = next;
-        let next = off.next();
-        debug!("append data message {:?} -> {:?}", off, next);
-        core.run(store.append_entry(off, next, LogEntry::Data(b"world!".to_vec())))
-            .expect("append");
+        let log_off = LogPos::zero();
+        let log_off0 = append_entry(&store, &mut core, log_off, LogEntry::Config(config.clone()));
+        let log_off1 = append_entry(&store,
+                                    &mut core,
+                                    log_off0,
+                                    LogEntry::Data(b"Hello".to_vec()));
+        let log_off2 = append_entry(&store,
+                                    &mut core,
+                                    log_off1,
+                                    LogEntry::Data(b"world!".to_vec()));
 
         let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
                               Duration::from_millis(1000));
@@ -345,7 +328,7 @@ mod test {
         };
 
         // So we expect the delivery of "world!"
-        let resp = ReplicaResponse::BadSequence(off);
+        let resp = ReplicaResponse::BadSequence(log_off1);
         println!("Respond with: {:?}", resp);
         completer.complete(resp);
 
@@ -363,7 +346,15 @@ mod test {
         };
 
         assert_eq!((addr, assumed1, off1, entry1),
-                   (head_addr, off, next, LogEntry::Data(b"world!".to_vec())));
-        assert!(off1 > assumed1);
+                   (head_addr, log_off1, log_off2, LogEntry::Data(b"world!".to_vec())));
+    }
+
+
+    fn append_entry<S: Store>(store: &S, core: &mut Core, off: LogPos, entry: LogEntry) -> LogPos {
+        let next = off.next();
+        debug!("append config message {:?} -> {:?}", off, next);
+        core.run(store.append_entry(off, next, entry))
+            .expect("append");
+        next
     }
 }
