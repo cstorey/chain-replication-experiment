@@ -5,7 +5,6 @@ use stable_bst::map::TreeMap;
 use std::collections::VecDeque;
 use std::fmt;
 use replica::LogEntry;
-use spki_sexp as sexp;
 
 pub trait Store {
     type AppendFut: Future<Item = (), Error = Error>;

@@ -14,9 +14,6 @@ use futures::Future;
 use vastatrix::LogPos;
 
 use vastatrix::hosting::*;
-use vastatrix::bovine;
-use vastatrix::{TailRequest, TailResponse, ReplicaRequest, ReplicaResponse};
-use vastatrix::{TailClient, ReplicaClient};
 
 #[test]
 fn smoketest_single_node() {

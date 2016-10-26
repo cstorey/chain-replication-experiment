@@ -1,8 +1,7 @@
 use service::Service;
 use futures::{Async, Poll, Future};
-use super::{ReplicaRequest, ReplicaResponse, LogEntry, LogPos};
+use super::{ReplicaRequest, ReplicaResponse, LogPos};
 use store::Store;
-use spki_sexp as sexp;
 
 use errors::{Error, ErrorKind};
 

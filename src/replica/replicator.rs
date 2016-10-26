@@ -5,8 +5,7 @@ use {LogPos, Error};
 use std::net::SocketAddr;
 use std::io;
 use std::mem;
-use replica::{HostConfig, ReplicaRequest, ReplicaResponse, LogEntry};
-use spki_sexp as sexp;
+use replica::{ReplicaRequest, ReplicaResponse, LogEntry};
 
 enum ReplicatorState<S: Store, D>
     where D: DownstreamService
@@ -134,7 +133,7 @@ impl<S: Store, D> Future for Replicator<S, D>
 
 #[cfg(test)]
 mod test {
-    use futures::{self, Future, stream, Poll, BoxFuture, Async};
+    use futures::{self, Future, BoxFuture, Async};
     use futures::stream::Stream;
     use service::Service;
     use tokio::channel;
@@ -143,9 +142,7 @@ mod test {
     use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig};
     use std::net::SocketAddr;
     use super::*;
-    use spki_sexp as sexp;
-    use tokio::reactor::{Core, Handle};
-    use std::sync::Arc;
+    use tokio::reactor::Core;
     use std::time::Duration;
     use std::io;
     use tokio_timer;
@@ -209,11 +206,11 @@ mod test {
         let f = timer.timeout(rx.into_future().map_err(|(e, _)| e),
                               Duration::from_millis(1000));
         debug!("wait for stub message");
-        let (data, rx) = core.run(f).expect("receive downstream");
-        let ((addr, msg), completer) = data.expect("Some message");
+        let (data, _rx) = core.run(f).expect("receive downstream");
+        let ((addr, msg), _completer) = data.expect("Some message");
         println!("Some: {:?}", (&addr, &msg));
         // Expect that the target at `head_addr` receives a set of replication messages.
-        let (assumed, off, entry) = match msg {
+        let (_assumed, _off, entry) = match msg {
             ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
                 (assumed_offset, entry_offset, datum)
             }
