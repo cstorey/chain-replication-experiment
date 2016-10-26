@@ -25,7 +25,6 @@ mod tail;
 mod thick_client;
 mod store;
 pub mod hosting;
-pub mod bovine;
 
 pub use replica::LogPos;
 pub use tail::{TailService, TailClient, TailRequest, TailResponse};
