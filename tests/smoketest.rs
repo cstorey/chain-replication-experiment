@@ -105,3 +105,66 @@ fn smoketest_two_member_chain() {
     assert_eq!(read,
                vec![(wpos0, b"hello".to_vec()), (wpos1, b"world".to_vec())]);
 }
+
+#[test]
+#[ignore]
+fn smoketest_three_member_chain() {
+    env_logger::init().unwrap_or(());
+    let timer = tokio_timer::wheel().tick_duration(Duration::from_millis(1)).build();
+    let timeout = Duration::from_millis(1000);
+    let mut core = Core::new().unwrap();
+
+    let local_anon_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let mut head_addr = local_anon_addr.clone();
+    let mut tail_addr = local_anon_addr.clone();
+
+    head_addr.set_port(11000);
+    tail_addr.set_port(11001);
+    let server0 = build_server(
+                      &core.handle(),
+                      head_addr.clone(),
+                      tail_addr.clone())
+        .expect("start server");
+    println!("running: {:?}", server0);
+
+    head_addr.set_port(11010);
+    tail_addr.set_port(11011);
+    let server1 = build_server(
+                      &core.handle(),
+                      head_addr.clone(),
+                      tail_addr.clone())
+        .expect("start server");
+
+    println!("running: {:?}", server1);
+
+    head_addr.set_port(11020);
+    tail_addr.set_port(11021);
+    let server2 = build_server(
+                      &core.handle(),
+                      head_addr.clone(),
+                      tail_addr.clone())
+        .expect("start server");
+    println!("running: {:?}", server2);
+
+    let client = vastatrix::ThickClient::new(core.handle(), &server0.head, &server2.tail);
+
+    let f = client.add_peer(server1.clone())
+        .and_then(|_| client.log_item(b"hello".to_vec()))
+        .and_then(|_| client.add_peer(server2.clone()))
+        .and_then(|pos0| client.log_item(b"world".to_vec()).map(move |pos1| (pos0, pos1)));
+    let (wpos0, wpos1) = core.run(timer.timeout(f, timeout)).expect("run write");
+
+    info!("Wrote to offset:{:?}", (wpos0, wpos1));
+
+    let item_f = client.fetch_next(LogPos::zero())
+        .and_then(|(pos0, val0)| {
+            client.fetch_next(pos0).map(move |second| vec![(pos0, val0), second])
+        });
+
+    let res = core.run(timer.timeout(item_f, timeout));
+    let read = res.expect("run read");
+    info!("Got: {:?}", read);
+
+    assert_eq!(read,
+               vec![(wpos0, b"hello".to_vec()), (wpos1, b"world".to_vec())]);
+}
