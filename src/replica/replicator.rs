@@ -4,7 +4,7 @@ use store::Store;
 use {LogPos, Error};
 use std::net::SocketAddr;
 use std::mem;
-use replica::{ReplicaRequest, ReplicaResponse, LogEntry};
+use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig};
 
 pub trait DownstreamService {
     type Future: Future<Item = ReplicaResponse, Error = Error>;
@@ -36,6 +36,7 @@ impl<F, D> NewDownstreamService for F
 {
     type Item = D;
     fn new_downstream(&self, addr: SocketAddr) -> D {
+        debug!("new downstream: {:?}", addr);
         self(addr)
     }
 }
@@ -66,6 +67,14 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
             last_seen_seq: LogPos::zero(),
             state: ReplicatorState::Idle,
         }
+    }
+
+    fn process_config_message(&mut self, conf: &HostConfig<SocketAddr>) {
+        debug!("logged Config message: {:?}", conf);
+        // FIXME: Well, this is blatantly wrong.
+        debug!("connecting downstream to: {:?}", conf.head);
+        self.downstream = Some(self.new_downstream
+            .new_downstream(conf.head));
     }
 }
 
@@ -102,11 +111,7 @@ impl<S: Store, N: NewDownstreamService> Future for Replicator<S, N> {
                         Async::Ready((off, val)) => {
                             debug!("Fetched: {:?}", (&off, &val));
                             if let &LogEntry::Config(ref conf) = &val {
-                                debug!("logged Config message: {:?}", conf);
-                                // FIXME: Well, this is blatantly wrong.
-                                debug!("connecting downstream to: {:?}", conf.head);
-                                self.downstream = Some(self.new_downstream
-                                    .new_downstream(conf.head));
+                                self.process_config_message(conf);
                             };
 
                             if let Some(ref downstream) = self.downstream {
