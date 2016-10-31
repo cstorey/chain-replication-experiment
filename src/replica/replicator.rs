@@ -68,7 +68,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         }
     }
 
-    fn process_config_message(&mut self, conf: &HostConfig<SocketAddr>) {
+    fn process_config_message(&mut self, conf: &HostConfig) {
         debug!("logged Config message: {:?}", conf);
         // FIXME: Well, this is blatantly wrong.
         debug!("connecting downstream to: {:?}", conf.head);
@@ -235,7 +235,7 @@ mod test {
 
         let head_addr = "1.2.3.4:5".parse().expect("parse");
 
-        let config: HostConfig<::std::net::SocketAddr> = HostConfig {
+        let config: HostConfig = HostConfig {
             head: head_addr,
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
@@ -266,7 +266,7 @@ mod test {
 
         let head_addr = "1.2.3.4:5".parse().expect("parse");
 
-        let config: HostConfig<::std::net::SocketAddr> = HostConfig {
+        let config: HostConfig = HostConfig {
             head: head_addr,
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
@@ -312,7 +312,7 @@ mod test {
 
         let head_addr = "1.2.3.4:5".parse().expect("parse");
 
-        let config: HostConfig<::std::net::SocketAddr> = HostConfig {
+        let config: HostConfig = HostConfig {
             head: head_addr,
             tail: "1.2.3.6:7".parse().expect("parse"),
         };

@@ -4,15 +4,15 @@ use serde::bytes::ByteBuf;
 pub struct LogPos(usize);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-pub struct HostConfig<A> {
-    pub head: A,
-    pub tail: A,
+pub struct HostConfig {
+    pub head: SocketAddr,
+    pub tail: SocketAddr,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum LogEntry {
     Data(ByteBuf),
-    Config(HostConfig<SocketAddr>),
+    Config(HostConfig),
 }
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {

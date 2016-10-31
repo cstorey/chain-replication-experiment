@@ -69,7 +69,7 @@ impl<H, T> ThickClient<H, T>
     }
 
 
-    pub fn add_peer(&self, peer: HostConfig<SocketAddr>) -> LogItemFut<H> {
+    pub fn add_peer(&self, peer: HostConfig) -> LogItemFut<H> {
         let current = *self.last_known_head.lock().expect("lock current");
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,

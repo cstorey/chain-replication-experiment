@@ -9,7 +9,7 @@ use std::io;
 pub fn build_server(handle: &Handle,
                     head_addr: SocketAddr,
                     tail_addr: SocketAddr)
-                    -> Result<HostConfig<SocketAddr>, io::Error> {
+                    -> Result<HostConfig, io::Error> {
     let store = RamStore::new();
     let head = ServerService::new(store.clone());
     let tail = TailService::new(store.clone());
