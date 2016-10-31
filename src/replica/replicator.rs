@@ -76,6 +76,82 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         self.downstream = Some(self.new_downstream
             .new_downstream(conf.head));
     }
+
+    fn try_take_next(&mut self) -> Poll<(), Error> {
+        if let ReplicatorState::Idle = self.state {
+            debug!("Idle, fetching after: {:?}", self.last_seen_seq);
+            let fetch_f = self.store.fetch_next(self.last_seen_seq);
+            self.state = ReplicatorState::Fetching(fetch_f);
+        }
+        Ok(Async::Ready(()))
+    }
+
+    fn try_process_message(&mut self) -> Poll<(), Error> {
+        match mem::replace(&mut self.state, ReplicatorState::Idle) {
+            ReplicatorState::Fetching(mut fetch_f) => {
+                debug!("Fetching");
+                match try!(fetch_f.poll()) {
+                    Async::NotReady => {
+                        self.state = ReplicatorState::Fetching(fetch_f);
+                        Ok(Async::NotReady)
+                    }
+                    Async::Ready((off, val)) => {
+                        debug!("Fetched: {:?}", (&off, &val));
+                        if let &LogEntry::Config(ref conf) = &val {
+                            self.process_config_message(conf);
+                        };
+
+                        if let Some(ref downstream) = self.downstream {
+                            debug!("Forward {:?}", off);
+                            let req = ReplicaRequest::AppendLogEntry {
+                                assumed_offset: self.last_seen_seq,
+                                // FIXME: NO. WRONG.
+                                entry_offset: off,
+                                datum: val,
+                            };
+                            let _: &DownstreamService<Future = _> = downstream;
+                            let f = downstream.call(req);
+                            self.state = ReplicatorState::Forwarding(f);
+                        } else {
+                            debug!("No downstream at {:?}", off);
+                        }
+                        self.last_seen_seq = off;
+                        Ok(Async::Ready(()))
+                    }
+                }
+            }
+            other => {
+                self.state = other;
+                Ok(Async::Ready(()))
+            }
+        }
+    }
+
+    fn try_process_forward(&mut self) -> Poll<(), Error> {
+        match mem::replace(&mut self.state, ReplicatorState::Idle) {
+            ReplicatorState::Forwarding(mut f) => {
+                match try!(f.poll()) {
+                    Async::NotReady => {
+                        self.state = ReplicatorState::Forwarding(f);
+                        Ok(Async::NotReady)
+                    }
+                    Async::Ready(ReplicaResponse::Done(pos)) => {
+                        debug!("woo! {:?}", pos);
+                        Ok(Async::Ready(()))
+                    }
+                    Async::Ready(ReplicaResponse::BadSequence(pos)) => {
+                        debug!("Bad sequence: resetting to {:?}", pos);
+                        self.last_seen_seq = pos;
+                        Ok(Async::Ready(()))
+                    }
+                }
+            }
+            other => {
+                self.state = other;
+                Ok(Async::Ready(()))
+            }
+        }
+    }
 }
 
 impl<S: Store, N: NewDownstreamService> Drop for Replicator<S, N> {
@@ -90,63 +166,9 @@ impl<S: Store, N: NewDownstreamService> Future for Replicator<S, N> {
     fn poll(&mut self) -> Poll<(), Error> {
         debug!("Replicator#poll");
         loop {
-            match mem::replace(&mut self.state, ReplicatorState::Idle) {
-                ReplicatorState::Idle => {
-                    debug!("Idle, fetching after: {:?}", self.last_seen_seq);
-                    let fetch_f = self.store.fetch_next(self.last_seen_seq);
-                    self.state = ReplicatorState::Fetching(fetch_f);
-                }
-                // Now, what have we learnt from this, children? Surely it's
-                // that because we're forwarding LogEntries at least, we
-                // should make it easy to get a LogEntry into/out of the
-                // store, rather than having to futz around with serialisation
-                // rubbish.
-                ReplicatorState::Fetching(mut fetch_f) => {
-                    debug!("Fetching");
-                    match try!(fetch_f.poll()) {
-                        Async::NotReady => {
-                            self.state = ReplicatorState::Fetching(fetch_f);
-                            return Ok(Async::NotReady);
-                        }
-                        Async::Ready((off, val)) => {
-                            debug!("Fetched: {:?}", (&off, &val));
-                            if let &LogEntry::Config(ref conf) = &val {
-                                self.process_config_message(conf);
-                            };
-
-                            if let Some(ref downstream) = self.downstream {
-                                debug!("Forward {:?}", off);
-                                let req = ReplicaRequest::AppendLogEntry {
-                                    assumed_offset: self.last_seen_seq,
-                                    entry_offset: off,
-                                    datum: val,
-                                };
-                                let _: &DownstreamService<Future = _> = downstream;
-                                let f = downstream.call(req);
-                                self.state = ReplicatorState::Forwarding(f);
-                            } else {
-                                debug!("No downstream at {:?}", off);
-                            }
-                            self.last_seen_seq = off;
-                        }
-                    }
-                }
-                ReplicatorState::Forwarding(mut f) => {
-                    match try!(f.poll()) {
-                        Async::NotReady => {
-                            self.state = ReplicatorState::Forwarding(f);
-                            return Ok(Async::NotReady);
-                        }
-                        Async::Ready(ReplicaResponse::Done(pos)) => {
-                            debug!("woo! {:?}", pos);
-                        }
-                        Async::Ready(ReplicaResponse::BadSequence(pos)) => {
-                            debug!("Bad sequence: resetting to {:?}", pos);
-                            self.last_seen_seq = pos;
-                        }
-                    }
-                }
-            }
+            try_ready!(self.try_take_next());
+            try_ready!(self.try_process_message());
+            try_ready!(self.try_process_forward());
         }
     }
 }
