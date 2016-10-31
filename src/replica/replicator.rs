@@ -3,7 +3,6 @@ use tokio_service::Service;
 use store::Store;
 use {LogPos, Error};
 use std::net::SocketAddr;
-use std::mem;
 use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig};
 
 pub trait DownstreamService {
@@ -87,70 +86,56 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
     }
 
     fn try_process_message(&mut self) -> Poll<(), Error> {
-        match mem::replace(&mut self.state, ReplicatorState::Idle) {
-            ReplicatorState::Fetching(mut fetch_f) => {
-                debug!("Fetching");
-                match try!(fetch_f.poll()) {
-                    Async::NotReady => {
-                        self.state = ReplicatorState::Fetching(fetch_f);
-                        Ok(Async::NotReady)
-                    }
-                    Async::Ready((off, val)) => {
-                        debug!("Fetched: {:?}", (&off, &val));
-                        if let &LogEntry::Config(ref conf) = &val {
-                            self.process_config_message(conf);
-                        };
+        let (off, val) = if let &mut ReplicatorState::Fetching(ref mut fetch_f) = &mut self.state {
+            debug!("Fetching");
+            try_ready!(fetch_f.poll())
+        } else {
+            return Ok(Async::Ready(()));
+        };
 
-                        if let Some(ref downstream) = self.downstream {
-                            debug!("Forward {:?}", off);
-                            let req = ReplicaRequest::AppendLogEntry {
-                                assumed_offset: self.last_seen_seq,
-                                // FIXME: NO. WRONG.
-                                entry_offset: off,
-                                datum: val,
-                            };
-                            let _: &DownstreamService<Future = _> = downstream;
-                            let f = downstream.call(req);
-                            self.state = ReplicatorState::Forwarding(f);
-                        } else {
-                            debug!("No downstream at {:?}", off);
-                        }
-                        self.last_seen_seq = off;
-                        Ok(Async::Ready(()))
-                    }
-                }
-            }
-            other => {
-                self.state = other;
-                Ok(Async::Ready(()))
-            }
-        }
+        debug!("Fetched: {:?}", (&off, &val));
+        if let &LogEntry::Config(ref conf) = &val {
+            self.process_config_message(conf);
+        };
+
+        self.state = if let Some(ref downstream) = self.downstream {
+            debug!("Forward {:?} -> {:?}", self.last_seen_seq, off);
+            let req = ReplicaRequest::AppendLogEntry {
+                assumed_offset: self.last_seen_seq,
+                // FIXME: NO. WRONG.
+                entry_offset: off,
+                datum: val,
+            };
+            ReplicatorState::Forwarding(downstream.call(req))
+        } else {
+            debug!("No downstream at {:?}", off);
+            ReplicatorState::Idle
+        };
+
+        self.last_seen_seq = off;
+        Ok(Async::Ready(()))
     }
 
     fn try_process_forward(&mut self) -> Poll<(), Error> {
-        match mem::replace(&mut self.state, ReplicatorState::Idle) {
-            ReplicatorState::Forwarding(mut f) => {
-                match try!(f.poll()) {
-                    Async::NotReady => {
-                        self.state = ReplicatorState::Forwarding(f);
-                        Ok(Async::NotReady)
-                    }
-                    Async::Ready(ReplicaResponse::Done(pos)) => {
-                        debug!("woo! {:?}", pos);
-                        Ok(Async::Ready(()))
-                    }
-                    Async::Ready(ReplicaResponse::BadSequence(pos)) => {
-                        debug!("Bad sequence: resetting to {:?}", pos);
-                        self.last_seen_seq = pos;
-                        Ok(Async::Ready(()))
-                    }
+        let next = if let &mut ReplicatorState::Forwarding(ref mut f) = &mut self.state {
+            match try_ready!(f.poll()) {
+                ReplicaResponse::Done(pos) => {
+                    debug!("woo! {:?}", pos);
+                    Some(ReplicatorState::Idle)
+                }
+                ReplicaResponse::BadSequence(pos) => {
+                    debug!("Bad sequence: resetting to {:?}", pos);
+                    self.last_seen_seq = pos;
+                    Some(ReplicatorState::Idle)
                 }
             }
-            other => {
-                self.state = other;
-                Ok(Async::Ready(()))
-            }
+        } else {
+            None
+        };
+        if let Some(next) = next {
+            self.state = next;
         }
+        Ok(Async::Ready(()))
     }
 }
 
