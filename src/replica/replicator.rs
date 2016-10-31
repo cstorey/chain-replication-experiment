@@ -117,24 +117,23 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
     }
 
     fn try_process_forward(&mut self) -> Poll<(), Error> {
-        let next = if let &mut ReplicatorState::Forwarding(ref mut f) = &mut self.state {
-            match try_ready!(f.poll()) {
-                ReplicaResponse::Done(pos) => {
-                    debug!("woo! {:?}", pos);
-                    Some(ReplicatorState::Idle)
-                }
-                ReplicaResponse::BadSequence(pos) => {
-                    debug!("Bad sequence: resetting to {:?}", pos);
-                    self.last_seen_seq = pos;
-                    Some(ReplicatorState::Idle)
-                }
-            }
+        let resp = if let &mut ReplicatorState::Forwarding(ref mut f) = &mut self.state {
+            try_ready!(f.poll())
         } else {
-            None
+            return Ok(Async::Ready(()));
         };
-        if let Some(next) = next {
-            self.state = next;
-        }
+
+        match resp {
+            ReplicaResponse::Done(pos) => {
+                debug!("woo! {:?}", pos);
+            }
+            ReplicaResponse::BadSequence(pos) => {
+                debug!("Bad sequence: resetting to {:?}", pos);
+                self.last_seen_seq = pos;
+            }
+        };
+
+        self.state = ReplicatorState::Idle;
         Ok(Async::Ready(()))
     }
 }
