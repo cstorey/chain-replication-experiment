@@ -55,21 +55,23 @@ pub struct Replicator<S: Store, N: NewDownstreamService> {
     downstream: Option<N::Item>,
     last_seen_seq: LogPos,
     state: ReplicatorState<S, N>,
+    identity: HostConfig,
 }
 
 impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
-    pub fn new(store: S, new_downstream: N) -> Self {
+    pub fn new(store: S, identity: &HostConfig, new_downstream: N) -> Self {
         Replicator {
             store: store,
             new_downstream: new_downstream,
             downstream: None,
             last_seen_seq: LogPos::zero(),
             state: ReplicatorState::Idle,
+            identity: identity.clone(),
         }
     }
 
     fn process_config_message(&mut self, conf: &HostConfig) {
-        debug!("logged Config message: {:?}", conf);
+        debug!("{}: logged Config message: {:?}", self.identity, conf);
         // FIXME: Well, this is blatantly wrong.
         debug!("connecting downstream to: {:?}", conf.head);
         self.downstream = Some(self.new_downstream
@@ -78,7 +80,9 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
 
     fn try_take_next(&mut self) -> Poll<(), Error> {
         if let ReplicatorState::Idle = self.state {
-            debug!("Idle, fetching after: {:?}", self.last_seen_seq);
+            debug!("{}: Idle, fetching after: {:?}",
+                   self.identity,
+                   self.last_seen_seq);
             let fetch_f = self.store.fetch_next(self.last_seen_seq);
             self.state = ReplicatorState::Fetching(fetch_f);
         }
@@ -87,7 +91,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
 
     fn try_process_message(&mut self) -> Poll<(), Error> {
         let (off, val) = if let &mut ReplicatorState::Fetching(ref mut fetch_f) = &mut self.state {
-            debug!("Fetching");
+            debug!("{}: Fetching", self.identity);
             try_ready!(fetch_f.poll())
         } else {
             return Ok(Async::Ready(()));
@@ -122,6 +126,8 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         } else {
             return Ok(Async::Ready(()));
         };
+
+        debug!("{}: Forward response:{:?}", self.identity, resp);
 
         match resp {
             ReplicaResponse::Done(pos) => {
@@ -216,6 +222,14 @@ mod test {
         }
     }
 
+    fn anidentity() -> HostConfig {
+        HostConfig {
+            head: "127.0.0.1:23".parse().unwrap(),
+            tail: "127.0.0.1:42".parse().unwrap(),
+        }
+
+    }
+
     #[test]
     fn should_start_replicating_to_downstream_on_committed_config_message() {
         env_logger::init().unwrap_or(());
@@ -225,10 +239,9 @@ mod test {
         let mut core = Core::new().expect("core::new");
         let (tx, rx) = channel::channel(&core.handle()).expect("channel");
 
-
         let downstream = MyDownstreamBuilder { send: tx };
 
-        let replica = Replicator::new(store.clone(), downstream);
+        let replica = Replicator::new(store.clone(), &anidentity(), downstream);
 
         core.handle().spawn(replica.map_err(|e| panic!("Replicator failed!: {:?}", e)));
         debug!("Spawned replica task");
@@ -259,7 +272,7 @@ mod test {
 
         let downstream = MyDownstreamBuilder { send: tx };
 
-        let replica = Replicator::new(store.clone(), downstream);
+        let replica = Replicator::new(store.clone(), &anidentity(), downstream);
 
         core.handle().spawn(replica.map_err(|e| panic!("Replicator failed!: {:?}", e)));
         debug!("Spawned replica task");
@@ -305,7 +318,7 @@ mod test {
 
         let downstream = MyDownstreamBuilder { send: tx };
 
-        let replica = Replicator::new(store.clone(), downstream);
+        let replica = Replicator::new(store.clone(), &anidentity(), downstream);
 
         core.handle().spawn(replica.map_err(|e| panic!("Replicator failed!: {:?}", e)));
         debug!("Spawned replica task");

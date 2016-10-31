@@ -10,7 +10,7 @@ use Error;
 
 pub type InnerClient = sclient::Client<ReplicaRequest, ReplicaResponse>;
 #[derive(Debug)]
-pub struct ReplicaClient(Mutex<InnerClient>);
+pub struct ReplicaClient(Mutex<InnerClient>, SocketAddr);
 
 pub struct ReplicaClientFut(BoxFuture<ReplicaResponse, sexp_proto::Error>);
 
@@ -25,10 +25,10 @@ impl Future for ReplicaClientFut {
 impl ReplicaClient {
     pub fn connect(handle: Handle, target: &SocketAddr) -> Self {
         let client0 = sclient::connect(handle, target);
-        Self::new(client0)
+        Self::new(client0, target)
     }
-    pub fn new(client: InnerClient) -> Self {
-        ReplicaClient(Mutex::new(client))
+    pub fn new(client: InnerClient, target: &SocketAddr) -> Self {
+        ReplicaClient(Mutex::new(client), target.clone())
     }
 }
 
@@ -42,7 +42,10 @@ impl Service for ReplicaClient {
         self.0.lock().expect("unlock").poll_ready()
     }
     fn call(&self, req: Self::Request) -> Self::Future {
-        ReplicaClientFut(self.0.lock().expect("unlock").call(req))
+        let addr = self.1;
+        debug!("{}: call: {:?}", addr, req);
+        let f = self.0.lock().expect("unlock").call(req);
+        ReplicaClientFut(f)
     }
 }
 

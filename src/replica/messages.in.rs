@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
 use serde::bytes::ByteBuf;
+use std::fmt;
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct LogPos(usize);
 
@@ -7,6 +9,12 @@ pub struct LogPos(usize);
 pub struct HostConfig {
     pub head: SocketAddr,
     pub tail: SocketAddr,
+}
+
+impl fmt::Display for HostConfig {
+    fn fmt(&self, fmt:&mut fmt::Formatter) ->fmt::Result {
+        write!(fmt, "{}/{}", self.head, self.tail)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
