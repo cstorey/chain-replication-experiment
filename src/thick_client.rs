@@ -74,7 +74,7 @@ impl<H, T> ThickClient<H, T>
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,
             entry_offset: current.next(),
-            datum: LogEntry::Config(peer),
+            datum: LogEntry::ViewChange(peer),
         };
         debug!("Sending assuming: {:?}", current);
         let fut = self.head.call(req.clone());

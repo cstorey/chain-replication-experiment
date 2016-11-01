@@ -49,7 +49,7 @@ enum ReplicatorState<S: Store, N>
 }
 
 #[derive(Debug)]
-pub struct ReplicaConfig {
+pub struct ReplicaView {
     identity: HostConfig,
     members: Vec<HostConfig>,
 }
@@ -61,7 +61,7 @@ pub struct Replicator<S: Store, N: NewDownstreamService> {
     last_seen_seq: LogPos,
     state: ReplicatorState<S, N>,
     identity: HostConfig,
-    config: ReplicaConfig,
+    config: ReplicaView,
 }
 
 impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
@@ -73,7 +73,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
             last_seen_seq: LogPos::zero(),
             state: ReplicatorState::Idle,
             identity: identity.clone(),
-            config: ReplicaConfig::new(identity.clone()),
+            config: ReplicaView::new(identity.clone()),
         }
     }
 
@@ -107,7 +107,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         };
 
         debug!("Fetched: {:?}", (&off, &val));
-        if let &LogEntry::Config(ref conf) = &val {
+        if let &LogEntry::ViewChange(ref conf) = &val {
             self.process_config_message(conf);
         };
 
@@ -173,9 +173,9 @@ impl<S: Store, N: NewDownstreamService> Future for Replicator<S, N> {
 }
 
 
-impl ReplicaConfig {
+impl ReplicaView {
     pub fn new(identity: HostConfig) -> Self {
-        ReplicaConfig {
+        ReplicaView {
             identity: identity,
             members: Vec::new(),
         }
@@ -186,7 +186,7 @@ impl ReplicaConfig {
         debug!("Added new member, now: {:?}", self);
     }
     pub fn get_downstream(&self) -> Option<HostConfig> {
-        debug!("ReplicaConfig#get_downstream");
+        debug!("ReplicaView#get_downstream");
         let index = self.members
             .iter()
             .enumerate()
@@ -296,13 +296,13 @@ mod test {
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
         let off = LogPos::zero();
-        let off = append_entry(&store, &mut core, off, LogEntry::Config(me.clone()));
-        let _ = append_entry(&store, &mut core, off, LogEntry::Config(config.clone()));
+        let off = append_entry(&store, &mut core, off, LogEntry::ViewChange(me.clone()));
+        let _ = append_entry(&store, &mut core, off, LogEntry::ViewChange(config.clone()));
 
         let (_rx, _response, _assumed0, _off0, entry0) =
             take_next_entry(rx, &head_addr, &mut core, &timer);
 
-        assert_eq!(entry0, LogEntry::Config(config));
+        assert_eq!(entry0, LogEntry::ViewChange(config));
     }
 
     #[test]
@@ -332,8 +332,8 @@ mod test {
         let off0 = append_entry(&store,
                                 &mut core,
                                 LogPos::zero(),
-                                LogEntry::Config(me.clone()));
-        let off1 = append_entry(&store, &mut core, off0, LogEntry::Config(config.clone()));
+                                LogEntry::ViewChange(me.clone()));
+        let off1 = append_entry(&store, &mut core, off0, LogEntry::ViewChange(config.clone()));
         let _off2 = append_entry(&store,
                                  &mut core,
                                  off1,
@@ -378,11 +378,11 @@ mod test {
         };
 
         let log_off = LogPos::zero();
-        let log_off0 = append_entry(&store, &mut core, log_off, LogEntry::Config(me.clone()));
+        let log_off0 = append_entry(&store, &mut core, log_off, LogEntry::ViewChange(me.clone()));
         let log_off1 = append_entry(&store,
                                     &mut core,
                                     log_off0,
-                                    LogEntry::Config(config.clone()));
+                                    LogEntry::ViewChange(config.clone()));
         let log_off2 = append_entry(&store,
                                     &mut core,
                                     log_off1,
@@ -438,21 +438,21 @@ mod test {
     #[test]
     fn should_not_have_downstream_when_sole_member() {
         let me = anidentity();
-        let mut config = ReplicaConfig::new(me.clone());
+        let mut config = ReplicaView::new(me.clone());
         config.process(&me);
         assert_eq!(config.get_downstream(), None);
     }
 
     #[test]
     fn should_not_have_downstream_when_not_in_chain() {
-        let config = ReplicaConfig::new(anidentity());
+        let config = ReplicaView::new(anidentity());
         assert_eq!(config.get_downstream(), None);
     }
 
     #[test]
     fn config_should_connect_to_next_downstream() {
         let me = anidentity();
-        let mut config = ReplicaConfig::new(me.clone());
+        let mut config = ReplicaView::new(me.clone());
         config.process(&me);
         let downstream = host_config(2);
         config.process(&downstream);
@@ -462,7 +462,7 @@ mod test {
     #[test]
     fn should_connect_to_2_of_3_when_1() {
         let me = anidentity();
-        let mut config = ReplicaConfig::new(me.clone());
+        let mut config = ReplicaView::new(me.clone());
         config.process(&me);
         config.process(&host_config(2));
         config.process(&host_config(42));
@@ -472,7 +472,7 @@ mod test {
     #[test]
     fn should_connect_to_3_of_3_when_2() {
         let me = anidentity();
-        let mut config = ReplicaConfig::new(me.clone());
+        let mut config = ReplicaView::new(me.clone());
         config.process(&host_config(1));
         config.process(&me);
         config.process(&host_config(3));
@@ -483,7 +483,7 @@ mod test {
     #[test]
     fn should_have_down_downstream_when_tail() {
         let me = anidentity();
-        let mut config = ReplicaConfig::new(me.clone());
+        let mut config = ReplicaView::new(me.clone());
         config.process(&host_config(1));
         config.process(&host_config(3));
         config.process(&me);

@@ -20,7 +20,7 @@ impl fmt::Display for HostConfig {
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum LogEntry {
     Data(ByteBuf),
-    Config(HostConfig),
+    ViewChange(HostConfig),
 }
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {

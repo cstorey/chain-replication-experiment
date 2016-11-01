@@ -48,13 +48,13 @@ fn should_store_config() {
     };
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::Config(config.clone())))
+                                   LogEntry::ViewChange(config.clone())))
         .wait_future()
         .expect("append_entry");
     let (off, val) = task::spawn(store.fetch_next(current)).wait_future().expect("fetch");
 
     assert_eq!((off, val),
-               (next, LogEntry::Config(config)))
+               (next, LogEntry::ViewChange(config)))
 }
 
 #[test]

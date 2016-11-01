@@ -24,7 +24,7 @@ impl<S: Store> TailService<S> {
 // .fetch_next(pos)
 // .map(|(pos, val)| match val {
 // LogEntry::Data(val) => TailResponse::NextItem(pos, val),
-// LogEntry::Config(_) => unimplemented!(),
+// LogEntry::ViewChange(_) => unimplemented!(),
 // })
 // .map_err(|e| e.into())
 // .then(|r| {
@@ -58,7 +58,7 @@ impl<S: Store> Future for TailFuture<S> {
                             let resp = TailResponse::NextItem(pos, val);
                             return Ok(Async::Ready(resp));
                         }
-                        Async::Ready((pos, LogEntry::Config(_))) => {
+                        Async::Ready((pos, LogEntry::ViewChange(_))) => {
                             debug!("poll => Config@{:?}", pos);
                             *self = TailFuture::Start(store, pos);
                         }
@@ -163,7 +163,7 @@ mod test {
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
 
-        let config_entry = LogEntry::Config(config);
+        let config_entry = LogEntry::ViewChange(config);
         let data = LogEntry::Data(b"foo".to_vec().into());
         core.run(store.append_entry(zero, one, config_entry)
                 .and_then(|()| store.append_entry(one, two, data))).expect("append_entry");
