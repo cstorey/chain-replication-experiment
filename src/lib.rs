@@ -29,7 +29,7 @@ pub mod hosting;
 pub use replica::LogPos;
 pub use tail::{TailService, TailClient, TailRequest, TailResponse};
 pub use replica::{ServerService, ReplicaClient, Replicator, ReplicaRequest, ReplicaResponse,
-                  LogEntry, HostConfig};
+                  LogEntry, HostConfig, ChainView};
 pub use thick_client::{ThickClient, ThickClientTcp};
 pub use errors::*;
 pub use store::{RamStore, Store};

@@ -3,7 +3,7 @@ use tokio_service::Service;
 use store::Store;
 use {LogPos, Error};
 use std::net::SocketAddr;
-use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig};
+use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig, ChainView};
 
 pub trait DownstreamService {
     type Future: Future<Item = ReplicaResponse, Error = Error>;
@@ -51,7 +51,7 @@ enum ReplicatorState<S: Store, N>
 #[derive(Debug)]
 pub struct ReplicaView {
     identity: HostConfig,
-    members: Vec<HostConfig>,
+    view: ChainView,
 }
 
 pub struct Replicator<S: Store, N: NewDownstreamService> {
@@ -77,7 +77,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         }
     }
 
-    fn process_config_message(&mut self, conf: &HostConfig) {
+    fn process_config_message(&mut self, conf: &ChainView) {
         debug!("{}: logged Config message: {:?}", self.identity, conf);
         self.config.process(conf);
         if let Some(next) = self.config.get_downstream() {
@@ -177,25 +177,26 @@ impl ReplicaView {
     pub fn new(identity: HostConfig) -> Self {
         ReplicaView {
             identity: identity,
-            members: Vec::new(),
+            view: ChainView::default(),
         }
     }
 
-    pub fn process(&mut self, conf: &HostConfig) {
-        self.members.push(conf.clone());
-        debug!("Added new member, now: {:?}", self);
+    pub fn process(&mut self, conf: &ChainView) {
+        self.view = conf.clone();
+        debug!("View changed, now: {:?}", self);
     }
     pub fn get_downstream(&self) -> Option<HostConfig> {
         debug!("ReplicaView#get_downstream");
-        let index = self.members
+        let index = self.view
+            .members
             .iter()
             .enumerate()
             .filter(|&(_n, it)| it == &self.identity)
             .map(|(n, _)| n)
             .next();
-        debug!("I am {:?}/{}", index, self.members.len());
+        debug!("I am {:?}/{}", index, self.view.members.len());
 
-        let next = index.and_then(|idx| self.members.get(idx + 1)).cloned();
+        let next = index.and_then(|idx| self.view.members.get(idx + 1)).cloned();
         debug!("downstream: {:?}", next);
         next
     }
@@ -209,7 +210,7 @@ mod test {
     use tokio::channel;
     use replica::LogPos;
     use store::{RamStore, Store};
-    use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig};
+    use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig, ChainView};
     use errors::Error;
     use std::net::{SocketAddr, IpAddr, Ipv4Addr};
     use super::*;
@@ -295,14 +296,14 @@ mod test {
             head: head_addr,
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
+        let view = ChainView::of(vec![me.clone(), config.clone()]);
         let off = LogPos::zero();
-        let off = append_entry(&store, &mut core, off, LogEntry::ViewChange(me.clone()));
-        let _ = append_entry(&store, &mut core, off, LogEntry::ViewChange(config.clone()));
+        let _ = append_entry(&store, &mut core, off, LogEntry::ViewChange(view.clone()));
 
         let (_rx, _response, _assumed0, _off0, entry0) =
             take_next_entry(rx, &head_addr, &mut core, &timer);
 
-        assert_eq!(entry0, LogEntry::ViewChange(config));
+        assert_eq!(entry0, LogEntry::ViewChange(view.clone()));
     }
 
     #[test]
@@ -329,15 +330,15 @@ mod test {
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
 
-        let off0 = append_entry(&store,
-                                &mut core,
-                                LogPos::zero(),
-                                LogEntry::ViewChange(me.clone()));
-        let off1 = append_entry(&store, &mut core, off0, LogEntry::ViewChange(config.clone()));
-        let _off2 = append_entry(&store,
-                                 &mut core,
-                                 off1,
-                                 LogEntry::Data(b"Hello world!".to_vec().into()));
+        let view = ChainView::of([&me, &config].iter().cloned().cloned());
+        let log_off0 = append_entry(&store,
+                                    &mut core,
+                                    LogPos::zero(),
+                                    LogEntry::ViewChange(view));
+        let _log_off1 = append_entry(&store,
+                                     &mut core,
+                                     log_off0,
+                                     LogEntry::Data(b"Hello world!".to_vec().into()));
 
         let (rx, response, _assumed0, off0, _entry0) =
             take_next_entry(rx, &head_addr, &mut core, &timer);
@@ -348,7 +349,7 @@ mod test {
             take_next_entry(rx, &head_addr, &mut core, &timer);
 
         assert_eq!((assumed1, entry1),
-                   (off0, LogEntry::Data(b"Hello world!".to_vec().into())));
+                   (log_off0, LogEntry::Data(b"Hello world!".to_vec().into())));
         assert!(off1 > assumed1);
     }
 
@@ -378,11 +379,12 @@ mod test {
         };
 
         let log_off = LogPos::zero();
-        let log_off0 = append_entry(&store, &mut core, log_off, LogEntry::ViewChange(me.clone()));
+        let view = ChainView::of([&me, &config].iter().cloned().cloned());
+        let log_off0 = append_entry(&store, &mut core, log_off, LogEntry::ViewChange(view));
         let log_off1 = append_entry(&store,
                                     &mut core,
                                     log_off0,
-                                    LogEntry::ViewChange(config.clone()));
+                                    LogEntry::Data(b"Hello".to_vec().into()));
         let log_off2 = append_entry(&store,
                                     &mut core,
                                     log_off1,
@@ -439,7 +441,7 @@ mod test {
     fn should_not_have_downstream_when_sole_member() {
         let me = anidentity();
         let mut config = ReplicaView::new(me.clone());
-        config.process(&me);
+        config.process(&ChainView::of(vec![me]));
         assert_eq!(config.get_downstream(), None);
     }
 
@@ -453,9 +455,8 @@ mod test {
     fn config_should_connect_to_next_downstream() {
         let me = anidentity();
         let mut config = ReplicaView::new(me.clone());
-        config.process(&me);
         let downstream = host_config(2);
-        config.process(&downstream);
+        config.process(&ChainView::of(vec![me.clone(), downstream.clone()]));
         assert_eq!(config.get_downstream(), Some(downstream));
     }
 
@@ -463,9 +464,8 @@ mod test {
     fn should_connect_to_2_of_3_when_1() {
         let me = anidentity();
         let mut config = ReplicaView::new(me.clone());
-        config.process(&me);
-        config.process(&host_config(2));
-        config.process(&host_config(42));
+
+        config.process(&ChainView::of(vec![me, host_config(2), host_config(42)]));
         assert_eq!(config.get_downstream(), Some(host_config(2)));
     }
 
@@ -473,9 +473,7 @@ mod test {
     fn should_connect_to_3_of_3_when_2() {
         let me = anidentity();
         let mut config = ReplicaView::new(me.clone());
-        config.process(&host_config(1));
-        config.process(&me);
-        config.process(&host_config(3));
+        config.process(&ChainView::of(vec![host_config(1), me, host_config(3)]));
         assert_eq!(config.get_downstream(), Some(host_config(3)));
     }
 
@@ -484,12 +482,7 @@ mod test {
     fn should_have_down_downstream_when_tail() {
         let me = anidentity();
         let mut config = ReplicaView::new(me.clone());
-        config.process(&host_config(1));
-        config.process(&host_config(3));
-        config.process(&me);
+        config.process(&ChainView::of(vec![host_config(1), host_config(3), me]));
         assert_eq!(config.get_downstream(), None);
     }
-
-
-
 }

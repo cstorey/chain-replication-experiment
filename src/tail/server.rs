@@ -99,7 +99,7 @@ impl<S: Store + Send + Sync + 'static> Service for TailService<S>
 mod test {
     use futures::{Async, task, Future};
     use service::Service;
-    use replica::{LogPos, LogEntry, HostConfig};
+    use replica::{LogPos, LogEntry, HostConfig, ChainView};
     use store::{Store, RamStore};
     use tokio::reactor::Core;
     use tail::messages::*;
@@ -163,7 +163,8 @@ mod test {
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
 
-        let config_entry = LogEntry::ViewChange(config);
+        let view = ChainView::of(vec![config.clone()]);
+        let config_entry = LogEntry::ViewChange(view);
         let data = LogEntry::Data(b"foo".to_vec().into());
         core.run(store.append_entry(zero, one, config_entry)
                 .and_then(|()| store.append_entry(one, two, data))).expect("append_entry");
@@ -171,6 +172,4 @@ mod test {
         assert_eq!(resp.poll_future(null_parker()).expect("fut"),
                    Async::Ready(TailResponse::NextItem(two, b"foo".to_vec().into())));
     }
-
-
 }

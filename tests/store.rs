@@ -3,7 +3,7 @@ extern crate futures;
 extern crate env_logger;
 use futures::{Future, Async, task};
 use vastatrix::{RamStore, Store};
-use vastatrix::{LogPos, LogEntry,HostConfig};
+use vastatrix::{LogPos, LogEntry,HostConfig, ChainView};
 use vastatrix::{Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
@@ -46,15 +46,16 @@ fn should_store_config() {
         head: "1.2.3.4:5".parse().expect("parse ip"),
         tail: "6.7.8.9:10".parse().expect("parse ip"),
     };
+    let view = ChainView::of(vec![config]);
     task::spawn(store.append_entry(current,
                                    next,
-                                   LogEntry::ViewChange(config.clone())))
+                                   LogEntry::ViewChange(view.clone())))
         .wait_future()
         .expect("append_entry");
     let (off, val) = task::spawn(store.fetch_next(current)).wait_future().expect("fetch");
 
     assert_eq!((off, val),
-               (next, LogEntry::ViewChange(config)))
+               (next, LogEntry::ViewChange(view)))
 }
 
 #[test]

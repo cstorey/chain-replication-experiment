@@ -17,10 +17,22 @@ impl fmt::Display for HostConfig {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Default)]
+pub struct ChainView {
+    pub members: Vec<HostConfig>,
+}
+
+impl ChainView {
+    pub fn of<I:IntoIterator<Item=HostConfig>>(members:I) ->ChainView{
+        let members = members.into_iter().collect();
+        ChainView { members: members }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum LogEntry {
     Data(ByteBuf),
-    ViewChange(HostConfig),
+    ViewChange(ChainView),
 }
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {

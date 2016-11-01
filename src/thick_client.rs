@@ -3,17 +3,21 @@ use futures::{Future, Poll, Async};
 use std::net::SocketAddr;
 use {ReplicaClient, TailClient};
 use {TailRequest, TailResponse};
-use {LogPos, ReplicaRequest, ReplicaResponse, LogEntry};
 use tokio_service::Service;
 use std::sync::{Arc, Mutex};
-use replica::HostConfig;
+use replica::{LogPos, ReplicaRequest, ReplicaResponse, LogEntry, HostConfig, ChainView};
 use Error;
 
 #[derive(Debug)]
 pub struct ThickClient<H, T> {
     head: Arc<H>,
     tail: Arc<T>,
-    last_known_head: Arc<Mutex<LogPos>>,
+    state: Arc<Mutex<ClientState>>,
+}
+#[derive(Debug)]
+struct ClientState {
+    last_known_head: LogPos,
+    view: ChainView,
 }
 
 pub type ThickClientTcp = ThickClient<ReplicaClient, TailClient>;
@@ -45,15 +49,19 @@ impl<H, T> ThickClient<H, T>
           T: Service<Request = TailRequest, Response = TailResponse>
 {
     pub fn build(head: H, tail: T) -> Self {
+        let state = ClientState {
+            last_known_head: LogPos::zero(),
+            view: ChainView::default(),
+        };
         ThickClient {
             head: Arc::new(head),
             tail: Arc::new(tail),
-            last_known_head: Arc::new(Mutex::new(LogPos::zero())),
+            state: Arc::new(Mutex::new(state)),
         }
     }
 
     pub fn log_item(&self, body: Vec<u8>) -> LogItemFut<H> {
-        let current = *self.last_known_head.lock().expect("lock current");
+        let current = self.state.lock().expect("lock current").last_known_head;
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,
             entry_offset: current.next(),
@@ -70,11 +78,14 @@ impl<H, T> ThickClient<H, T>
 
 
     pub fn add_peer(&self, peer: HostConfig) -> LogItemFut<H> {
-        let current = *self.last_known_head.lock().expect("lock current");
+        let mut state = self.state.lock().expect("lock current");
+        let current = state.last_known_head;
+        state.view.members.push(peer);
+        // self.view.members.push(peer);
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,
             entry_offset: current.next(),
-            datum: LogEntry::ViewChange(peer),
+            datum: LogEntry::ViewChange(state.view.clone()),
         };
         debug!("Sending assuming: {:?}", current);
         let fut = self.head.call(req.clone());
