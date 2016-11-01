@@ -48,6 +48,10 @@ enum ReplicatorState<S: Store, N>
     Forwarding(<N::Item as DownstreamService>::Future),
 }
 
+pub struct ReplicaConfig {
+    identity: HostConfig,
+    members: Vec<HostConfig>,
+}
 
 pub struct Replicator<S: Store, N: NewDownstreamService> {
     store: S,
@@ -56,6 +60,7 @@ pub struct Replicator<S: Store, N: NewDownstreamService> {
     last_seen_seq: LogPos,
     state: ReplicatorState<S, N>,
     identity: HostConfig,
+    config: ReplicaConfig,
 }
 
 impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
@@ -67,15 +72,18 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
             last_seen_seq: LogPos::zero(),
             state: ReplicatorState::Idle,
             identity: identity.clone(),
+            config: ReplicaConfig::new(identity.clone()),
         }
     }
 
     fn process_config_message(&mut self, conf: &HostConfig) {
         debug!("{}: logged Config message: {:?}", self.identity, conf);
-        // FIXME: Well, this is blatantly wrong.
-        debug!("connecting downstream to: {:?}", conf.head);
-        self.downstream = Some(self.new_downstream
-            .new_downstream(conf.head));
+        self.config.process(conf);
+        if let Some(next) = self.config.get_downstream() {
+            debug!("connecting downstream to: {:?}", next.head);
+            self.downstream = Some(self.new_downstream
+                .new_downstream(next.head));
+        }
     }
 
     fn try_take_next(&mut self) -> Poll<(), Error> {
@@ -164,6 +172,32 @@ impl<S: Store, N: NewDownstreamService> Future for Replicator<S, N> {
 }
 
 
+impl ReplicaConfig {
+    pub fn new(identity: HostConfig) -> Self {
+        ReplicaConfig {
+            identity: identity,
+            members: Vec::new(),
+        }
+    }
+
+    pub fn process(&mut self, conf: &HostConfig) {
+        self.members.push(conf.clone())
+    }
+    pub fn get_downstream(&self) -> Option<HostConfig> {
+        debug!("ReplicaConfig#get_downstream");
+        let index = self.members
+            .iter()
+            .enumerate()
+            .filter(|&(_n, it)| it == &self.identity)
+            .map(|(n, _)| n)
+            .next();
+        debug!("I am {:?}/{}", index, self.members.len());
+
+        let next = index.and_then(|idx| self.members.get(idx + 1)).cloned();
+        debug!("downstream: {:?}", next);
+        next
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -175,7 +209,7 @@ mod test {
     use store::{RamStore, Store};
     use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig};
     use errors::Error;
-    use std::net::SocketAddr;
+    use std::net::{SocketAddr, IpAddr, Ipv4Addr};
     use super::*;
     use tokio::reactor::Core;
     use std::time::Duration;
@@ -227,7 +261,13 @@ mod test {
             head: "127.0.0.1:23".parse().unwrap(),
             tail: "127.0.0.1:42".parse().unwrap(),
         }
+    }
 
+    fn host_config(n: u8) -> HostConfig {
+        HostConfig {
+            head: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, n)), 10000),
+            tail: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, n + 1)), 10001),
+        }
     }
 
     #[test]
@@ -241,7 +281,8 @@ mod test {
 
         let downstream = MyDownstreamBuilder { send: tx };
 
-        let replica = Replicator::new(store.clone(), &anidentity(), downstream);
+        let me = anidentity();
+        let replica = Replicator::new(store.clone(), &me, downstream);
 
         core.handle().spawn(replica.map_err(|e| panic!("Replicator failed!: {:?}", e)));
         debug!("Spawned replica task");
@@ -253,6 +294,7 @@ mod test {
             tail: "1.2.3.6:7".parse().expect("parse"),
         };
         let off = LogPos::zero();
+        let off = append_entry(&store, &mut core, off, LogEntry::Config(me.clone()));
         let _ = append_entry(&store, &mut core, off, LogEntry::Config(config.clone()));
 
         let (_rx, _response, _assumed0, _off0, entry0) =
@@ -272,7 +314,8 @@ mod test {
 
         let downstream = MyDownstreamBuilder { send: tx };
 
-        let replica = Replicator::new(store.clone(), &anidentity(), downstream);
+        let me = anidentity();
+        let replica = Replicator::new(store.clone(), &me, downstream);
 
         core.handle().spawn(replica.map_err(|e| panic!("Replicator failed!: {:?}", e)));
         debug!("Spawned replica task");
@@ -287,10 +330,11 @@ mod test {
         let off0 = append_entry(&store,
                                 &mut core,
                                 LogPos::zero(),
-                                LogEntry::Config(config.clone()));
-        let _off1 = append_entry(&store,
+                                LogEntry::Config(me.clone()));
+        let off1 = append_entry(&store, &mut core, off0, LogEntry::Config(config.clone()));
+        let _off2 = append_entry(&store,
                                  &mut core,
-                                 off0,
+                                 off1,
                                  LogEntry::Data(b"Hello world!".to_vec().into()));
 
         let (rx, response, _assumed0, off0, _entry0) =
@@ -318,7 +362,8 @@ mod test {
 
         let downstream = MyDownstreamBuilder { send: tx };
 
-        let replica = Replicator::new(store.clone(), &anidentity(), downstream);
+        let me = anidentity();
+        let replica = Replicator::new(store.clone(), &me, downstream);
 
         core.handle().spawn(replica.map_err(|e| panic!("Replicator failed!: {:?}", e)));
         debug!("Spawned replica task");
@@ -331,20 +376,20 @@ mod test {
         };
 
         let log_off = LogPos::zero();
-        let log_off0 = append_entry(&store, &mut core, log_off, LogEntry::Config(config.clone()));
+        let log_off0 = append_entry(&store, &mut core, log_off, LogEntry::Config(me.clone()));
         let log_off1 = append_entry(&store,
                                     &mut core,
                                     log_off0,
-                                    LogEntry::Data(b"Hello".to_vec().into()));
+                                    LogEntry::Config(config.clone()));
         let log_off2 = append_entry(&store,
                                     &mut core,
                                     log_off1,
-                                    LogEntry::Data(b"world!".to_vec().into()));
+                                    LogEntry::Data(b"Hello".to_vec().into()));
 
         let (rx, response, _assumed0, _off0, _entry0) =
             take_next_entry(rx, &head_addr, &mut core, &timer);
 
-        // So we expect the delivery of "world!"
+        // So we expect the delivery of "Hello"
         let resp = ReplicaResponse::BadSequence(log_off1);
         println!("Respond with: {:?}", resp);
         response.complete(resp);
@@ -352,7 +397,7 @@ mod test {
             take_next_entry(rx, &head_addr, &mut core, &timer);
 
         assert_eq!((assumed1, off1, entry1),
-                   (log_off1, log_off2, LogEntry::Data(b"world!".to_vec().into())));
+                   (log_off1, log_off2, LogEntry::Data(b"Hello".to_vec().into())));
     }
 
 
@@ -387,4 +432,62 @@ mod test {
             }
         }
     }
+
+    #[test]
+    fn should_not_have_downstream_when_sole_member() {
+        let me = anidentity();
+        let mut config = ReplicaConfig::new(me.clone());
+        config.process(&me);
+        assert_eq!(config.get_downstream(), None);
+    }
+
+    #[test]
+    fn should_not_have_downstream_when_not_in_chain() {
+        let config = ReplicaConfig::new(anidentity());
+        assert_eq!(config.get_downstream(), None);
+    }
+
+    #[test]
+    fn config_should_connect_to_next_downstream() {
+        let me = anidentity();
+        let mut config = ReplicaConfig::new(me.clone());
+        config.process(&me);
+        let downstream = host_config(2);
+        config.process(&downstream);
+        assert_eq!(config.get_downstream(), Some(downstream));
+    }
+
+    #[test]
+    fn should_connect_to_2_of_3_when_1() {
+        let me = anidentity();
+        let mut config = ReplicaConfig::new(me.clone());
+        config.process(&me);
+        config.process(&host_config(2));
+        config.process(&host_config(42));
+        assert_eq!(config.get_downstream(), Some(host_config(2)));
+    }
+
+    #[test]
+    fn should_connect_to_3_of_3_when_2() {
+        let me = anidentity();
+        let mut config = ReplicaConfig::new(me.clone());
+        config.process(&host_config(1));
+        config.process(&me);
+        config.process(&host_config(3));
+        assert_eq!(config.get_downstream(), Some(host_config(3)));
+    }
+
+
+    #[test]
+    fn should_have_down_downstream_when_tail() {
+        let me = anidentity();
+        let mut config = ReplicaConfig::new(me.clone());
+        config.process(&host_config(1));
+        config.process(&host_config(3));
+        config.process(&me);
+        assert_eq!(config.get_downstream(), None);
+    }
+
+
+
 }

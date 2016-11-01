@@ -33,7 +33,7 @@ impl<S: Store> Service for ServerService<S> {
         Async::Ready(())
     }
     fn call(&self, req: Self::Request) -> Self::Future {
-        debug!("ReplicaResponse#service: {:?}", req);
+        debug!("ServerService#service: {:?}", req);
         match req {
             ReplicaRequest::AppendLogEntry { assumed_offset, entry_offset, datum } => {
                 let append_fut = self.store

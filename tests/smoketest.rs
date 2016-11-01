@@ -107,7 +107,7 @@ fn smoketest_two_member_chain() {
 }
 
 #[test]
-#[ignore]
+// #[ignore]
 fn smoketest_three_member_chain() {
     env_logger::init().unwrap_or(());
     let timer = tokio_timer::wheel().tick_duration(Duration::from_millis(1)).build();
