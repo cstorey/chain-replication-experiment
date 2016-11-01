@@ -48,10 +48,12 @@ impl Store for RamStore {
     type AppendFut = BoxFuture<(), Error>;
     type FetchFut = FetchFut;
 
-    fn append_entry(&self, current: LogPos, next: LogPos, val: LogEntry) -> Self::AppendFut {
+    fn append_entry(&self, assumed: LogPos, next: LogPos, val: LogEntry) -> Self::AppendFut {
         let inner = self.inner.clone();
+        let innerid = &*inner as *const _ as usize;
         futures::lazy(move || {
                 let mut inner = inner.lock().expect("lock");
+                trace!("{:x}: Log pre: {:#?}", innerid, inner.log);
                 use stable_bst::Bound::*;
                 let current_head = inner.log
                     .range(Unbounded, Unbounded)
@@ -61,16 +63,20 @@ impl Store for RamStore {
                     .next()
                     .unwrap_or_else(LogPos::zero);
 
-                debug!("append_entry: if at:{:?}; next:{:?}; current head:{:?}",
-                       current,
+                debug!("{:x}: append_entry: if at:{:?}; next:{:?}; current head:{:?}",
+                       innerid,
+                       assumed,
                        next,
                        current_head);
-                if current_head >= next {
+                if current_head != assumed {
+                    debug!("Bad sequence, currently at {:?}", current_head);
                     return futures::failed(ErrorKind::BadSequence(current_head).into()).boxed();
                 }
 
                 inner.log.insert(next, val);
                 debug!("Wrote to {:?}", next);
+                trace!("{:x}: Log now: {:#?}", innerid, inner.log);
+
                 trace!("Notify {:?} waiters", inner.waiters.len());
                 for waiter in inner.waiters.drain(..) {
                     waiter.unpark()

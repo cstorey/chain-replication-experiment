@@ -176,6 +176,51 @@ fn cannot_overwrite_history() {
 }
 
 #[test]
+fn cannot_start_in_future() {
+    env_logger::init().unwrap_or(());
+    let store = RamStore::new();
+    let current = LogPos::zero().next().next().next();
+    let next = current.next();
+
+    let res = task::spawn(store.append_entry(current,
+                                   next,
+                                   LogEntry::Data(b"foo".to_vec().into())))
+        .wait_future();
+
+    let expected_seq = head_from_error(res.unwrap_err());
+    assert_eq!(expected_seq, Some(LogPos::zero()));
+}
+
+#[test]
+fn cannot_append_in_future() {
+    env_logger::init().unwrap_or(());
+    let store = RamStore::new();
+
+    let current = LogPos::zero();
+    let next = current.next();
+
+    task::spawn(store.append_entry(current,
+                                   next,
+                                   LogEntry::Data(b"foo".to_vec().into())))
+        .wait_future()
+        .expect("append_entry 1");
+
+
+    let current1 = next.next().next();
+    let next1 = current.next();
+
+    let res = task::spawn(store.append_entry(current1,
+                                   next1,
+                                   LogEntry::Data(b"foo".to_vec().into())))
+        .wait_future();
+
+    let expected_seq = head_from_error(res.unwrap_err());
+    assert_eq!(expected_seq, Some(next));
+}
+
+
+
+#[test]
 fn error_feedback_should_indicate_new_head() {
     env_logger::init().unwrap_or(());
     let store = RamStore::new();

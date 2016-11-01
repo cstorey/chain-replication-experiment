@@ -48,6 +48,7 @@ enum ReplicatorState<S: Store, N>
     Forwarding(<N::Item as DownstreamService>::Future),
 }
 
+#[derive(Debug)]
 pub struct ReplicaConfig {
     identity: HostConfig,
     members: Vec<HostConfig>,
@@ -181,7 +182,8 @@ impl ReplicaConfig {
     }
 
     pub fn process(&mut self, conf: &HostConfig) {
-        self.members.push(conf.clone())
+        self.members.push(conf.clone());
+        debug!("Added new member, now: {:?}", self);
     }
     pub fn get_downstream(&self) -> Option<HostConfig> {
         debug!("ReplicaConfig#get_downstream");
