@@ -1,3 +1,38 @@
+Toplogy changes are propagated via the same mechanism as normal replication. This requires that we have have some way of segregating client data replications from toplogy changes.
+
+So, we have the same CAS style operation using the index offset.
+
+```rust
+pub enum ReplicaRequest {
+    AppendLogEntry {
+        assumed_offset: LogPos,
+        entry_offset: LogPos,
+        datum: LogContent,
+    },
+}
+
+pub enum LogContent {
+  ClientDatum(Vec<u8>),
+  ToplogyChanged(TopologyConfig),
+}
+
+pub struct TopologyConfig {
+  epoch: Epoch,
+  members: Map<Index, MemberMeta>,
+}
+
+// Wherin the meaningful state for each member is:
+
+pub struct MemberView {
+  epoch: Epoch,
+  downstream: Option<MemberMeta>
+}
+```
+
+However, the log is essentially a sorted key-value map. So, it doesn't seem unreasonable to encode the type into the key, eg: `(Epoch?, LogPos, LogContent.discriminator)`, unique over the (Epoch,LogPos).
+
+So, we end up with a task that tails the log for toplogy configs, maps them to a memberview, and then tries replicating to any current downstream. Because of the bad sequence response, you can just try starting from zero, and it'll tell you when you're wrong.
+--
 
 Switch from topology change "events" to a configured "State". Initialize each
 replica with a default containing self, then over-write?
