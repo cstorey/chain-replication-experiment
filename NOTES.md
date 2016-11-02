@@ -32,7 +32,8 @@ pub struct MemberView {
 However, the log is essentially a sorted key-value map. So, it doesn't seem unreasonable to encode the type into the key, eg: `(Epoch?, LogPos, LogContent.discriminator)`, unique over the (Epoch,LogPos).
 
 So, we end up with a task that tails the log for toplogy configs, maps them to a memberview, and then tries replicating to any current downstream. Because of the bad sequence response, you can just try starting from zero, and it'll tell you when you're wrong.
---
+
+# View changes
 
 Switch from topology change "events" to a configured "State". Initialize each
 replica with a default containing self, then over-write?
@@ -69,4 +70,4 @@ Currently(ish), the re-configuration interface requires a CAS from the old confi
 to the new. So, we'll need two "tasks". 1 for heart-beating.
 
 --
-"Levaraging": Leveraging Sharding in the Design of Scalable Replication Protocols
+"Leveraging": Leveraging Sharding in the Design of Scalable Replication Protocols
