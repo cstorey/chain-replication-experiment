@@ -29,7 +29,7 @@ From S4.7 of the "Leveraging" paper:
 
 With an active CM line in Elastic Replication, you can just have the CM send a
 re-configuration message. With a "passive" mechanism (eg: etcd) you'll need an
-intermediary to mediate. That could however live alongside the replica. 
+intermediary to mediate. That could however live alongside the replica.
 
 Currently(ish), the re-configuration interface requires a CAS from the old config
 to the new. So, we'll need two "tasks". 1 for heart-beating.
@@ -76,5 +76,21 @@ exist in the same failure domain. Assuming that the view-proxy and replicator
 both participate in the epoch mechanism, we *should* be safe, but I'd like
 more confidence than just a hunch.
 
---
+```
+views:
+  heartbeater:
+    Sender<Heartbeat>,
+  viewproxy:
+    Receiver<ChainConfig>,
+    Sender<ChainConfig>,
+```
+
+So, the heartbeater would be a widget that connects to the etcd, reserves a
+slot and returns a `Sender<Heartbeat>` or `Service<Request=(), Response=()>`.
+
+The view proxy then becomes a function of a
+`Stream<Item=(CreateTimestamp, Option<HostConfig>)>` ->
+`Stream<Item=ChainView>`.
+
+# References
 "Leveraging": Leveraging Sharding in the Design of Scalable Replication Protocols
