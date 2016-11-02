@@ -34,5 +34,47 @@ intermediary to mediate. That could however live alongside the replica.
 Currently(ish), the re-configuration interface requires a CAS from the old config
 to the new. So, we'll need two "tasks". 1 for heart-beating.
 
+## Integration
+
+We assume that a "client-proxy" module is co-located with each replica
+instance, which forwards writes/reads to the head/tail of the chain
+respectively.
+
+The client-proxy is (currently) the point of entry for view-changes as well as
+client-writes, as it provides a relatively convenient method of approximately
+sequencing requests. We'll need to include an epoch in the replication
+protocol to avoid a client-proxy that hasn't yet observed a view change
+sending writes to what used to be the head. That said, we aim to ensure that
+new nodes can only be added to the tail.
+
+The interface for an active participant would be:
+
+```
+interface ViewChanges {
+  viewChanged(from: (Epoch, Seqno), to: (Epoch, Seqno), view: ChainView)
+}
+```
+
+When the interface from the intermediary to the view manager would be:
+```
+interface ReplicaHeatbeats {
+  iAmAlive(node: HostConfig)
+}
+```
+
+Or similar.
+
+So assuming we have a failure detection mechanism that provides a serial set
+of configurations, eg: a set of nodes with time-to-live in etcd, we can watch
+for changes in the store, and assemble those into views.
+
+Then, when a node's view proxy observes a configuration in which it is
+the head, it'll "adopt" it, and send the ViewChange message down the chain.
+
+This does however assume that the view-proxy / heartbeater and replicator all
+exist in the same failure domain. Assuming that the view-proxy and replicator
+both participate in the epoch mechanism, we *should* be safe, but I'd like
+more confidence than just a hunch.
+
 --
 "Leveraging": Leveraging Sharding in the Design of Scalable Replication Protocols
