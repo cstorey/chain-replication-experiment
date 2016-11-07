@@ -3,8 +3,6 @@
 Switch from topology change "events" to a configured "State". Initialize each
 replica with a default containing self, then over-write?
 
-## Leases / heartbeats
-
 Move to a "lease" based mechanism for keeping replicas alive. Each replica
 in a chain connects to the chain's configuration manager, and periodically
 sends a ping to demonstrate aliveness. Once the CM detects a toplogy change,
@@ -16,7 +14,7 @@ chain manager.
 So, there are two interfaces, one that controls the chain head, and a
 heartbeating mechanism for each member.
 
-From S4.7 of the "Leveraging" paper:
+From §4.7 of the "Leveraging" paper:
 
 > Replicas in each shard monitor the replicas in the shard they are
 > sequencing. When replica failure is suspected, the wedge command is issued
@@ -34,7 +32,30 @@ re-configuration message. With a "passive" mechanism (eg: etcd) you'll need an
 intermediary to mediate. That could however live alongside the replica.
 
 Currently(ish), the re-configuration interface requires a CAS from the old config
-to the new. So, we'll need two "tasks". 1 for heart-beating.
+to the new. So, we'll need two "tasks". one for heart-beating, another for
+monitoring the view-manager.
+
+## Splitting concerns
+
+Alternatively, we do not actually need the failure detection and configuration
+sequencing to live in the same place. If we allow the replication protocol to
+include empty heartbeat messages, then we can have each peer in the chain
+monitor it's upstream and downstream, and report suspected failures to the
+config sequencer.
+
+This might well give us faster detection over a pure heartbeat-to-view-manager
+mechanism, as peers will be exchanging more messages, and so it should become
+more readily apparent if a peer is suspected. If a downstream is looking like
+it may be suspected (eg: 90% confidence of failure with Φ accural), the
+replica can send a probe.
+
+However, because connections to the sequencer may fail, we'll need to rely on
+redundancy in the sequencer; this might end up being our client-proxy.
+
+However, in order to advertise it's membership, each node will need to contact
+the view-manager anyway, so it makes sense to start off with the pure
+heartbeat mechanism, and add inter-peer failure detection as an optimisation
+later.
 
 ## Wedging
 
@@ -64,7 +85,7 @@ However, all we need there (as mentioned elsewhere) is sequencing, so we could
 just do that with a CAS to an external sequencer (eg: etcd, postgres) and
 stamp configuration changes with the sequencer's version number.
 
-# Integration
+## Integration with passive CM (etcd, etc)
 
 We assume that a "client-proxy" module is co-located with each replica
 instance, which forwards writes/reads to the head/tail of the chain
