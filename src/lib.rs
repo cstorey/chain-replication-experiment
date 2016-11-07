@@ -1,5 +1,6 @@
 #[macro_use]
 extern crate futures;
+extern crate futures_cpupool;
 extern crate tokio_core as tokio;
 extern crate tokio_service as service;
 extern crate tokio_proto as proto;
@@ -17,6 +18,8 @@ extern crate take;
 extern crate stable_bst;
 #[cfg(test)]
 extern crate env_logger;
+extern crate etcd;
+
 
 pub mod sexp_proto;
 mod errors;
@@ -25,6 +28,7 @@ mod tail;
 mod thick_client;
 mod store;
 pub mod hosting;
+mod view_management;
 
 pub use replica::LogPos;
 pub use tail::{TailService, TailClient, TailRequest, TailResponse};

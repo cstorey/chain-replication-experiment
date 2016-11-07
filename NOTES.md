@@ -58,7 +58,11 @@ detector suspects a failure, then we can:
   * Reject any further view-changes for that view
 
 However, we'll then need an external view manager to select a new view and
-push the config to the new nodes.
+push the config to the new nodes. 
+
+However, all we need there (as mentioned elsewhere) is sequencing, so we could
+just do that with a CAS to an external sequencer (eg: etcd, postgres) and
+stamp configuration changes with the sequencer's version number.
 
 # Integration
 
