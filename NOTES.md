@@ -3,6 +3,8 @@
 Switch from topology change "events" to a configured "State". Initialize each
 replica with a default containing self, then over-write?
 
+## Leases / heartbeats
+
 Move to a "lease" based mechanism for keeping replicas alive. Each replica
 in a chain connects to the chain's configuration manager, and periodically
 sends a ping to demonstrate aliveness. Once the CM detects a toplogy change,
@@ -34,7 +36,31 @@ intermediary to mediate. That could however live alongside the replica.
 Currently(ish), the re-configuration interface requires a CAS from the old config
 to the new. So, we'll need two "tasks". 1 for heart-beating.
 
-## Integration
+## Wedging
+
+So, rather than relying on an external failure detector, we could have each
+peer observe it's downstream / upstream; and wedge the replica state iff any
+peer suspects a failure of an upstream/downstream. next, we need to propagate.
+
+Assuming crash-stop failures, or equivalent, when a node fails, both it's
+upstream and downstream should employ a failure detector for a peer, by:
+
+ * The upstream sends periodical heartbeat messages, and logs responses to FD.
+ * The downstream will await heartbeats, and log them to it's FD.
+
+If we assume that the replica state machine can get notified when the failure
+detector suspects a failure, then we can:
+
+  * Cancel/fail outstanding RPCs to that machine
+  * Record view change marking the current view as wedged (so all messages
+    with that same epoch fail as wedged).
+  * Ensure that the "wedge" view change command does get replicated downstream.
+  * Reject any further view-changes for that view
+
+However, we'll then need an external view manager to select a new view and
+push the config to the new nodes.
+
+# Integration
 
 We assume that a "client-proxy" module is co-located with each replica
 instance, which forwards writes/reads to the head/tail of the chain
