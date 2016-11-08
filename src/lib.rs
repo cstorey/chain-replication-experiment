@@ -19,6 +19,7 @@ extern crate stable_bst;
 #[cfg(test)]
 extern crate env_logger;
 extern crate etcd;
+extern crate rand;
 
 
 pub mod sexp_proto;

@@ -4,6 +4,7 @@ use LogPos;
 use std::io;
 use spki_sexp;
 use tokio_timer;
+use etcd;
 
 error_chain!{
     links {
@@ -13,6 +14,7 @@ error_chain!{
     foreign_links {
         io::Error, Io;
         tokio_timer::TimeoutError, Timeout;
+        etcd::Error, Etcd;
     }
 
     errors {
