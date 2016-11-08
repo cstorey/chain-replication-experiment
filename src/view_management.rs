@@ -21,7 +21,7 @@ pub struct EtcdViewManager {
 impl EtcdViewManager {
     fn new(_url: &str, dir: &str, value: &str) -> Self {
         let client = Arc::new(etcd::Client::default());
-        let pool = CpuPool::new(1);
+        let pool = CpuPool::new(2);
         let hb = HeartBeater::new(pool.clone(), client.clone(), &dir, value);
         let w = Watcher::new(pool.clone(), client, dir);
         EtcdViewManager {
@@ -70,7 +70,9 @@ impl Stream for EtcdViewManager {
 
         self.update_view(event);
 
-        Ok(Async::Ready(Some(self.current_view())))
+        let view = self.current_view();
+        debug!("Current view from {:?}: {:?}", self.value, view);
+        Ok(Async::Ready(Some(view)))
     }
 }
 
@@ -147,6 +149,24 @@ struct Watcher {
 
 const KEY_EXISTS: u64 = 105;
 
+fn ensure_dir(cl: &etcd::Client, dir: &str) -> Result<()> {
+    match cl.create_dir(&dir, None) {
+        Ok(_) => Ok(()),
+        Err(mut es) => {
+            match es.pop().expect("first error") {
+                etcd::Error::Api(etcd::ApiError { error_code, .. }) if error_code == KEY_EXISTS => {
+                    debug!("Directory prefix {:?} already exists: {:?}", dir, es);
+                    Ok(())
+                }
+                e => {
+                    error!("Error creating {:?}: {:?}", dir, es);
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+}
+
 impl HeartBeater {
     fn new(cpupool: CpuPool, etcd: Arc<etcd::Client>, dir: &str, value: &str) -> Self {
         HeartBeater {
@@ -171,22 +191,8 @@ impl HeartBeater {
             let dir = self.dir.clone();
             let val = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
-                info!("Starting; dir node");
-                match cl.create_dir(&dir, None) {
-                    Ok(_) => (),
-                    Err(mut es) => {
-                        match es.pop().expect("first error") {
-                            etcd::Error::Api(etcd::ApiError { error_code, .. }) if error_code ==
-                                                                                   KEY_EXISTS => {
-                                debug!("Directory prefix {:?} already exists: {:?}", dir, es);
-                            }
-                            e => {
-                                error!("Error creating {:?}: {:?}", dir, es);
-                                return Err(e.into());
-                            }
-                        }
-                    }
-                }
+                info!("Starting; create dir node");
+                ensure_dir(&*cl, &dir);
                 info!("Starting; creating seq node");
                 let res = try!(cl.create_in_order(&dir, &val, Some(5))
                     .map_err(|mut es| es.pop().unwrap()));
@@ -239,9 +245,10 @@ impl HeartBeater {
         info!("Ping?");
         let ping_fut = {
             let cl = self.etcd.clone();
+            let value = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
-                info!("Pinging");
-                let res = try!(cl.compare_and_swap(&key, "Hi", Some(5), None, Some(ver))
+                info!("Pinging for {:?}", key);
+                let res = try!(cl.compare_and_swap(&key, &value, Some(5), None, Some(ver))
                     .map_err(|mut es| es.pop().unwrap()));
                 debug!("Pinged:{:?}", res);
                 Ok(res)
@@ -292,6 +299,8 @@ impl Watcher {
             let cl = self.etcd.clone();
             let dir = self.dir.clone();
             self.pool.spawn(futures::lazy(move || {
+                info!("Watch; create dir node if needed");
+                ensure_dir(&*cl, &dir);
                 info!("Scanning");
                 let res = try!(cl.get(&dir, true, false, false)
                     .map_err(|mut es| es.pop().unwrap()));
@@ -420,7 +429,7 @@ impl Stream for Watcher {
 mod test {
     use tokio::reactor::Core;
     use super::EtcdViewManager;
-    use futures::Future;
+    use futures::{self, Future};
     use futures::stream::Stream;
     use tokio_timer::Timer;
     use std::time::Duration;
@@ -495,20 +504,36 @@ mod test {
         let first = EtcdViewManager::new(ETCD_URL, &prefix, first_config.clone());
         let second = EtcdViewManager::new(ETCD_URL, &prefix, second_config.clone());
 
-        let (next, first) = core.run(first.into_future().map_err(|(e, _)| e)).expect("run one");
-        let (vers, config) = next.expect("next value");
+        let (c, p) = futures::oneshot();
+
         core.handle().spawn(first.for_each(|e|
                     Ok(println!("should_add_new_members_to_tail::first: {:?}", e)))
-                    .map_err(|e| panic!("first: {:?}", e)));
+                    .map_err(|e| panic!("first: {:?}", e))
+                    .select(p)
+                    .map(|((), _)| println!("First exiting"))
+                    .map_err(|(e, _)| panic!("cancellation: {:?}", e))
+                    );
 
-        let (next, me) = core.run(second.into_future().map_err(|(e, _)| e)).expect("run one");
-        let (vers, config) = next.expect("next value");
-        assert_eq!(config.into_iter().collect::<Vec<_>>(),
-                   vec![first_config.to_string(), second_config.to_string()]);
-
+        println!("Await config from second");
         // Run both until quiescent
+        let (next, second) =
+            core.run(second.filter(|r| r.1.len() > 1).into_future().map_err(|(e, _)| e))
+                .expect("run one");
+        println!("config from second: {:?}", next);
+
         // forcibly remove one instance.
+        println!("terminating second future");
+        c.complete(());
+
         // Run until new config
+        println!("Await new config from second");
+        let (next, second) = core.run(second.into_future().map_err(|(e, _)| e)).expect("run one");
+        println!("config from second: {:?}", next);
+        let (vers, config) = next.expect("next value");
+
+        assert_eq!(config.into_iter().collect::<Vec<_>>(),
+                   vec![second_config.to_string()]);
+
 
     }
 }
