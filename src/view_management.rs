@@ -18,6 +18,8 @@ pub struct EtcdViewManager {
     watcher: Watcher,
 }
 
+const TTL: u64 = 2;
+
 impl EtcdViewManager {
     fn new(_url: &str, dir: &str, value: &str) -> Self {
         let client = Arc::new(etcd::Client::default());
@@ -32,14 +34,29 @@ impl EtcdViewManager {
         }
     }
 
-    fn update_view(&mut self, ev: WatchEvent) {
+    fn update_view(&mut self, ev: WatchEvent) -> bool {
         let &mut (_, ref mut view) = &mut self.view;
         debug!("update_view: {:?} -> {:?}", view, ev);
-        match ev {
-            WatchEvent::Alive(id, ver, val) => view.insert(id, val),
-            WatchEvent::Dead(id, ver) => view.remove(&id),
+        let changed = match ev {
+            WatchEvent::Alive(id, ver, val) => {
+                if view.get(&id) != Some(&val) {
+                    view.insert(id, val);
+                    true
+                } else {
+                    false
+                }
+            }
+            WatchEvent::Dead(id, ver) => {
+                if view.get(&id).is_some() {
+                    view.remove(&id);
+                    true
+                } else {
+                    false
+                }
+            }
         };
-        debug!("update_view post: {:?}", view);
+        debug!("update_view changed:{:?}; post: {:?}", changed, view);
+        changed
     }
     fn current_view(&mut self) -> View {
         let &(ver, ref view) = &self.view;
@@ -68,11 +85,14 @@ impl Stream for EtcdViewManager {
         };
         debug!("WatchEvent: {:?}", event);
 
-        self.update_view(event);
-
-        let view = self.current_view();
-        debug!("Current view from {:?}: {:?}", self.value, view);
-        Ok(Async::Ready(Some(view)))
+        if self.update_view(event) {
+            let view = self.current_view();
+            debug!("Current view from {:?}: {:?}", self.value, view);
+            Ok(Async::Ready(Some(view)))
+        } else {
+            debug!("Current view unchanged");
+            Ok(Async::NotReady)
+        }
     }
 }
 
@@ -191,12 +211,12 @@ impl HeartBeater {
             let dir = self.dir.clone();
             let val = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
-                info!("Starting; create dir node");
+                debug!("Starting; create dir node {:?}", dir);
                 ensure_dir(&*cl, &dir);
-                info!("Starting; creating seq node");
-                let res = try!(cl.create_in_order(&dir, &val, Some(5))
+                debug!("Starting; creating seq node");
+                let res = try!(cl.create_in_order(&dir, &val, Some(TTL))
                     .map_err(|mut es| es.pop().unwrap()));
-                debug!("Created:{:?}", res);
+                trace!("Created:{:?}", res);
                 Ok(res)
             }))
         };
@@ -228,7 +248,7 @@ impl HeartBeater {
             return Ok(Async::Ready(()));
         };
 
-        let sleeper = self.timer.sleep(Duration::from_millis(200));
+        let sleeper = self.timer.sleep(Duration::from_secs(TTL) / 2);
 
         self.state = HeartBeatState::Sleeping(key, ver, sleeper);
         Ok(Async::Ready(()))
@@ -248,9 +268,9 @@ impl HeartBeater {
             let value = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
                 info!("Pinging for {:?}", key);
-                let res = try!(cl.compare_and_swap(&key, &value, Some(5), None, Some(ver))
+                let res = try!(cl.compare_and_swap(&key, &value, Some(TTL), None, Some(ver))
                     .map_err(|mut es| es.pop().unwrap()));
-                debug!("Pinged:{:?}", res);
+                trace!("Pinged:{:?}", res);
                 Ok(res)
             }))
         };
@@ -494,15 +514,16 @@ mod test {
     }
 
     #[test]
-    #[ignore]
     fn should_remove_dead_members() {
         env_logger::init().unwrap_or(());
         let prefix = rand_dir();
         let mut core = Core::new().expect("core::new");
+        let t = Timer::default();
+        let timeout = Duration::from_millis(5000);
         let first_config = "23";
         let second_config = "42";
         let first = EtcdViewManager::new(ETCD_URL, &prefix, first_config.clone());
-        let second = EtcdViewManager::new(ETCD_URL, &prefix, second_config.clone());
+        let mut second = EtcdViewManager::new(ETCD_URL, &prefix, second_config.clone());
 
         let (c, p) = futures::oneshot();
 
@@ -516,24 +537,26 @@ mod test {
 
         println!("Await config from second");
         // Run both until quiescent
-        let (next, second) =
-            core.run(second.filter(|r| r.1.len() > 1).into_future().map_err(|(e, _)| e))
+        loop {
+            let (next, second2) = core.run(second.into_future().map_err(|(e, _)| e))
                 .expect("run one");
-        println!("config from second: {:?}", next);
+            second = second2;
+            println!("config from second: {:?}", next);
+            if next.expect("next").1.len() > 1 {
+                break;
+            }
+        }
 
         // forcibly remove one instance.
-        println!("terminating second future");
+        println!("terminating first future");
         c.complete(());
 
-        // Run until new config
-        println!("Await new config from second");
-        let (next, second) = core.run(second.into_future().map_err(|(e, _)| e)).expect("run one");
+        let (next, second2) = core.run(second.into_future().map_err(|(e, _)| e))
+            .expect("run one");
+        second = second2;
         println!("config from second: {:?}", next);
         let (vers, config) = next.expect("next value");
-
         assert_eq!(config.into_iter().collect::<Vec<_>>(),
                    vec![second_config.to_string()]);
-
-
     }
 }
