@@ -7,6 +7,9 @@ addons:
     sources:
     - ubuntu-toolchain-r-test
 
+services:
+  - docker
+
 rust:
 - stable
 - beta
@@ -16,6 +19,13 @@ cache:
   directories:
     - $HOME/.cargo
     - target
+
+#   image: quay.io/coreos/etcd:v2.2.4
+#  restart: always
+#  command: -advertise-client-urls=http://0.0.0.0:2379 -listen-client-urls=http://0.0.0.0:2379
+before_install:
+- docker pull quay.io/coreos/etcd:v2.2.4
+- docker run -d -p 2379 quay.io/coreos/etcd:v2.2.4 -advertise-client-urls=http://0.0.0.0:2379 -listen-client-urls=http://0.0.0.0:2379
 
 install:
   - env
