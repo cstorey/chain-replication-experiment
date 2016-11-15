@@ -79,7 +79,7 @@ detector suspects a failure, then we can:
   * Reject any further view-changes for that view
 
 However, we'll then need an external view manager to select a new view and
-push the config to the new nodes. 
+push the config to the new nodes.
 
 However, all we need there (as mentioned elsewhere) is sequencing, so we could
 just do that with a CAS to an external sequencer (eg: etcd, postgres) and
@@ -142,6 +142,57 @@ slot and returns a `Sender<Heartbeat>` or `Service<Request=(), Response=()>`.
 The view proxy then becomes a function of a
 `Stream<Item=(CreateTimestamp, Option<HostConfig>)>` ->
 `Stream<Item=ChainView>`.
+
+# View manager glue
+
+Okay, so our interface from the external view manager to the intermediary
+(client-proxy or thick client), would pretty much look like this:
+
+```
+interface ViewChanges {
+  viewChanged(from: Epoch, to: Epoch, view: ChainView)
+}
+```
+
+Which is essentially a CAS from the previous view to the new view, the new
+view supplanting the old.
+
+Now, the fun part here is how the CAS of epochs relates to the CAS in terms of
+Sequence numbers. In order to prevent a head that has been presumed dead and
+removed from a new configuration writing data to the new head, we'll need to
+nick Raft's Epoch mechanism along with the log sequence numbers. So, we'll go
+from the AppendLogEntry request being:
+
+```
+AppendLogEntry(assumed_offset: LogPos, entry_offset: LogPos, datum: LogEntry)
+```
+
+Where the LogPos is defined as the sequence number, we'll replace the offsets
+with tuples of `(Epoch, LogPos)`, with essentially the same CAS semantics.
+
+So, the viewChanged method would end up being something like:
+```
+  fn viewChanged(&mut self, assumed_epoch:Epoch, next_epoch:Epoch, view:ChainView) -> Result<()> {
+    if assumed_epoch != self.current_epoch || next_epoch <= self.current_epoch {
+      return Err(ErrorKind::WrongEpoch(self.current_epoch))
+    };
+    let entry = LogEntry::ViewChanges(view);
+    loop {
+      let current = (self.current_epoch, self.last_sent_pos);
+      let next = (next_epoch, self.last_sent_pos.next());
+      self.current_epoch = next_epoch;
+      self.last_sent_pos = self.last_sent_pos.next();
+      if self.next.append_log_entry(current, next, entry) {
+        return Ok(())
+      } else {
+        // If BadSequence response has a different Epoch from `assumed_epoch`, then
+        // fail the request.
+        // If BadSequence response has the same Epoch, then reset
+        // `last_sent_pos` and resend.
+      }
+    }
+  }
+```
 
 # References
 "Leveraging": Leveraging Sharding in the Design of Scalable Replication Protocols
