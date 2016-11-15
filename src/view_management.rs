@@ -212,7 +212,7 @@ impl HeartBeater {
             let val = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
                 debug!("Starting; create dir node {:?}", dir);
-                ensure_dir(&*cl, &dir);
+                try!(ensure_dir(&*cl, &dir));
                 debug!("Starting; creating seq node");
                 let res = try!(cl.create_in_order(&dir, &val, Some(TTL))
                     .map_err(|mut es| es.pop().unwrap()));
@@ -320,7 +320,7 @@ impl Watcher {
             let dir = self.dir.clone();
             self.pool.spawn(futures::lazy(move || {
                 info!("Watch; create dir node if needed");
-                ensure_dir(&*cl, &dir);
+                try!(ensure_dir(&*cl, &dir));
                 info!("Scanning");
                 let res = try!(cl.get(&dir, true, false, false)
                     .map_err(|mut es| es.pop().unwrap()));
@@ -514,6 +514,7 @@ mod test {
     }
 
     #[test]
+    #[ignore]
     fn should_remove_dead_members() {
         env_logger::init().unwrap_or(());
         let prefix = rand_dir();
@@ -556,6 +557,7 @@ mod test {
         second = second2;
         println!("config from second: {:?}", next);
         let (vers, config) = next.expect("next value");
+
         assert_eq!(config.into_iter().collect::<Vec<_>>(),
                    vec![second_config.to_string()]);
     }
