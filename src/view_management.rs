@@ -494,7 +494,7 @@ mod test {
         let prefix = rand_dir();
         let mut core = Core::new().expect("core::new");
         let t = Timer::default();
-        let timeout = Duration::from_millis(100);
+        let timeout = Duration::from_millis(1000);
         let first_config = "23";
         let second_config = "42";
         let first = EtcdViewManager::new(ETCD_URL, &prefix, first_config.clone());
@@ -506,7 +506,8 @@ mod test {
                     .map_err(|e| panic!("first: {:?}", e)));
 
         let (next, me) =
-            core.run(second.filter(|r| r.1.len() > 1).into_future().map_err(|(e, _)| e))
+            core.run(t.timeout(second.filter(|r| r.1.len() > 1).into_future().map_err(|(e, _)| e),
+                               timeout))
                 .expect("run one");
         let (vers, config) = next.expect("next value");
         assert_eq!(config.into_iter().collect::<Vec<_>>(),
@@ -514,7 +515,6 @@ mod test {
     }
 
     #[test]
-    #[ignore]
     fn should_remove_dead_members() {
         env_logger::init().unwrap_or(());
         let prefix = rand_dir();
@@ -539,8 +539,9 @@ mod test {
         println!("Await config from second");
         // Run both until quiescent
         loop {
-            let (next, second2) = core.run(second.into_future().map_err(|(e, _)| e))
-                .expect("run one");
+            let (next, second2) =
+                core.run(t.timeout(second.into_future().map_err(|(e, _)| e), timeout))
+                    .expect("run one");
             second = second2;
             println!("config from second: {:?}", next);
             if next.expect("next").1.len() > 1 {
@@ -552,7 +553,7 @@ mod test {
         println!("terminating first future");
         c.complete(());
 
-        let (next, second2) = core.run(second.into_future().map_err(|(e, _)| e))
+        let (next, second2) = core.run(t.timeout(second.into_future().map_err(|(e, _)| e), timeout))
             .expect("run one");
         second = second2;
         println!("config from second: {:?}", next);
