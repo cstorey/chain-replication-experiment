@@ -7,13 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::fmt;
 use std::collections::{BTreeMap, VecDeque};
+use serde_json;
 
-use {Error, Result, ChainErr};
+use {Error, Result, ChainErr, ChainView, HostConfig};
 
-pub type View = (u64, Vec<String>);
+pub type View = ChainView;
 pub struct EtcdViewManager {
-    value: String,
-    view: (u64, BTreeMap<String, String>),
+    value: HostConfig,
+    view: BTreeMap<String, HostConfig>,
     heartbeats: HeartBeater,
     watcher: Watcher,
 }
@@ -21,46 +22,45 @@ pub struct EtcdViewManager {
 const TTL: u64 = 2;
 
 impl EtcdViewManager {
-    fn new(_url: &str, dir: &str, value: &str) -> Self {
+    fn new(_url: &str, dir: &str, value: HostConfig) -> Self {
         let client = Arc::new(etcd::Client::default());
         let pool = CpuPool::new(2);
-        let hb = HeartBeater::new(pool.clone(), client.clone(), &dir, value);
+        let hb = HeartBeater::new(pool.clone(), client.clone(), &dir, value.clone());
         let w = Watcher::new(pool.clone(), client, dir);
         EtcdViewManager {
-            value: value.to_string(),
-            view: (0, BTreeMap::new()),
+            value: value,
+            view: Default::default(),
             heartbeats: hb,
             watcher: w,
         }
     }
 
     fn update_view(&mut self, ev: WatchEvent) -> bool {
-        let &mut (_, ref mut view) = &mut self.view;
-        debug!("update_view: {:?} -> {:?}", view, ev);
+        debug!("update_view: {:?} -> {:?}", self.view, ev);
         let changed = match ev {
             WatchEvent::Alive(id, ver, val) => {
-                if view.get(&id) != Some(&val) {
-                    view.insert(id, val);
+                if self.view.get(&id) != Some(&val) {
+                    self.view.insert(id, val);
                     true
                 } else {
                     false
                 }
             }
             WatchEvent::Dead(id, ver) => {
-                if view.get(&id).is_some() {
-                    view.remove(&id);
+                if self.view.get(&id).is_some() {
+                    self.view.remove(&id);
                     true
                 } else {
                     false
                 }
             }
         };
-        debug!("update_view changed:{:?}; post: {:?}", changed, view);
+        debug!("update_view changed:{:?}; post: {:?}", changed, self.view);
         changed
     }
-    fn current_view(&mut self) -> View {
-        let &(ver, ref view) = &self.view;
-        (ver, view.values().cloned().collect())
+    fn current_view(&mut self) -> ChainView {
+        let members = self.view.values().cloned().collect::<Vec<HostConfig>>();
+        ChainView::of(members)
     }
 }
 
@@ -108,7 +108,7 @@ struct HeartBeater {
     etcd: Arc<etcd::Client>,
     timer: Timer,
     state: HeartBeatState,
-    value: String,
+    value: HostConfig,
     dir: String,
 }
 
@@ -120,7 +120,7 @@ enum WatcherState {
 
 #[derive(Debug, Clone)]
 enum WatchEvent {
-    Alive(String, u64, String),
+    Alive(String, u64, HostConfig),
     Dead(String, u64),
 }
 
@@ -188,13 +188,13 @@ fn ensure_dir(cl: &etcd::Client, dir: &str) -> Result<()> {
 }
 
 impl HeartBeater {
-    fn new(cpupool: CpuPool, etcd: Arc<etcd::Client>, dir: &str, value: &str) -> Self {
+    fn new(cpupool: CpuPool, etcd: Arc<etcd::Client>, dir: &str, value: HostConfig) -> Self {
         HeartBeater {
             pool: cpupool,
             etcd: etcd,
             state: HeartBeatState::New,
             timer: Timer::default(),
-            value: value.to_string(),
+            value: value,
             dir: dir.to_string(),
         }
     }
@@ -214,8 +214,9 @@ impl HeartBeater {
                 debug!("Starting; create dir node {:?}", dir);
                 try!(ensure_dir(&*cl, &dir));
                 debug!("Starting; creating seq node");
-                let res = try!(cl.create_in_order(&dir, &val, Some(TTL))
-                    .map_err(|mut es| es.pop().unwrap()));
+                let res =
+                    try!(cl.create_in_order(&dir, &try!(serde_json::to_string(&val)), Some(TTL))
+                        .map_err(|mut es| es.pop().unwrap()));
                 trace!("Created:{:?}", res);
                 Ok(res)
             }))
@@ -268,7 +269,11 @@ impl HeartBeater {
             let value = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
                 info!("Pinging for {:?}", key);
-                let res = try!(cl.compare_and_swap(&key, &value, Some(TTL), None, Some(ver))
+                let res = try!(cl.compare_and_swap(&key,
+                                      &try!(serde_json::to_string(&value)),
+                                      Some(TTL),
+                                      None,
+                                      Some(ver))
                     .map_err(|mut es| es.pop().unwrap()));
                 trace!("Pinged:{:?}", res);
                 Ok(res)
@@ -349,17 +354,20 @@ impl Watcher {
             .collect();
 
         let latest_version = nodes.iter().filter_map(|node| node.modified_index).max();
-        let res = nodes.into_iter()
+        let res = try!(nodes.into_iter()
             .filter_map(|node| {
                 let etcd::Node { key, value, modified_index, .. } = node;
                 key.and_then(move |key| {
                     modified_index.map(move |ver| match value {
-                        Some(val) => WatchEvent::Alive(key, ver, val),
-                        None => WatchEvent::Dead(key, ver),
+                        Some(val) => {
+                            trace!("Raw value: {:?}=>{:?}", key, val);
+                            Ok(WatchEvent::Alive(key, ver, try!(serde_json::from_str(&val))))
+                        }
+                        None => Ok(WatchEvent::Dead(key, ver)),
                     })
                 })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>());
 
         debug!("Events: {:?}", res);
 
@@ -413,7 +421,11 @@ impl Watcher {
 
         self.state = WatcherState::Fresh(Some(ver));
         let event = match value {
-            Some(val) => WatchEvent::Alive(key, ver, val),
+            Some(val) => {
+
+                trace!("Raw value: {:?}=>{:?}", key, val);
+                WatchEvent::Alive(key, ver, try!(serde_json::from_str(&val)))
+            }
             None => WatchEvent::Dead(key, ver),
         };
 
@@ -456,6 +468,7 @@ mod test {
     use std::iter;
     use env_logger;
     use rand::{self, Rng};
+    use HostConfig;
 
     fn rand_dir() -> String {
         let mut gen = rand::thread_rng();
@@ -477,14 +490,16 @@ mod test {
         let mut core = Core::new().expect("core::new");
         let t = Timer::default();
         let timeout = Duration::from_millis(1000);
-        let self_config = "23";
+        let self_config = HostConfig {
+            head: "10.0.0.23:1".parse().unwrap(),
+            tail: "10.0.0.23:2".parse().unwrap(),
+        };
         let me = EtcdViewManager::new(ETCD_URL, &prefix, self_config.clone());
         let (next, me) = core.run(t.timeout(me.into_future().map_err(|(e, _)| e), timeout))
             .expect("run one");
-        let (vers, config) = next.expect("next value");
+        let config = next.expect("next value");
 
-        assert_eq!(config.into_iter().collect::<Vec<String>>(),
-                   vec![self_config.to_string()]);
+        assert_eq!(config.members, vec![self_config]);
     }
 
 
@@ -495,24 +510,30 @@ mod test {
         let mut core = Core::new().expect("core::new");
         let t = Timer::default();
         let timeout = Duration::from_millis(2000);
-        let first_config = "23";
-        let second_config = "42";
+        let first_config = HostConfig {
+            head: "10.0.0.23:1".parse().unwrap(),
+            tail: "10.0.0.23:2".parse().unwrap(),
+        };
+        let second_config = HostConfig {
+            head: "10.0.0.42:1".parse().unwrap(),
+            tail: "10.0.0.42:2".parse().unwrap(),
+        };
         let first = EtcdViewManager::new(ETCD_URL, &prefix, first_config.clone());
         let second = EtcdViewManager::new(ETCD_URL, &prefix, second_config.clone());
         let (next, first) = core.run(first.into_future().map_err(|(e, _)| e)).expect("run one");
-        // let (vers, config) = next.expect("next value");
+        // let config = next.expect("next value");
         core.handle().spawn(first.for_each(|e|
                     Ok(println!("should_add_new_members_to_tail::first: {:?}", e)))
                     .map_err(|e| panic!("first: {:?}", e)));
 
         debug!("Await configuration values");
-        let (next, me) =
-            core.run(t.timeout(second.filter(|r| r.1.len() > 1).into_future().map_err(|(e, _)| e),
-                               timeout))
-                .expect("run one");
-        let (vers, config) = next.expect("next value");
-        assert_eq!(config.into_iter().collect::<Vec<_>>(),
-                   vec![first_config.to_string(), second_config.to_string()]);
+        let (next, me) = core.run(t.timeout(second.filter(|r| r.members.len() > 1)
+                               .into_future()
+                               .map_err(|(e, _)| e),
+                           timeout))
+            .expect("run one");
+        let config = next.expect("next value");
+        assert_eq!(config.members, vec![first_config, second_config]);
     }
 
     #[test]
@@ -522,8 +543,14 @@ mod test {
         let mut core = Core::new().expect("core::new");
         let t = Timer::default();
         let timeout = Duration::from_millis(5000);
-        let first_config = "23";
-        let second_config = "42";
+        let first_config = HostConfig {
+            head: "10.0.0.23:1".parse().unwrap(),
+            tail: "10.0.0.23:2".parse().unwrap(),
+        };
+        let second_config = HostConfig {
+            head: "10.0.0.42:1".parse().unwrap(),
+            tail: "10.0.0.42:2".parse().unwrap(),
+        };
         let first = EtcdViewManager::new(ETCD_URL, &prefix, first_config.clone());
         let mut second = EtcdViewManager::new(ETCD_URL, &prefix, second_config.clone());
 
@@ -545,7 +572,7 @@ mod test {
                     .expect("run one");
             second = second2;
             println!("config from second: {:?}", next);
-            if next.expect("next").1.len() > 1 {
+            if next.expect("next").members.len() > 1 {
                 break;
             }
         }
@@ -558,9 +585,8 @@ mod test {
             .expect("run one");
         second = second2;
         println!("config from second: {:?}", next);
-        let (vers, config) = next.expect("next value");
+        let config = next.expect("next value");
 
-        assert_eq!(config.into_iter().collect::<Vec<_>>(),
-                   vec![second_config.to_string()]);
+        assert_eq!(config.members, vec![second_config]);
     }
 }

@@ -6,6 +6,7 @@ extern crate tokio_service as service;
 extern crate tokio_proto as proto;
 extern crate tokio_timer;
 extern crate serde;
+extern crate serde_json;
 extern crate tokio_service;
 extern crate spki_sexp;
 #[macro_use]

@@ -5,6 +5,7 @@ use std::io;
 use spki_sexp;
 use tokio_timer;
 use etcd;
+use serde_json;
 
 error_chain!{
     links {
@@ -15,6 +16,7 @@ error_chain!{
         io::Error, Io;
         tokio_timer::TimeoutError, Timeout;
         etcd::Error, Etcd;
+        serde_json::Error, Json;
     }
 
     errors {
