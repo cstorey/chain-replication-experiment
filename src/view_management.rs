@@ -494,7 +494,7 @@ mod test {
         let prefix = rand_dir();
         let mut core = Core::new().expect("core::new");
         let t = Timer::default();
-        let timeout = Duration::from_millis(1000);
+        let timeout = Duration::from_millis(2000);
         let first_config = "23";
         let second_config = "42";
         let first = EtcdViewManager::new(ETCD_URL, &prefix, first_config.clone());
@@ -505,6 +505,7 @@ mod test {
                     Ok(println!("should_add_new_members_to_tail::first: {:?}", e)))
                     .map_err(|e| panic!("first: {:?}", e)));
 
+        debug!("Await configuration values");
         let (next, me) =
             core.run(t.timeout(second.filter(|r| r.1.len() > 1).into_future().map_err(|(e, _)| e),
                                timeout))
