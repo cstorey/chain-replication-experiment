@@ -51,7 +51,9 @@ impl Store for RamStore {
     fn append_entry(&self, assumed: LogPos, next: LogPos, val: LogEntry) -> Self::AppendFut {
         let inner = self.inner.clone();
         let innerid = &*inner as *const _ as usize;
+        trace!("begin append: {:?}", next);
         futures::lazy(move || {
+                trace!("perform append: {:?}", next);
                 let mut inner = inner.lock().expect("lock");
                 trace!("{:x}: Log pre: {:#?}", innerid, inner.log);
                 use stable_bst::Bound::*;
