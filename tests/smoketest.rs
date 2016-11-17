@@ -17,6 +17,7 @@ use vastatrix::LogPos;
 
 use vastatrix::hosting::*;
 
+/// Remove ThickClient#add_peer calls, replace with Zarniwhoop^Wetcd config.
 #[test]
 fn smoketest_single_node() {
     env_logger::init().unwrap_or(());

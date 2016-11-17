@@ -12,7 +12,7 @@ use serde_json;
 use {Error, Result, ChainErr, ChainView, HostConfig};
 
 pub type View = ChainView;
-pub struct EtcdViewManager {
+pub struct EtcdHeartbeater {
     value: HostConfig,
     view: BTreeMap<String, HostConfig>,
     heartbeats: HeartBeater,
@@ -21,13 +21,13 @@ pub struct EtcdViewManager {
 
 const TTL: u64 = 2;
 
-impl EtcdViewManager {
+impl EtcdHeartbeater {
     pub fn new(_url: &str, dir: &str, value: HostConfig) -> Self {
         let client = Arc::new(etcd::Client::default());
         let pool = CpuPool::new(2);
         let hb = HeartBeater::new(pool.clone(), client.clone(), &dir, value.clone());
         let w = Watcher::new(pool.clone(), client, dir);
-        EtcdViewManager {
+        EtcdHeartbeater {
             value: value,
             view: Default::default(),
             heartbeats: hb,
@@ -64,12 +64,12 @@ impl EtcdViewManager {
     }
 }
 
-impl Stream for EtcdViewManager {
+impl Stream for EtcdHeartbeater {
     type Item = View;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        debug!("EtcdViewManager#poll");
+        debug!("EtcdHeartbeater#poll");
         match try!(self.heartbeats.poll()) {
             Async::NotReady => (),
             Async::Ready(()) => {
@@ -460,7 +460,7 @@ impl Stream for Watcher {
 #[cfg(test)]
 mod test {
     use tokio::reactor::Core;
-    use super::EtcdViewManager;
+    use super::EtcdHeartbeater;
     use futures::{self, Future};
     use futures::stream::Stream;
     use tokio_timer::Timer;
@@ -494,7 +494,7 @@ mod test {
             head: "10.0.0.23:1".parse().unwrap(),
             tail: "10.0.0.23:2".parse().unwrap(),
         };
-        let me = EtcdViewManager::new(ETCD_URL, &prefix, self_config.clone());
+        let me = EtcdHeartbeater::new(ETCD_URL, &prefix, self_config.clone());
         let (next, me) = core.run(t.timeout(me.into_future().map_err(|(e, _)| e), timeout))
             .expect("run one");
         let config = next.expect("next value");
@@ -518,8 +518,8 @@ mod test {
             head: "10.0.0.42:1".parse().unwrap(),
             tail: "10.0.0.42:2".parse().unwrap(),
         };
-        let first = EtcdViewManager::new(ETCD_URL, &prefix, first_config.clone());
-        let second = EtcdViewManager::new(ETCD_URL, &prefix, second_config.clone());
+        let first = EtcdHeartbeater::new(ETCD_URL, &prefix, first_config.clone());
+        let second = EtcdHeartbeater::new(ETCD_URL, &prefix, second_config.clone());
         let (next, first) = core.run(first.into_future().map_err(|(e, _)| e)).expect("run one");
         // let config = next.expect("next value");
         core.handle().spawn(first.for_each(|e|
@@ -551,8 +551,8 @@ mod test {
             head: "10.0.0.42:1".parse().unwrap(),
             tail: "10.0.0.42:2".parse().unwrap(),
         };
-        let first = EtcdViewManager::new(ETCD_URL, &prefix, first_config.clone());
-        let mut second = EtcdViewManager::new(ETCD_URL, &prefix, second_config.clone());
+        let first = EtcdHeartbeater::new(ETCD_URL, &prefix, first_config.clone());
+        let mut second = EtcdHeartbeater::new(ETCD_URL, &prefix, second_config.clone());
 
         let (c, p) = futures::oneshot();
 

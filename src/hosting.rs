@@ -2,6 +2,7 @@ use futures::Future;
 use tokio::reactor::Handle;
 use {RamStore, sexp_proto, TailService, ServerService, Replicator, ReplicaClient};
 use replica::HostConfig;
+use view_management::{EtcdHeartbeater, ViewManager};
 
 use std::net::SocketAddr;
 use std::io;
@@ -14,16 +15,21 @@ pub fn build_server(handle: &Handle,
     let head = ServerService::new(store.clone());
     let tail = TailService::new(store.clone());
 
-    let downstream = {
-        let handle = handle.clone();
-        move |addr| ReplicaClient::connect(handle.clone(), &addr)
-    };
     let head_host = try!(sexp_proto::server::serve(handle, head_addr, head));
     let tail_host = try!(sexp_proto::server::serve(handle, tail_addr, tail));
 
     let host_config = HostConfig {
         head: head_host.local_addr().clone(),
         tail: tail_host.local_addr().clone(),
+    };
+
+    let etcd = EtcdHeartbeater::new("", "/my-chain", host_config.clone());
+    let view_manager = ViewManager::new(store.clone(), &host_config, etcd);
+    handle.spawn(view_manager.map_err(|e| panic!("ViewManager failed!: {:?}", e)));
+
+    let downstream = {
+        let handle = handle.clone();
+        move |addr| ReplicaClient::connect(handle.clone(), &addr)
     };
 
     let replica = Replicator::new(store.clone(), &host_config, downstream);

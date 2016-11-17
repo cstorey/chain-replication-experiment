@@ -67,27 +67,26 @@ impl<H, T> ThickClient<H, T>
             entry_offset: current.next(),
             datum: LogEntry::Data(body.into()),
         };
-        debug!("Sending assuming: {:?}", current);
-        let fut = self.head.call(req.clone());
-        LogItemFut {
-            head: self.head.clone(),
-            future: fut,
-            req: req,
-        }
+        trace!("Sending assuming: {:?}", current);
+        self.do_log_item(req)
     }
 
-
+    // TODO: Move into seperate service widget, that takes updates from the
+    // ViewManager, and pushes them into the replication stream.
     pub fn add_peer(&self, peer: HostConfig) -> LogItemFut<H> {
         let mut state = self.state.lock().expect("lock current");
         let current = state.last_known_head;
         state.view.members.push(peer);
-        // self.view.members.push(peer);
         let req = ReplicaRequest::AppendLogEntry {
             assumed_offset: current,
             entry_offset: current.next(),
             datum: LogEntry::ViewChange(state.view.clone()),
         };
-        debug!("Sending assuming: {:?}", current);
+        trace!("Sending assuming: {:?}", current);
+        self.do_log_item(req)
+    }
+
+    fn do_log_item(&self, req: ReplicaRequest) -> LogItemFut<H> {
         let fut = self.head.call(req.clone());
         LogItemFut {
             head: self.head.clone(),
@@ -95,7 +94,6 @@ impl<H, T> ThickClient<H, T>
             req: req,
         }
     }
-
 
 
     pub fn fetch_next(&self, after: LogPos) -> FetchNextFut<T::Future> {
