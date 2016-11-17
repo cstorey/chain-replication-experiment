@@ -22,7 +22,7 @@ pub struct EtcdViewManager {
 const TTL: u64 = 2;
 
 impl EtcdViewManager {
-    fn new(_url: &str, dir: &str, value: HostConfig) -> Self {
+    pub fn new(_url: &str, dir: &str, value: HostConfig) -> Self {
         let client = Arc::new(etcd::Client::default());
         let pool = CpuPool::new(2);
         let hb = HeartBeater::new(pool.clone(), client.clone(), &dir, value.clone());
