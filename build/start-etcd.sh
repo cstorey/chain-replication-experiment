@@ -2,8 +2,10 @@
 
 set -x -e -o pipefail
 
-docker pull quay.io/coreos/etcd:v2.2.4
-etcd_id=$(docker run -d -p 2379:2379 --name etcd1 quay.io/coreos/etcd:v2.2.4 -advertise-client-urls=http://0.0.0.0:2379 -listen-client-urls=http://0.0.0.0:2379)
+image=quay.io/coreos/etcd:v3.0.15
+docker pull "$image"
+docker rm -f etcd1 || :
+etcd_id=$(docker run -d -p 2379:2379 --name etcd1 "$image" etcd -advertise-client-urls=http://0.0.0.0:2379 -listen-client-urls=http://0.0.0.0:2379)
 docker logs -f "$etcd_id" &
 
 limit=$((SECONDS+5))
