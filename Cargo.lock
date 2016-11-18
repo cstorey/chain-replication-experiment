@@ -13,6 +13,7 @@ dependencies = [
  "rand 0.3.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 0.8.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_codegen 0.8.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_json 0.8.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "spki-sexp 0.0.1 (git+https://github.com/cstorey/spki-sexp.rs.git)",
  "stable_bst 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "take 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
