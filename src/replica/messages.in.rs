@@ -27,6 +27,10 @@ impl ChainView {
         let members = members.into_iter().collect();
         ChainView { members: members }
     }
+
+    pub fn is_head(&self, entry: &HostConfig) -> bool {
+        self.members.get(0) == Some(entry)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]

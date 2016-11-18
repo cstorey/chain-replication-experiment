@@ -30,17 +30,11 @@ fn main() {
 
     let client = vastatrix::ThickClient::new(core.handle(), &head_addr, &tail_addr);
 
-    fn cycle(client: vastatrix::ThickClientTcp,
-             start: LogPos)
-             -> futures::BoxFuture<(), vastatrix::Error> {
-        client.fetch_next(start)
-            .and_then(move |(pos, val)| {
-                println!("Consume: {:?}: {}", pos, String::from_utf8_lossy(&val));
-                cycle(client, pos)
-            })
-            .boxed()
+    let mut offset = LogPos::zero();
+    loop {
+        println!("Reading:{:?}", offset);
+        let (pos, val) = core.run(client.fetch_next(offset)).expect("run read");
+        println!("Consume: {:?}: {}", pos, String::from_utf8_lossy(&val));
+        offset = pos;
     }
-
-    let read = core.run(cycle(client, LogPos::zero())).expect("run read");
-    info!("Got: {:?}", read);
 }

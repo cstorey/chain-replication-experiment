@@ -36,7 +36,7 @@ impl EtcdHeartbeater {
     }
 
     fn update_view(&mut self, ev: WatchEvent) -> bool {
-        debug!("update_view: {:?} -> {:?}", self.view, ev);
+        trace!("update_view: {:?} -> {:?}", self.view, ev);
         let changed = match ev {
             WatchEvent::Alive(id, ver, val) => {
                 if self.view.get(&id) != Some(&val) {
@@ -55,7 +55,7 @@ impl EtcdHeartbeater {
                 }
             }
         };
-        debug!("update_view changed:{:?}; post: {:?}", changed, self.view);
+        trace!("update_view changed:{:?}; post: {:?}", changed, self.view);
         changed
     }
     fn current_view(&mut self) -> ChainView {
@@ -69,11 +69,11 @@ impl Stream for EtcdHeartbeater {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        debug!("EtcdHeartbeater#poll");
+        trace!("EtcdHeartbeater#poll");
         match try!(self.heartbeats.poll()) {
             Async::NotReady => (),
             Async::Ready(()) => {
-                debug!("HeartBeater exited");
+                trace!("HeartBeater exited");
                 return Ok(Async::Ready(None))
             }
         }
@@ -83,14 +83,14 @@ impl Stream for EtcdHeartbeater {
             Async::Ready(None) => return Ok(Async::Ready(None)),
             Async::Ready(Some(ret)) => ret,
         };
-        debug!("WatchEvent: {:?}", event);
+        trace!("WatchEvent: {:?}", event);
 
         if self.update_view(event) {
             let view = self.current_view();
             debug!("Current view from {:?}: {:?}", self.value, view);
             Ok(Async::Ready(Some(view)))
         } else {
-            debug!("Current view unchanged");
+            trace!("Current view unchanged");
             Ok(Async::NotReady)
         }
     }
@@ -211,9 +211,9 @@ impl HeartBeater {
             let dir = self.dir.clone();
             let val = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
-                debug!("Starting; create dir node {:?}", dir);
+                trace!("Starting; create dir node {:?}", dir);
                 try!(ensure_dir(&*cl, &dir));
-                debug!("Starting; creating seq node");
+                trace!("Starting; creating seq node");
                 let res =
                     try!(cl.create_in_order(&dir, &try!(serde_json::to_string(&val)), Some(TTL))
                         .map_err(|mut es| es.pop().unwrap()));
@@ -223,7 +223,7 @@ impl HeartBeater {
         };
 
         self.state = HeartBeatState::Creating(create_fut);
-        debug!("Creating");
+        trace!("Creating");
         Ok(Async::Ready(()))
     }
 
@@ -238,7 +238,7 @@ impl HeartBeater {
         let key = node.key.expect("key");
         let ver = node.modified_index.expect("key");
 
-        info!("Alive! {}@{}", key, ver);
+        trace!("Alive! {}@{}", key, ver);
         self.state = HeartBeatState::Started(key, ver);
         Ok(Async::Ready(()))
     }
@@ -263,12 +263,12 @@ impl HeartBeater {
             return Ok(Async::Ready(()));
         };
 
-        info!("Ping?");
+        trace!("Ping?");
         let ping_fut = {
             let cl = self.etcd.clone();
             let value = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
-                info!("Pinging for {:?}", key);
+                trace!("Pinging for {:?}", key);
                 let res = try!(cl.compare_and_swap(&key,
                                       &try!(serde_json::to_string(&value)),
                                       Some(TTL),
@@ -289,7 +289,7 @@ impl Future for HeartBeater {
     type Item = ();
     type Error = Error;
     fn poll(&mut self) -> Poll<(), Error> {
-        debug!("HeartBeater#poll: {:?}", self.state);
+        trace!("HeartBeater#poll: {:?}", self.state);
         loop {
             try_ready!(self.create_if_needed());
             try_ready!(self.await_setup());
@@ -313,9 +313,9 @@ impl Watcher {
 
 
     fn maybe_scan_all(&mut self) -> Poll<(), Error> {
-        debug!("maybe_watch? {:?}", self.state);
+        trace!("maybe_watch? {:?}", self.state);
         if let &mut WatcherState::Fresh(None) = &mut self.state {
-            debug!("Fresh: None");
+            trace!("Fresh: None");
         } else {
             return Ok(Async::Ready(()));
         };
@@ -324,9 +324,9 @@ impl Watcher {
             let cl = self.etcd.clone();
             let dir = self.dir.clone();
             self.pool.spawn(futures::lazy(move || {
-                info!("Watch; create dir node if needed");
+                trace!("Watch; create dir node if needed");
                 try!(ensure_dir(&*cl, &dir));
-                info!("Scanning");
+                trace!("Scanning");
                 let res = try!(cl.get(&dir, true, false, false)
                     .map_err(|mut es| es.pop().unwrap()));
                 Ok(res)
@@ -338,9 +338,9 @@ impl Watcher {
     }
 
     fn maybe_fetch_scan(&mut self) -> Poll<(), Error> {
-        debug!("maybe_fetch_scan? {:?}", self.state);
+        trace!("maybe_fetch_scan? {:?}", self.state);
         let res = if let &mut WatcherState::WaitScan(ref mut fut) = &mut self.state {
-            debug!("Waiting");
+            trace!("Waiting");
             try_ready!(fut.poll())
         } else {
             return Ok(Async::Ready(()));
@@ -369,7 +369,7 @@ impl Watcher {
             })
             .collect::<Result<Vec<_>>>());
 
-        debug!("Events: {:?}", res);
+        trace!("Events: {:?}", res);
 
         self.pending.extend(res);
 
@@ -379,9 +379,9 @@ impl Watcher {
     }
 
     fn maybe_watch(&mut self) -> Poll<(), Error> {
-        debug!("maybe_watch? {:?}", self.state);
+        trace!("maybe_watch? {:?}", self.state);
         let vers = if let &mut WatcherState::Fresh(Some(vers)) = &mut self.state {
-            debug!("Fresh:{:?}", vers);
+            trace!("Fresh:{:?}", vers);
             vers
         } else {
             return Ok(Async::Ready(()));
@@ -392,7 +392,7 @@ impl Watcher {
             let dir = self.dir.clone();
             self.pool.spawn(futures::lazy(move || {
                 let next = vers + 1;
-                info!("Watching from {:?}", next);
+                trace!("Watching from {:?}", next);
                 let res = try!(cl.watch(&dir, Some(next), true)
                     .map_err(|mut es| es.pop().unwrap()));
                 trace!("Watch Event:{:?}", res);
@@ -405,9 +405,9 @@ impl Watcher {
     }
 
     fn maybe_fetch_watch(&mut self) -> Poll<(), Error> {
-        debug!("maybe_fetch_watch? {:?}", self.state);
+        trace!("maybe_fetch_watch? {:?}", self.state);
         let res = if let &mut WatcherState::WaitWatch(ref mut fut) = &mut self.state {
-            debug!("Waiting");
+            trace!("Waiting");
             try_ready!(fut.poll())
         } else {
             return Ok(Async::Ready(()));
@@ -440,11 +440,11 @@ impl Stream for Watcher {
     type Error = Error;
     fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
         loop {
-            debug!("Watcher#poll: {:?}", self.state);
+            trace!("Watcher#poll: {:?}", self.state);
 
-            debug!("pending: {:?}", self.pending);
+            trace!("pending: {:?}", self.pending);
             if let Some(next) = self.pending.pop_front() {
-                debug!("Next event: {:?}", next);
+                trace!("Next event: {:?}", next);
                 return Ok(Async::Ready(Some(next)));
             }
 
@@ -526,7 +526,7 @@ mod test {
                     Ok(println!("should_add_new_members_to_tail::first: {:?}", e)))
                     .map_err(|e| panic!("first: {:?}", e)));
 
-        debug!("Await configuration values");
+        trace!("Await configuration values");
         let (next, me) = core.run(t.timeout(second.filter(|r| r.members.len() > 1)
                                .into_future()
                                .map_err(|(e, _)| e),

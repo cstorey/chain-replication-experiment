@@ -77,7 +77,6 @@ impl Store for RamStore {
 
                 inner.log.insert(next, val);
                 debug!("Wrote to {:?}", next);
-                trace!("{:x}: Log now: {:#?}", innerid, inner.log);
 
                 trace!("Notify {:?} waiters", inner.waiters.len());
                 for waiter in inner.waiters.drain(..) {
