@@ -62,6 +62,29 @@ impl EtcdHeartbeater {
         let members = self.view.values().cloned().collect::<Vec<HostConfig>>();
         ChainView::of(members)
     }
+
+    fn poll_heartbeat(&mut self) -> Poll<(), Error> {
+        self.heartbeats.poll()
+    }
+
+    fn poll_watcher(&mut self) -> Poll<Option<View>, Error> {
+        loop {
+            let event = match try!(self.watcher.poll()) {
+                Async::NotReady => return Ok(Async::NotReady),
+                Async::Ready(None) => return Ok(Async::Ready(None)),
+                Async::Ready(Some(ret)) => ret,
+            };
+            trace!("WatchEvent: {:?}", event);
+
+            if self.update_view(event) {
+                let view = self.current_view();
+                debug!("Current view from {:?}: {:?}", self.value, view);
+                return Ok(Async::Ready(Some(view)));
+            } else {
+                trace!("Current view unchanged");
+            }
+        }
+    }
 }
 
 impl Stream for EtcdHeartbeater {
@@ -70,29 +93,13 @@ impl Stream for EtcdHeartbeater {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         trace!("EtcdHeartbeater#poll");
-        match try!(self.heartbeats.poll()) {
-            Async::NotReady => (),
-            Async::Ready(()) => {
-                trace!("HeartBeater exited");
-                return Ok(Async::Ready(None))
-            }
+        let heartbeat_result = try!(self.poll_heartbeat());
+        // Has it terminated?
+        if heartbeat_result.is_ready() {
+            return Ok(Async::Ready(None));
         }
 
-        let event = match try!(self.watcher.poll()) {
-            Async::NotReady => return Ok(Async::NotReady),
-            Async::Ready(None) => return Ok(Async::Ready(None)),
-            Async::Ready(Some(ret)) => ret,
-        };
-        trace!("WatchEvent: {:?}", event);
-
-        if self.update_view(event) {
-            let view = self.current_view();
-            debug!("Current view from {:?}: {:?}", self.value, view);
-            Ok(Async::Ready(Some(view)))
-        } else {
-            trace!("Current view unchanged");
-            Ok(Async::NotReady)
-        }
+        Ok(try!(self.poll_watcher()))
     }
 }
 
@@ -268,7 +275,7 @@ impl HeartBeater {
             let cl = self.etcd.clone();
             let value = self.value.clone();
             self.pool.spawn(futures::lazy(move || {
-                trace!("Pinging for {:?}", key);
+                trace!("Pinging for {:?}@{:?}", key, ver);
                 let res = try!(cl.compare_and_swap(&key,
                                       &try!(serde_json::to_string(&value)),
                                       Some(TTL),
@@ -432,6 +439,17 @@ impl Watcher {
         self.pending.push_back(event);
         Ok(Async::Ready(()))
     }
+
+    fn poll_inner(&mut self) -> Poll<Option<WatchEvent>, Error> {
+        loop {
+            trace!("Watcher#poll: {:?}", self.state);
+
+            try_ready!(self.maybe_scan_all());
+            try_ready!(self.maybe_fetch_scan());
+            try_ready!(self.maybe_watch());
+            try_ready!(self.maybe_fetch_watch());
+        }
+    }
 }
 
 
@@ -439,21 +457,15 @@ impl Stream for Watcher {
     type Item = WatchEvent;
     type Error = Error;
     fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
-        loop {
-            trace!("Watcher#poll: {:?}", self.state);
+        let res = try!(self.poll_inner());
 
-            trace!("pending: {:?}", self.pending);
-            if let Some(next) = self.pending.pop_front() {
-                trace!("Next event: {:?}", next);
-                return Ok(Async::Ready(Some(next)));
-            }
-
-            try_ready!(self.maybe_scan_all());
-            try_ready!(self.maybe_fetch_scan());
-            try_ready!(self.maybe_watch());
-            try_ready!(self.maybe_fetch_watch());
+        trace!("pending: {:?}", self.pending);
+        if let Some(next) = self.pending.pop_front() {
+            trace!("Next event: {:?}", next);
+            Ok(Async::Ready(Some(next)))
+        } else {
+            Ok(res)
         }
-
     }
 }
 
