@@ -10,7 +10,6 @@ extern crate vastatrix;
 extern crate clap;
 
 use tokio::reactor::Core;
-use futures::Future;
 use vastatrix::LogPos;
 use std::net::SocketAddr;
 use clap::{App, Arg};

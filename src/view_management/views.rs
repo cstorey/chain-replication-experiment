@@ -160,19 +160,16 @@ impl<S: Store, V: Stream<Item = ChainView, Error = Error>> Future for ViewManage
 
 #[cfg(test)]
 mod test {
-    use futures::{self, Future, BoxFuture, Async};
+    use futures::Future;
     use futures::stream::Stream;
-    use service::Service;
     use tokio::channel;
     use replica::LogPos;
     use store::{RamStore, Store};
-    use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig, ChainView};
+    use replica::{LogEntry, HostConfig, ChainView};
     use errors::*;
-    use std::net::{SocketAddr, IpAddr, Ipv4Addr};
     use super::*;
     use tokio::reactor::Core;
     use std::time::Duration;
-    use std::io;
     use tokio_timer;
     use env_logger;
 
@@ -219,7 +216,7 @@ mod test {
         let aview: ChainView = ChainView::of(vec![anidentity()]);
         tx.send(aview.clone()).expect("send");
 
-        let (pos, entry) = core.run(timer.timeout(store.fetch_next(LogPos::zero()), timeout))
+        let (_pos, entry) = core.run(timer.timeout(store.fetch_next(LogPos::zero()), timeout))
             .expect("next change");
 
         assert_eq!(entry, LogEntry::ViewChange(aview));
@@ -248,7 +245,7 @@ mod test {
         let aview: ChainView = ChainView::of(vec![anidentity()]);
         tx.send(aview.clone()).expect("send");
 
-        let (pos, entry) = core.run(timer.timeout(store.fetch_next(log_off0), timeout))
+        let (_pos, entry) = core.run(timer.timeout(store.fetch_next(log_off0), timeout))
             .expect("next change");
 
         assert_eq!(entry, LogEntry::ViewChange(aview));

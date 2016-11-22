@@ -38,7 +38,7 @@ impl EtcdHeartbeater {
     fn update_view(&mut self, ev: WatchEvent) -> bool {
         trace!("update_view: {:?} -> {:?}", self.view, ev);
         let changed = match ev {
-            WatchEvent::Alive(id, ver, val) => {
+            WatchEvent::Alive(id, _, val) => {
                 if self.view.get(&id) != Some(&val) {
                     self.view.insert(id, val);
                     true
@@ -46,7 +46,7 @@ impl EtcdHeartbeater {
                     false
                 }
             }
-            WatchEvent::Dead(id, ver) => {
+            WatchEvent::Dead(id, _) => {
                 if self.view.get(&id).is_some() {
                     self.view.remove(&id);
                     true
@@ -168,7 +168,6 @@ impl fmt::Debug for HeartBeatState {
 struct Watcher {
     pool: CpuPool,
     etcd: Arc<etcd::Client>,
-    timer: Timer,
     state: WatcherState,
     pending: VecDeque<WatchEvent>,
     dir: String,
@@ -311,7 +310,6 @@ impl Watcher {
         Watcher {
             pool: cpupool,
             etcd: etcd,
-            timer: Timer::default(),
             state: WatcherState::Fresh(None),
             pending: VecDeque::new(),
             dir: dir.to_string(),
@@ -507,7 +505,7 @@ mod test {
             tail: "10.0.0.23:2".parse().unwrap(),
         };
         let me = EtcdHeartbeater::new(ETCD_URL, &prefix, self_config.clone());
-        let (next, me) = core.run(t.timeout(me.into_future().map_err(|(e, _)| e), timeout))
+        let (next, _me) = core.run(t.timeout(me.into_future().map_err(|(e, _)| e), timeout))
             .expect("run one");
         let config = next.expect("next value");
 
@@ -532,14 +530,14 @@ mod test {
         };
         let first = EtcdHeartbeater::new(ETCD_URL, &prefix, first_config.clone());
         let second = EtcdHeartbeater::new(ETCD_URL, &prefix, second_config.clone());
-        let (next, first) = core.run(first.into_future().map_err(|(e, _)| e)).expect("run one");
+        let (_next, first) = core.run(first.into_future().map_err(|(e, _)| e)).expect("run one");
         // let config = next.expect("next value");
         core.handle().spawn(first.for_each(|e|
                     Ok(println!("should_add_new_members_to_tail::first: {:?}", e)))
                     .map_err(|e| panic!("first: {:?}", e)));
 
         trace!("Await configuration values");
-        let (next, me) = core.run(t.timeout(second.filter(|r| r.members.len() > 1)
+        let (next, _me) = core.run(t.timeout(second.filter(|r| r.members.len() > 1)
                                .into_future()
                                .map_err(|(e, _)| e),
                            timeout))
@@ -593,9 +591,8 @@ mod test {
         println!("terminating first future");
         c.complete(());
 
-        let (next, second2) = core.run(t.timeout(second.into_future().map_err(|(e, _)| e), timeout))
+        let (next, _second) = core.run(t.timeout(second.into_future().map_err(|(e, _)| e), timeout))
             .expect("run one");
-        second = second2;
         println!("config from second: {:?}", next);
         let config = next.expect("next value");
 
