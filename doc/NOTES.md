@@ -14,7 +14,7 @@ chain manager.
 So, there are two interfaces, one that controls the chain head, and a
 heartbeating mechanism for each member.
 
-From §4.7 of the "Leveraging" paper:
+From §4.7 of the _Leveraging_ paper:
 
 > Replicas in each shard monitor the replicas in the shard they are
 > sequencing. When replica failure is suspected, the wedge command is issued
@@ -193,6 +193,37 @@ So, the viewChanged method would end up being something like:
     }
   }
 ```
+
+...
+
+# Reconfiguration inspiration from _Leveraging_
+
+Because the configuration service presents an external interface to the
+sequencer/head of the chain, and because we incorporate the configuration
+changes into the main replication stream (for safety), we can for now, build
+an external service that presents a configuration interface, and sends
+re-configuration commands to to the replicas.
+
+The key thing is that because we are going to extend this to operate on top of
+the regular log; we need this to be built around a similar interface, so a
+typical state change might proceed:
+
+ * Observe state change (eg: okay -> failed)
+ * Attempt to write data
+ * Send reconfigure command to replica once complete
+
+In practice, the configure command may well be sent from the tail of the
+configuring chain, but the crucial thing is that we need to demonstrate
+consensus before we do (obvs. )
+
+But in the mean time, this means that we can slightly simplify matters (maybe)
+by punting on using etcd, and creating a stand-alone reconfiguration service
+for a single shard.
+
+## Wedging
+
+The paper also notes that the view manager will broadcast a wedge to ensure
+safety, which ensures that we can't do reads from a stale tail.
 
 # References
 "Leveraging": Leveraging Sharding in the Design of Scalable Replication Protocols
