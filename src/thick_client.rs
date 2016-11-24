@@ -7,6 +7,7 @@ use tokio_service::Service;
 use std::sync::{Arc, Mutex};
 use replica::{LogPos, ReplicaRequest, ReplicaResponse, LogEntry, HostConfig, ChainView};
 use Error;
+use std::mem;
 
 #[derive(Debug)]
 pub struct ThickClient<H, T> {
@@ -30,12 +31,21 @@ pub type ThickClientTcp = ThickClient<ReplicaClient, TailClient>;
 // failed_badver -> request_sent;
 // ```
 //
+enum LogItemFutState<F> {
+    Pending(LogPos),
+    Sent(F),
+}
+
 pub struct LogItemFut<H: Service> {
     head: Arc<H>,
     req: ReplicaRequest,
-    future: H::Future,
+    state: LogItemFutState<H::Future>,
 }
-pub struct FetchNextFut<F>(F);
+pub enum FetchNextFut<T: Service> {
+    Pending(Arc<T>, TailRequest),
+    Sent(T::Future),
+    Dead,
+}
 
 impl ThickClient<ReplicaClient, TailClient> {
     pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
@@ -68,7 +78,7 @@ impl<H, T> ThickClient<H, T>
             datum: LogEntry::Data(body.into()),
         };
         trace!("Sending assuming: {:?}", current);
-        self.do_log_item(req)
+        self.do_log_item(current, req)
     }
 
     // TODO: Move into seperate service widget, that takes updates from the
@@ -83,23 +93,21 @@ impl<H, T> ThickClient<H, T>
             datum: LogEntry::ViewChange(state.view.clone()),
         };
         trace!("Sending assuming: {:?}", current);
-        self.do_log_item(req)
+        self.do_log_item(current, req)
     }
 
-    fn do_log_item(&self, req: ReplicaRequest) -> LogItemFut<H> {
-        let fut = self.head.call(req.clone());
+    fn do_log_item(&self, pos: LogPos, req: ReplicaRequest) -> LogItemFut<H> {
         LogItemFut {
             head: self.head.clone(),
-            future: fut,
             req: req,
+            state: LogItemFutState::Pending(pos),
         }
     }
 
 
-    pub fn fetch_next(&self, after: LogPos) -> FetchNextFut<T::Future> {
+    pub fn fetch_next(&self, after: LogPos) -> FetchNextFut<T> {
         let req = TailRequest::FetchNextAfter(after);
-        let f = self.tail.call(req);
-        FetchNextFut(f)
+        FetchNextFut::Pending(self.tail.clone(), req)
     }
 }
 
@@ -108,40 +116,62 @@ impl<S: Service<Request = ReplicaRequest, Response = ReplicaResponse, Error = Er
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
-            let &mut LogItemFut { ref head, ref mut req, ref mut future } = self;
-            match try_ready!(future.poll()) {
-                ReplicaResponse::Done(offset) => {
-                    debug!("Done =>{:?}", offset);
-                    return Ok(Async::Ready(offset));
-                }
-                ReplicaResponse::BadSequence(new_offset) => {
-                    debug!("BadSequence =>{:?}", new_offset);
+            let &mut LogItemFut { ref head, ref mut req, ref mut state } = self;
+            let new_state = match state {
+                &mut LogItemFutState::Pending(log_pos) => {
                     match req {
                         &mut ReplicaRequest::AppendLogEntry { ref mut assumed_offset, ref mut entry_offset, .. } => {
-                            *assumed_offset = new_offset;
-                            *entry_offset = new_offset.next();
+                            *assumed_offset = log_pos;
+                            *entry_offset = log_pos.next();
                         }
                     };
-                    debug!("Sending assuming: {:?}", new_offset);
-                    *future = head.call(req.clone());
+                    debug!("Sending assuming: {:?}", log_pos);
+                    LogItemFutState::Sent(head.call(req.clone()))
                 }
-            }
+                &mut LogItemFutState::Sent(ref mut future) => {
+                    match try_ready!(future.poll()) {
+                        ReplicaResponse::Done(offset) => {
+                            debug!("Done =>{:?}", offset);
+                            return Ok(Async::Ready(offset));
+                        }
+                        ReplicaResponse::BadSequence(new_offset) => {
+                            debug!("BadSequence =>{:?}", new_offset);
+
+                            LogItemFutState::Pending(new_offset)
+                        }
+                    }
+                }
+            };
+            *state = new_state;
         }
     }
 }
 
-impl<F: Future<Item = TailResponse, Error = Error>> Future for FetchNextFut<F> {
+impl<T: Service<Request = TailRequest, Response = TailResponse, Error = Error>> Future for FetchNextFut<T> {
     type Item = (LogPos, Vec<u8>);
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.0.poll()) {
-            TailResponse::NextItem(offset, value) => {
-                debug!("Done =>{:?}", offset);
-                return Ok(Async::Ready((offset, value.into())));
-            }
+        loop {
+            match mem::replace(self, FetchNextFut::Dead) {
+                FetchNextFut::Pending(client, req) => {
+                    *self = FetchNextFut::Sent(client.call(req))
+                },
+                FetchNextFut::Sent(mut fut) => {
+                    match try!(fut.poll()) {
+                        Async::Ready(TailResponse::NextItem(offset, value)) => {
+                            debug!("Done =>{:?}", offset);
+                            return Ok(Async::Ready((offset, value.into())));
+                        },
+                        Async::NotReady => {
+                            *self = FetchNextFut::Sent(fut);
+                            return Ok(Async::NotReady)
+                        }
+                    }
+                },
+                FetchNextFut::Dead => unreachable!(),
+            };
         }
-
     }
 }
 
