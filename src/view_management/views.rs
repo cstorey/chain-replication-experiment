@@ -160,9 +160,9 @@ impl<S: Store, V: Stream<Item = ChainView, Error = Error>> Future for ViewManage
 
 #[cfg(test)]
 mod test {
-    use futures::Future;
+    use futures::{Future, Sink};
     use futures::stream::Stream;
-    use tokio::channel;
+    use futures::sync::mpsc;
     use replica::LogPos;
     use store::{RamStore, Store};
     use replica::{LogEntry, HostConfig, ChainView};
@@ -208,13 +208,15 @@ mod test {
         let timeout = Duration::from_millis(100);
 
         let mut core = Core::new().expect("core::new");
-        let (tx, rx) = channel::channel::<ChainView>(&core.handle()).expect("channel");
-        let vm = ViewManager::new(store.clone(), &anidentity(), rx.map_err(|e| e.into()));
+        let (tx, rx) = mpsc::channel::<ChainView>(10);
+        let vm = ViewManager::new(store.clone(),
+                                  &anidentity(),
+                                  rx.map_err(|_| "reciver error".into()));
 
         core.handle().spawn(vm.map_err(|e| panic!("Replicator failed!: {:?}", e)));
 
         let aview: ChainView = ChainView::of(vec![anidentity()]);
-        tx.send(aview.clone()).expect("send");
+        core.run(tx.send(aview.clone())).expect("send");
 
         let (_pos, entry) = core.run(timer.timeout(store.fetch_next(LogPos::zero()), timeout))
             .expect("next change");
@@ -237,13 +239,15 @@ mod test {
                                     LogPos::zero(),
                                     LogEntry::Data(b"Hello world!".to_vec().into()));
 
-        let (tx, rx) = channel::channel::<ChainView>(&core.handle()).expect("channel");
-        let vm = ViewManager::new(store.clone(), &anidentity(), rx.map_err(|e| e.into()));
+        let (tx, rx) = mpsc::channel::<ChainView>(10);
+        let vm = ViewManager::new(store.clone(),
+                                  &anidentity(),
+                                  rx.map_err(|_| "reciever error".into()));
 
         core.handle().spawn(vm.map_err(|e| panic!("Replicator failed!: {:?}", e)));
 
         let aview: ChainView = ChainView::of(vec![anidentity()]);
-        tx.send(aview.clone()).expect("send");
+        core.run(tx.send(aview.clone())).expect("send");
 
         let (_pos, entry) = core.run(timer.timeout(store.fetch_next(log_off0), timeout))
             .expect("next change");
@@ -260,13 +264,15 @@ mod test {
         let timeout = Duration::from_millis(100);
 
         let mut core = Core::new().expect("core::new");
-        let (tx, rx) = channel::channel::<ChainView>(&core.handle()).expect("channel");
-        let vm = ViewManager::new(store.clone(), &anidentity(), rx.map_err(|e| e.into()));
+        let (tx, rx) = mpsc::channel::<ChainView>(10);
+        let vm = ViewManager::new(store.clone(),
+                                  &anidentity(),
+                                  rx.map_err(|_| "reciever error".into()));
 
         core.handle().spawn(vm.map_err(|e| panic!("Replicator failed!: {:?}", e)));
 
         let aview: ChainView = ChainView::of(vec![anidentity2(), anidentity()]);
-        tx.send(aview.clone()).expect("send");
+        core.run(tx.send(aview.clone())).expect("send");
 
         let result = core.run(timer.timeout(store.fetch_next(LogPos::zero()), timeout));
 
