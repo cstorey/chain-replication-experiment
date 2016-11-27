@@ -235,9 +235,7 @@ mod test {
         type Response = ReplicaResponse;
         type Error = Error;
         type Future = BoxFuture<ReplicaResponse, Error>;
-        fn poll_ready(&self) -> Async<()> {
-            Async::Ready(())
-        }
+
         fn call(&self, req: Self::Request) -> Self::Future {
             let (c, p) = futures::oneshot();
             match self.send.send(((self.addr.clone(), req), c)) {

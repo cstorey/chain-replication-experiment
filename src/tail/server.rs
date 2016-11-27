@@ -83,9 +83,6 @@ impl<S: Store + Send + Sync + 'static> Service for TailService<S>
     type Error = Error;
     type Future = BoxFuture<Self::Response, Self::Error>;
 
-    fn poll_ready(&self) -> Async<()> {
-        Async::Ready(())
-    }
     fn call(&self, req: Self::Request) -> Self::Future {
         debug!("TailService#call: {:?}", req);
         match req {

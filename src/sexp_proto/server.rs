@@ -29,9 +29,6 @@ impl<T> Service for SexpService<T>
     // type Future = Box<Future<Item = Self::Response, Error = Error> + Send + 'static>;
     type Future = SexpFuture<T::Future>;
 
-    fn poll_ready(&self) -> Async<()> {
-        Async::Ready(())
-    }
     fn call(&self, req: Self::Request) -> Self::Future {
         SexpFuture(self.inner.call(req))
     }
@@ -49,7 +46,7 @@ impl<F: Future> Future for SexpFuture<F> {
 
 pub fn serve<T>(handle: &Handle, addr: SocketAddr, new_service: T) -> io::Result<ServerHandle>
     where T: NewService + Send + 'static,
-          <<T as NewService>::Item as Service>::Future: Send,
+          <<T as NewService>::Instance as Service>::Future: Send,
           <T as NewService>::Error: Send + error::Error + From<proto::Error<T::Error>> + From<sexp::Error>,
           T::Request: serde::Deserialize + serde::Serialize,
           T::Response: serde::Deserialize + serde::Serialize

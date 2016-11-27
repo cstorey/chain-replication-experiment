@@ -177,15 +177,57 @@ impl<T: Service<Request = TailRequest, Response = TailResponse, Error = Error>> 
 
 #[cfg(test)]
 mod test {
-    use futures::{self, Future, BoxFuture};
-    use service::simple_service;
+    use futures::{self, Future, BoxFuture, IntoFuture};
+    use tokio_service::Service;
     use tail::{TailRequest, TailResponse};
     use replica::{LogPos, LogEntry, ReplicaRequest, ReplicaResponse};
     use std::sync::{Arc, Mutex};
+    use std::marker::PhantomData;
     use super::*;
     use Error;
     use std::collections::VecDeque;
     use env_logger;
+
+    // Borrowed from tokio-service
+    pub struct FnService<F, R> {
+f: F,
+       _ty: PhantomData<fn() -> R>, // don't impose Sync on R
+    }
+
+    /// Returns a `Service` backed by the given closure.
+    pub fn fn_service<F, R, S>(f: F) -> FnService<F, R>
+        where F: Fn(R) -> S,
+              S: IntoFuture,
+              {
+                  FnService::new(f)
+              }
+
+    impl<F, R, S> FnService<F, R>
+        where F: Fn(R) -> S,
+              S: IntoFuture,
+              {
+                  /// Create and return a new `FnService` backed by the given function.
+                  pub fn new(f: F) -> FnService<F, R> {
+                      FnService {
+f: f,
+   _ty: PhantomData,
+                      }
+                  }
+              }
+
+    impl<F, R, S> Service for FnService<F, R>
+        where F: Fn(R) -> S,
+              S: IntoFuture
+              {
+                  type Request = R;
+                  type Response = S::Item;
+                  type Error = S::Error;
+                  type Future = S::Future;
+
+                  fn call(&self, req: R) -> Self::Future {
+                      (self.f)(req).into_future()
+                  }
+              }
 
     #[test]
     fn sends_initial_request() {
@@ -193,12 +235,12 @@ mod test {
         let head_reqs = Arc::new(Mutex::new(Vec::new()));
         let head = {
             let reqs = head_reqs.clone();
-            simple_service(move |req: ReplicaRequest| -> BoxFuture<ReplicaResponse, Error> {
+            fn_service(move |req: ReplicaRequest| -> BoxFuture<ReplicaResponse, Error> {
                 reqs.lock().expect("lock").push(req);
                 futures::finished(ReplicaResponse::Done(LogPos::zero())).boxed()
             })
         };
-        let tail = simple_service(|_: TailRequest| -> BoxFuture<TailResponse, Error> { unimplemented!() });
+        let tail = fn_service(|_: TailRequest| -> BoxFuture<TailResponse, Error> { unimplemented!() });
         let client = ThickClient::build(head, tail);
 
         client.log_item(b"Hello".to_vec()).wait().unwrap();
@@ -227,14 +269,14 @@ mod test {
         let head = {
             let reqs = head_reqs.clone();
             let resps = head_resps.clone();
-            simple_service(move |req: ReplicaRequest| -> BoxFuture<ReplicaResponse, Error> {
+            fn_service(move |req: ReplicaRequest| -> BoxFuture<ReplicaResponse, Error> {
                 reqs.lock().expect("lock").push_back(req);
                 let resp = resps.lock().unwrap().pop_front().expect("response");
                 futures::finished(resp).boxed()
             })
         };
 
-        let tail = simple_service(|_: TailRequest| -> BoxFuture<TailResponse, Error> { unimplemented!() });
+        let tail = fn_service(|_: TailRequest| -> BoxFuture<TailResponse, Error> { unimplemented!() });
         let client = ThickClient::build(head, tail);
 
         client.log_item(b"Hello".to_vec()).wait().unwrap();

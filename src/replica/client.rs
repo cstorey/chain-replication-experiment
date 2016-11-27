@@ -38,9 +38,6 @@ impl Service for ReplicaClient {
     type Error = Error;
     type Future = ReplicaClientFut;
 
-    fn poll_ready(&self) -> Async<()> {
-        self.0.lock().expect("unlock").poll_ready()
-    }
     fn call(&self, req: Self::Request) -> Self::Future {
         let addr = self.1;
         debug!("{}: call: {:?}", addr, req);

@@ -1,7 +1,7 @@
 use futures::{Async, IntoFuture, Future};
 use std::net::SocketAddr;
 use service::Service;
-use proto::{self, pipeline};
+use proto::{self, pipeline, Body};
 use proto::pipeline::Frame;
 use tokio::reactor::Handle;
 use tokio::io::FramedIo;
@@ -17,7 +17,7 @@ use std::fmt;
 use std::io;
 
 pub struct Client<Req, Res> {
-    inner: proto::Client<Req, Res, stream::Empty<Void, Error>, Error>,
+    inner: proto::Client<Req, Res, stream::Empty<Void, Error>, Body<Void, Error>, Error>,
 }
 
 impl<Req: Send + 'static, Res: Send + 'static> Service for Client<Req, Res> {
@@ -26,9 +26,6 @@ impl<Req: Send + 'static, Res: Send + 'static> Service for Client<Req, Res> {
     type Error = Error;
     type Future = Box<Future<Item = Self::Response, Error = Error> + Send>;
 
-    fn poll_ready(&self) -> Async<()> {
-        self.inner.poll_ready()
-    }
     fn call(&self, req: Req) -> Self::Future {
         self.inner.call(proto::Message::WithoutBody(req))
     }

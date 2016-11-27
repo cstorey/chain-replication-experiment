@@ -1,79 +1,72 @@
-use bytes::{self, MutBuf};
-use bytes::buf::BlockBuf;
-use proto::{pipeline, Parse, Serialize, Framed};
-use tokio::io::Io;
+use bytes::{self, BufMut};
+use proto::{pipeline};
+use tokio::io::{EasyBuf,Io, Codec, Framed};
 use spki_sexp as sexp;
 use serde::{ser, de};
-use std::fmt::Write;
+use std::fmt::{self,Write};
 use std::error;
+use std::io;
 use void::Void;
 
 use std::marker::PhantomData;
 
 #[derive(Debug)]
-pub struct SexpParser<T, E> {
-    _x: PhantomData<fn() -> Result<T, E>>,
+pub struct SexpCodec<S, D, E> {
+    _x: PhantomData<(S, D, E)>,
     packets: sexp::Packetiser,
 }
 
 pub type Frame<T, E> = pipeline::Frame<T, Void, E>;
 
-impl<T, E> SexpParser<T, E> {
+impl<S, D, E> SexpCodec<S, D, E> {
     pub fn new() -> Self {
-        SexpParser {
+        SexpCodec {
             _x: PhantomData,
             packets: sexp::Packetiser::new(),
         }
     }
 }
 
-impl<T: de::Deserialize, E: From<sexp::Error>> Parse for SexpParser<T, E> {
-    type Out = Frame<T, E>;
+// impl< E: error::Error> Serialize for SexpSerializer<T, E> {
 
-    fn parse(&mut self, buf: &mut BlockBuf) -> Option<Self::Out> {
+impl<S: ser::Serialize, D: de::Deserialize, E: From<sexp::Error> + fmt::Debug> Codec for SexpCodec<S, D, E> {
+    type Out = Frame<S, E>;
+    type In = Frame<D, E>;
+
+    fn decode(&mut self, buf: &mut EasyBuf) -> Result<Option<Self::In>, io::Error> {
         use proto::pipeline::Frame;
 
-        if !buf.is_compact() {
-            buf.compact();
-        }
-        self.packets.feed(&buf.bytes().expect("compacted buffer"));
+        self.packets.feed(&buf.as_slice());
         let len = buf.len();
-        buf.shift(len);
+        buf.drain_to(len);
         debug!("Buffer now:{:?}", buf.len());
 
         debug!("Packets now:{:?}", self.packets);
         match self.packets.take() {
-            Ok(Some(msg)) => Some(Frame::Message(msg)),
-            Ok(None) => None,
+            Ok(Some(msg)) => Ok(Some(Frame::Message { message: msg, body: false })),
+            Ok(None) => Ok(None),
             Err(e) => {
                 error!("Transport error:{:?}", e);
-                Some(Frame::Error(e.into()))
+                Ok(Some(Frame::Error { error: e.into() }))
             }
         }
     }
-}
 
-
-pub struct SexpSerializer<T, E>(PhantomData<(T, E)>);
-
-impl<T: ser::Serialize, E: error::Error> Serialize for SexpSerializer<T, E> {
-    type In = Frame<T, E>;
-    fn serialize(&mut self, frame: Self::In, buf: &mut BlockBuf) {
+    fn encode(&mut self, frame: Self::Out, buf: &mut Vec<u8>) -> Result<(), io::Error> {
         use proto::pipeline::Frame;
         match frame {
-            Frame::Message(val) => buf.write_slice(&sexp::as_bytes(&val).expect("serialize")),
-            Frame::Error(e) => {
-                warn!("Error handling in serializer:{:?}", e);
-                let _ = write!(bytes::buf::Fmt(buf), "[ERROR] {}\n", e);
+            Frame::Message { message: val, body: false } => buf.extend_from_slice(&sexp::as_bytes(&val).expect("serialize")),
+            Frame::Error { error } => {
+                warn!("Error handling in serializer:{:?}", error);
             }
             Frame::Done => {}
-            Frame::MessageWithBody(_, _) |
-            Frame::Body(_) => unreachable!(),
-        }
+            Frame::Message { message: _, body: true } | Frame::Body { .. } => unreachable!(),
+        };
+        Ok(())
     }
 }
 
-pub type FramedSexpTransport<T, X, Y, E> = Framed<T, SexpParser<X, E>, SexpSerializer<Y, E>>;
+pub type FramedSexpTransport<T, X, Y, E> = Framed<T, SexpCodec<Y, X, E>>;
 
 pub fn sexp_proto_new<T: Io,
                       X: de::Deserialize,
@@ -81,10 +74,6 @@ pub fn sexp_proto_new<T: Io,
                       E: From<sexp::Error> + error::Error>
     (inner: T)
      -> FramedSexpTransport<T, X, Y, E> {
-    Framed::new(inner,
-                SexpParser::new(),
-                SexpSerializer(PhantomData),
-                BlockBuf::default(),
-                BlockBuf::default())
+    inner.framed(SexpCodec::new())
 
 }

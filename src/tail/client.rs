@@ -38,9 +38,6 @@ impl Service for TailClient {
     type Error = Error;
     type Future = TailClientFut;
 
-    fn poll_ready(&self) -> Async<()> {
-        self.0.lock().expect("unlock").poll_ready()
-    }
     fn call(&self, req: Self::Request) -> Self::Future {
         TailClientFut(self.0.lock().expect("unlock").call(req))
     }

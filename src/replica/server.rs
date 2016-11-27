@@ -29,9 +29,6 @@ impl<S: Store> Service for ServerService<S> {
     type Error = Error;
     type Future = ReplicaFut<S::AppendFut>;
 
-    fn poll_ready(&self) -> Async<()> {
-        Async::Ready(())
-    }
     fn call(&self, req: Self::Request) -> Self::Future {
         debug!("ServerService#service: {:?}", req);
         match req {

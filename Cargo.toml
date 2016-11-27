@@ -3,7 +3,6 @@ authors = ["Ceri Storey <ceri@lshift.net>"]
 build = "build.rs"
 name = "vastatrix"
 version = "0.1.0"
-
 [build-dependencies]
 env_logger = "0.3.0"
 log = "0.3.6"
@@ -28,17 +27,17 @@ tokio-core = "0.1"
 void = "1.0.2"
 
 [dependencies.bytes]
-git = "https://github.com/carllerche/bytes.git"
+git = "https://github.com/carllerche/bytes"
+
+# [dependencies.bytes-more]
+# git = "https://github.com/carllerche/bytes-more"
 
 [dependencies.spki-sexp]
 git = "https://github.com/cstorey/spki-sexp.rs.git"
 optional = false
 
-[dependencies.tokio-middleware]
-git = "https://github.com/tokio-rs/tokio-middleware"
-
 [dependencies.tokio-proto]
-git = "https://github.com/cstorey/tokio-proto"
+git = "https://github.com/tokio-rs/tokio-proto"
 
 [dependencies.tokio-service]
 git = "https://github.com/tokio-rs/tokio-service"
