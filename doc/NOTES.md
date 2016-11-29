@@ -194,5 +194,13 @@ So, the viewChanged method would end up being something like:
   }
 ```
 
+## Thick-proxy glue
+
+Because the thick-proxy also acts as a pseudo-replica, the thick-proxy will need to watch the etcd store for configuration changes. 
+
+This especially exposes the risk of writing to a former head that has been considered "stale" by it's peers. Hence we need to use the epoch-mechanism as a way to demonstrate that a peer writing to a replica is sufficiently "fresh".
+
+So, because the view-watcher needs to be continuously polled, we can't really just depend on polling it whenever we try to send a request. So, we'll need to run the main client connection/reconnection in a reactor task, and present a service interface to the client internals.
+
 # References
 "Leveraging": Leveraging Sharding in the Design of Scalable Replication Protocols

@@ -1,7 +1,8 @@
-use proto::{self, pipeline, server};
+use proto::{self, pipeline, server, Body};
 use proto::server::ServerHandle;
 use service::{Service, NewService};
 use tokio::reactor::Handle;
+use tokio::io::FramedIo;
 use futures::{Async, Poll, Future};
 use futures::stream;
 use spki_sexp as sexp;
@@ -12,6 +13,7 @@ use std::net::SocketAddr;
 use super::sexp_proto::sexp_proto_new;
 use void::Void;
 use serde;
+use Error;
 
 struct SexpService<T> {
     inner: T,
@@ -23,14 +25,14 @@ impl<T> Service for SexpService<T>
     where T: Service,
           T::Future: Send + 'static
 {
-    type Request = T::Request;
+    type Request = proto::Message<T::Request, Body<Void, T::Error>>;
     type Response = proto::Message<T::Response, stream::Empty<Void, T::Error>>;
     type Error = T::Error;
     // type Future = Box<Future<Item = Self::Response, Error = Error> + Send + 'static>;
     type Future = SexpFuture<T::Future>;
 
     fn call(&self, req: Self::Request) -> Self::Future {
-        SexpFuture(self.inner.call(req))
+        SexpFuture(self.inner.call(req.into_inner()))
     }
 }
 
@@ -54,9 +56,12 @@ pub fn serve<T>(handle: &Handle, addr: SocketAddr, new_service: T) -> io::Result
     let handle = try!(server::listen(handle, addr, move |stream| {
         // Initialize the pipeline dispatch with the service and the line
         // transport
+        let transport = sexp_proto_new(stream);
+        let _ : &FramedIo<In=pipeline::Frame<T::Response, Void, Error>, Out=pipeline::Frame<T::Request, Void, Error>> = &transport;
+        let _ : &pipeline::Transport<In = T::Response, Out=T::Request, BodyIn=Void, BodyOut=Void, Error=Error> = &transport;
         debug!("Accept connection: {:?}", stream);
         let service = SexpService { inner: try!(new_service.new_service()) };
-        pipeline::Server::new(service, sexp_proto_new(stream))
+        pipeline::Server::new(service, transport)
     }));
     info!("Listening on {}", handle.local_addr());
     Ok(handle)

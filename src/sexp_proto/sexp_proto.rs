@@ -1,9 +1,9 @@
 use bytes::{self, BufMut};
-use proto::{pipeline};
-use tokio::io::{EasyBuf,Io, Codec, Framed};
+use proto::pipeline;
+use tokio::io::{EasyBuf, Io, Codec, Framed};
 use spki_sexp as sexp;
 use serde::{ser, de};
-use std::fmt::{self,Write};
+use std::fmt::{self, Write};
 use std::error;
 use std::io;
 use void::Void;

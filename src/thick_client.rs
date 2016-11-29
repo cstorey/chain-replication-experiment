@@ -190,44 +190,44 @@ mod test {
 
     // Borrowed from tokio-service
     pub struct FnService<F, R> {
-f: F,
-       _ty: PhantomData<fn() -> R>, // don't impose Sync on R
+        f: F,
+        _ty: PhantomData<fn() -> R>, // don't impose Sync on R
     }
 
     /// Returns a `Service` backed by the given closure.
     pub fn fn_service<F, R, S>(f: F) -> FnService<F, R>
         where F: Fn(R) -> S,
-              S: IntoFuture,
-              {
-                  FnService::new(f)
-              }
+              S: IntoFuture
+    {
+        FnService::new(f)
+    }
 
     impl<F, R, S> FnService<F, R>
         where F: Fn(R) -> S,
-              S: IntoFuture,
-              {
-                  /// Create and return a new `FnService` backed by the given function.
-                  pub fn new(f: F) -> FnService<F, R> {
-                      FnService {
-f: f,
-   _ty: PhantomData,
-                      }
-                  }
-              }
+              S: IntoFuture
+    {
+        /// Create and return a new `FnService` backed by the given function.
+        pub fn new(f: F) -> FnService<F, R> {
+            FnService {
+                f: f,
+                _ty: PhantomData,
+            }
+        }
+    }
 
     impl<F, R, S> Service for FnService<F, R>
         where F: Fn(R) -> S,
               S: IntoFuture
-              {
-                  type Request = R;
-                  type Response = S::Item;
-                  type Error = S::Error;
-                  type Future = S::Future;
+    {
+        type Request = R;
+        type Response = S::Item;
+        type Error = S::Error;
+        type Future = S::Future;
 
-                  fn call(&self, req: R) -> Self::Future {
-                      (self.f)(req).into_future()
-                  }
-              }
+        fn call(&self, req: R) -> Self::Future {
+            (self.f)(req).into_future()
+        }
+    }
 
     #[test]
     fn sends_initial_request() {
