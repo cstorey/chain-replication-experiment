@@ -1,18 +1,19 @@
-use futures::{Future, Poll, Async, BoxFuture};
+use futures::{Future, Poll, BoxFuture};
 use super::{ReplicaRequest, ReplicaResponse};
-use sexp_proto::{self, client as sclient};
+use sexp_proto::client as sclient;
 use service::Service;
 use tokio::reactor::Handle;
 use std::sync::Mutex;
 use std::net::SocketAddr;
 use std::fmt;
+use std::io;
 use Error;
 
 pub type InnerClient = sclient::Client<ReplicaRequest, ReplicaResponse>;
 #[derive(Debug)]
 pub struct ReplicaClient(Mutex<InnerClient>, SocketAddr);
 
-pub struct ReplicaClientFut(BoxFuture<ReplicaResponse, sexp_proto::Error>);
+pub struct ReplicaClientFut(BoxFuture<ReplicaResponse, io::Error>);
 
 impl Future for ReplicaClientFut {
     type Item = ReplicaResponse;
@@ -23,9 +24,11 @@ impl Future for ReplicaClientFut {
 }
 
 impl ReplicaClient {
-    pub fn connect(handle: Handle, target: &SocketAddr) -> Self {
-        let client0 = sclient::connect(handle, target);
-        Self::new(client0, target)
+    pub fn connect(handle: Handle, target: &SocketAddr) -> Box<Future<Item = Self, Error = Error>> {
+        let target = target.clone();
+        Box::new(sclient::connect(handle, &target)
+            .map(move |client0| Self::new(client0, &target))
+            .map_err(|e| e.into()))
     }
     pub fn new(client: InnerClient, target: &SocketAddr) -> Self {
         ReplicaClient(Mutex::new(client), target.clone())

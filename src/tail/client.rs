@@ -1,18 +1,18 @@
-use futures::{Future, Poll, Async, BoxFuture};
+use futures::{Future, Poll, BoxFuture};
 use super::{TailRequest, TailResponse};
-use sexp_proto::{self, client as sclient};
+use sexp_proto::client as sclient;
 use service::Service;
 use tokio::reactor::Handle;
 use std::sync::Mutex;
 use std::net::SocketAddr;
 use Error;
-
+use std::io;
 
 pub type InnerClient = sclient::Client<TailRequest, TailResponse>;
 #[derive(Debug)]
 pub struct TailClient(Mutex<InnerClient>);
 
-pub struct TailClientFut(BoxFuture<TailResponse, sexp_proto::Error>);
+pub struct TailClientFut(BoxFuture<TailResponse, io::Error>);
 
 impl Future for TailClientFut {
     type Item = TailResponse;
@@ -23,9 +23,10 @@ impl Future for TailClientFut {
 }
 
 impl TailClient {
-    pub fn connect(handle: Handle, target: &SocketAddr) -> Self {
-        let client0 = sclient::connect(handle, target);
-        Self::new(client0)
+    pub fn connect(handle: Handle, target: &SocketAddr) -> Box<Future<Item = Self, Error = Error>> {
+        Box::new(sclient::connect(handle, target)
+            .map(|client0| Self::new(client0))
+            .map_err(|e| e.into()))
     }
     pub fn new(client: InnerClient) -> Self {
         TailClient(Mutex::new(client))

@@ -48,9 +48,14 @@ pub enum FetchNextFut<T: Service> {
 }
 
 impl ThickClient<ReplicaClient, TailClient> {
-    pub fn new(handle: Handle, head: &SocketAddr, tail: &SocketAddr) -> Self {
-        Self::build(ReplicaClient::connect(handle.clone(), head),
-                    TailClient::connect(handle, tail))
+    pub fn new(handle: Handle,
+               head: &SocketAddr,
+               tail: &SocketAddr)
+               -> Box<Future<Item = Self, Error = Error>> {
+        let f = ReplicaClient::connect(handle.clone(), head)
+            .join(TailClient::connect(handle, tail))
+            .map(|(head, tail)| Self::build(head, tail));
+        Box::new(f)
     }
 }
 
@@ -111,7 +116,8 @@ impl<H, T> ThickClient<H, T>
     }
 }
 
-impl<S: Service<Request = ReplicaRequest, Response = ReplicaResponse, Error = Error>> Future for LogItemFut<S> {
+impl<S: Service<Request = ReplicaRequest, Response = ReplicaResponse, Error = Error>> Future
+    for LogItemFut<S> {
     type Item = LogPos;
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -120,7 +126,9 @@ impl<S: Service<Request = ReplicaRequest, Response = ReplicaResponse, Error = Er
             let new_state = match state {
                 &mut LogItemFutState::Pending(log_pos) => {
                     match req {
-                        &mut ReplicaRequest::AppendLogEntry { ref mut assumed_offset, ref mut entry_offset, .. } => {
+                        &mut ReplicaRequest::AppendLogEntry { ref mut assumed_offset,
+                                                              ref mut entry_offset,
+                                                              .. } => {
                             *assumed_offset = log_pos;
                             *entry_offset = log_pos.next();
                         }
@@ -147,28 +155,27 @@ impl<S: Service<Request = ReplicaRequest, Response = ReplicaResponse, Error = Er
     }
 }
 
-impl<T: Service<Request = TailRequest, Response = TailResponse, Error = Error>> Future for FetchNextFut<T> {
+impl<T: Service<Request = TailRequest, Response = TailResponse, Error = Error>> Future
+    for FetchNextFut<T> {
     type Item = (LogPos, Vec<u8>);
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             match mem::replace(self, FetchNextFut::Dead) {
-                FetchNextFut::Pending(client, req) => {
-                    *self = FetchNextFut::Sent(client.call(req))
-                },
+                FetchNextFut::Pending(client, req) => *self = FetchNextFut::Sent(client.call(req)),
                 FetchNextFut::Sent(mut fut) => {
                     match try!(fut.poll()) {
                         Async::Ready(TailResponse::NextItem(offset, value)) => {
                             debug!("Done =>{:?}", offset);
                             return Ok(Async::Ready((offset, value.into())));
-                        },
+                        }
                         Async::NotReady => {
                             *self = FetchNextFut::Sent(fut);
-                            return Ok(Async::NotReady)
+                            return Ok(Async::NotReady);
                         }
                     }
-                },
+                }
                 FetchNextFut::Dead => unreachable!(),
             };
         }

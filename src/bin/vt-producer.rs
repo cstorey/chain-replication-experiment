@@ -27,7 +27,11 @@ fn main() {
     let head_addr = value_t!(matches, "head", SocketAddr).unwrap_or_else(|e| e.exit());
     let tail_addr = value_t!(matches, "tail", SocketAddr).unwrap_or_else(|e| e.exit());
 
-    let client = vastatrix::ThickClient::new(core.handle(), &head_addr, &tail_addr);
+    let client = {
+            let f = vastatrix::ThickClient::new(core.handle(), &head_addr, &tail_addr);
+            core.run(f)
+        }
+        .expect("connect");
 
     let stdin = io::stdin();
     for l in stdin.lock().lines().map(|l| l.expect("read-line")) {

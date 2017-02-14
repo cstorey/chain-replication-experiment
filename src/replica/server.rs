@@ -1,8 +1,8 @@
-use service::Service;
+use service::{NewService, Service};
 use futures::{Async, Poll, Future};
 use super::{ReplicaRequest, ReplicaResponse, LogPos};
 use store::Store;
-
+use std::io;
 use errors::{Error, ErrorKind};
 
 /// The main interface to the outside world.
@@ -40,6 +40,19 @@ impl<S: Store> Service for ServerService<S> {
         }
     }
 }
+
+impl<S: Store + Send + Sync + 'static + Clone> NewService for ServerService<S>
+    where S::FetchFut: Send + 'static
+{
+    type Request = ReplicaRequest;
+    type Response = ReplicaResponse;
+    type Error = Error;
+    type Instance = Self;
+    fn new_service(&self) -> Result<Self::Instance, io::Error> {
+        Ok(self.clone())
+    }
+}
+
 
 impl<F: Future<Item = (), Error = Error>> Future for ReplicaFut<F> {
     type Item = ReplicaResponse;

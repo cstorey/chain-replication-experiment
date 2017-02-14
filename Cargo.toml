@@ -37,10 +37,13 @@ git = "https://github.com/cstorey/spki-sexp.rs.git"
 optional = false
 
 [dependencies.tokio-proto]
-git = "https://github.com/tokio-rs/tokio-proto"
+# git = "https://github.com/tokio-rs/tokio-proto"
+version = "0.1.0"
 
 [dependencies.tokio-service]
-git = "https://github.com/tokio-rs/tokio-service"
+# git = "https://github.com/tokio-rs/tokio-service"
+version = "0.1.0"
 
 [dependencies.tokio-timer]
-git = "https://github.com/tokio-rs/tokio-timer"
+# git = "https://github.com/tokio-rs/tokio-timer"
+version = "0.1.0"

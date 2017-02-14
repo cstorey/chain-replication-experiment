@@ -19,8 +19,8 @@ pub fn build_server(handle: &Handle,
     let tail_host = try!(sexp_proto::server::serve(handle, tail_addr, tail));
 
     let host_config = HostConfig {
-        head: head_host.local_addr().clone(),
-        tail: tail_host.local_addr().clone(),
+        head: head_host.clone(),
+        tail: tail_host.clone(),
     };
 
     let etcd = EtcdHeartbeater::new("", "/my-chain", host_config.clone());

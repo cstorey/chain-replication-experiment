@@ -262,7 +262,7 @@ impl HeartBeater {
     }
     fn maybe_send_hb(&mut self) -> Poll<(), Error> {
         let (key, ver) = if let &mut HeartBeatState::Sleeping(ref key, ref ver, ref mut fut) =
-                                &mut self.state {
+            &mut self.state {
             try_ready!(fut.poll().chain_err(|| "sleeping error?"));
             (key.clone(), ver.clone())
         } else {

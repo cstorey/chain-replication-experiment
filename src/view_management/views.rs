@@ -279,7 +279,7 @@ mod test {
         assert!(result.is_err(), "Result should be error:{:?}", result);
 
         let is_timeout = match result.as_ref().unwrap_err().kind() {
-            &ErrorKind::Timeout(_) => true,
+            &ErrorKind::Timeout => true,
             _ => false,
         };
         assert!(is_timeout, "Is Timeout error:{:?}", result);

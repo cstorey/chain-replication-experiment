@@ -12,7 +12,8 @@ pub trait DownstreamService {
 
 pub trait NewDownstreamService {
     type Item: DownstreamService;
-    fn new_downstream(&self, addr: SocketAddr) -> Self::Item;
+    type Future: Future<Item = Self::Item, Error = Error>;
+    fn new_downstream(&self, addr: SocketAddr) -> Self::Future;
 }
 
 impl<D, F> DownstreamService for D
@@ -29,12 +30,14 @@ impl<D, F> DownstreamService for D
     }
 }
 
-impl<F, D> NewDownstreamService for F
-    where F: Fn(SocketAddr) -> D,
+impl<F, R, D> NewDownstreamService for F
+    where F: Fn(SocketAddr) -> R,
+          R: Future<Item = D, Error = Error>,
           D: DownstreamService
 {
     type Item = D;
-    fn new_downstream(&self, addr: SocketAddr) -> D {
+    type Future = R;
+    fn new_downstream(&self, addr: SocketAddr) -> R {
         debug!("new downstream: {:?}", addr);
         self(addr)
     }
@@ -48,6 +51,12 @@ enum ReplicatorState<S: Store, N>
     Forwarding(<N::Item as DownstreamService>::Future),
 }
 
+enum DownstreamState<N: NewDownstreamService> {
+    Disconnected,
+    Connecting(N::Future),
+    Ready(N::Item),
+}
+
 #[derive(Debug)]
 pub struct ReplicaView {
     identity: HostConfig,
@@ -57,7 +66,7 @@ pub struct ReplicaView {
 pub struct Replicator<S: Store, N: NewDownstreamService> {
     store: S,
     new_downstream: N,
-    downstream: Option<N::Item>,
+    downstream: DownstreamState<N>,
     last_seen_seq: LogPos,
     state: ReplicatorState<S, N>,
     identity: HostConfig,
@@ -69,7 +78,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         Replicator {
             store: store,
             new_downstream: new_downstream,
-            downstream: None,
+            downstream: DownstreamState::Disconnected,
             last_seen_seq: LogPos::zero(),
             state: ReplicatorState::Idle,
             identity: identity.clone(),
@@ -82,9 +91,19 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         self.config.process(conf);
         if let Some(next) = self.config.get_downstream() {
             debug!("connecting downstream to: {:?}", next.head);
-            self.downstream = Some(self.new_downstream
+            self.downstream = DownstreamState::Connecting(self.new_downstream
                 .new_downstream(next.head));
         }
+    }
+    fn try_ensure_downstream(&mut self) -> Poll<(), Error> {
+        let ds = if let &mut DownstreamState::Connecting(ref mut f) = &mut self.downstream {
+            try_ready!(f.poll())
+        } else {
+            return Ok(Async::Ready(()));
+        };
+
+        self.downstream = DownstreamState::Ready(ds);
+        return Ok(Async::Ready(()));
     }
 
     fn try_take_next(&mut self) -> Poll<(), Error> {
@@ -111,7 +130,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
             self.process_config_message(conf);
         };
 
-        self.state = if let Some(ref downstream) = self.downstream {
+        self.state = if let DownstreamState::Ready(ref downstream) = self.downstream {
             debug!("Forward {:?} -> {:?}", self.last_seen_seq, off);
             let req = ReplicaRequest::AppendLogEntry {
                 assumed_offset: self.last_seen_seq,
@@ -165,6 +184,7 @@ impl<S: Store, N: NewDownstreamService> Future for Replicator<S, N> {
     fn poll(&mut self) -> Poll<(), Error> {
         debug!("Replicator#poll");
         loop {
+            try_ready!(self.try_ensure_downstream());
             try_ready!(self.try_take_next());
             try_ready!(self.try_process_message());
             try_ready!(self.try_process_forward());
@@ -249,11 +269,12 @@ mod test {
 
     impl NewDownstreamService for MyDownstreamBuilder {
         type Item = MyMagicalDownstream;
-        fn new_downstream(&self, addr: SocketAddr) -> Self::Item {
-            MyMagicalDownstream {
+        type Future = futures::future::Ok<Self::Item, Error>;
+        fn new_downstream(&self, addr: SocketAddr) -> Self::Future {
+            futures::future::ok(MyMagicalDownstream {
                 addr: addr,
                 send: self.send.clone(),
-            }
+            })
         }
     }
 

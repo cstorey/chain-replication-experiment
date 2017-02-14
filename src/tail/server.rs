@@ -1,9 +1,10 @@
-use service::Service;
+use service::{NewService, Service};
 use futures::{BoxFuture, Async, Future, Poll};
 use super::{TailRequest, TailResponse};
 use store::Store;
 use replica::{LogEntry, LogPos};
 use std::mem;
+use std::io;
 use std::sync::Arc;
 
 use Error;
@@ -89,6 +90,18 @@ impl<S: Store + Send + Sync + 'static> Service for TailService<S>
             TailRequest::FetchNextAfter(pos) => TailFuture::Start(self.store.clone(), pos).boxed(),
         }
         // futures::finished(TailResponse::NextItem(LogPos::zero(), vec![]))
+    }
+}
+
+impl<S: Store + Send + Sync + 'static + Clone> NewService for TailService<S>
+    where S::FetchFut: Send + 'static
+{
+    type Request = TailRequest;
+    type Response = TailResponse;
+    type Error = Error;
+    type Instance = Self;
+    fn new_service(&self) -> Result<Self::Instance, io::Error> {
+        Ok(self.clone())
     }
 }
 
