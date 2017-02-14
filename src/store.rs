@@ -27,6 +27,8 @@ impl fmt::Debug for RamInner {
     }
 }
 
+// Add an impl of futures::Stream that can start from a given offset. Eg:
+// store.stream_from(0).foreach(|it| ...)
 #[derive(Debug,Clone)]
 pub struct RamStore {
     inner: Arc<Mutex<RamInner>>,

@@ -3,6 +3,7 @@ use tokio_service::Service;
 use store::Store;
 use {LogPos, Error};
 use std::net::SocketAddr;
+use std::fmt;
 use replica::{ReplicaRequest, ReplicaResponse, LogEntry, HostConfig, ChainView};
 
 pub trait DownstreamService {
@@ -51,10 +52,38 @@ enum ReplicatorState<S: Store, N>
     Forwarding(<N::Item as DownstreamService>::Future),
 }
 
+impl<S: Store, N: NewDownstreamService> fmt::Debug for ReplicatorState<S, N> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &ReplicatorState::Idle => fmt.debug_tuple("Idle").finish(),
+            &ReplicatorState::Fetching(_) => {
+                fmt.debug_tuple("Fetching").field(&format_args!("_")).finish()
+            }
+            &ReplicatorState::Forwarding(_) => {
+                fmt.debug_tuple("Forwarding").field(&format_args!("_")).finish()
+            }
+        }
+    }
+}
+
 enum DownstreamState<N: NewDownstreamService> {
     Disconnected,
     Connecting(N::Future),
     Ready(N::Item),
+}
+
+impl<N: NewDownstreamService> fmt::Debug for DownstreamState<N> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &DownstreamState::Disconnected => fmt.debug_tuple("Disconnected").finish(),
+            &DownstreamState::Connecting(_) => {
+                fmt.debug_tuple("Connecting").field(&format_args!("_")).finish()
+            }
+            &DownstreamState::Ready(_) => {
+                fmt.debug_tuple("Ready").field(&format_args!("_")).finish()
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -118,6 +147,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
     }
 
     fn try_process_message(&mut self) -> Poll<(), Error> {
+        debug!("try_process_message: state: {:?}", self.state);
         let (off, val) = if let &mut ReplicatorState::Fetching(ref mut fetch_f) = &mut self.state {
             debug!("{}: Fetching", self.identity);
             try_ready!(fetch_f.poll())
@@ -129,20 +159,34 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         if let &LogEntry::ViewChange(ref conf) = &val {
             self.process_config_message(conf);
         };
+        // This fails, because really, we need to be tracking our internal
+        // config and what we are replicating to the downstream seperately.
 
-        self.state = if let DownstreamState::Ready(ref downstream) = self.downstream {
-            debug!("Forward {:?} -> {:?}", self.last_seen_seq, off);
-            let req = ReplicaRequest::AppendLogEntry {
-                assumed_offset: self.last_seen_seq,
-                // FIXME: NO. WRONG.
-                entry_offset: off,
-                datum: val,
-            };
-            ReplicatorState::Forwarding(downstream.call(req))
-        } else {
-            debug!("No downstream at {:?}", off);
-            ReplicatorState::Idle
+        debug!("try_process_message: downstream: {:?}", self.downstream);
+        self.state = match self.downstream {
+            DownstreamState::Ready(ref downstream) => {
+                debug!("try_process_message: Forward {:?} -> {:?}",
+                       self.last_seen_seq,
+                       off);
+                let req = ReplicaRequest::AppendLogEntry {
+                    assumed_offset: self.last_seen_seq,
+                    // FIXME: NO. WRONG.
+                    entry_offset: off,
+                    datum: val,
+                };
+                ReplicatorState::Forwarding(downstream.call(req))
+            }
+            DownstreamState::Connecting(_) => {
+                debug!("try_process_message: Connecting to {:?}", off);
+                ReplicatorState::Idle
+            }
+            DownstreamState::Disconnected => {
+                debug!("try_process_message: No downstream at {:?}", off);
+                ReplicatorState::Idle
+            }
         };
+
+        debug!("New state: {:?}", self.state);
 
         self.last_seen_seq = off;
         Ok(Async::Ready(()))
@@ -224,7 +268,7 @@ impl ReplicaView {
 
 #[cfg(test)]
 mod test {
-    use futures::{self, Future, BoxFuture, Async};
+    use futures::{self, Future, BoxFuture};
     use futures::stream::Stream;
     use service::Service;
     use tokio::channel;

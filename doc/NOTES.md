@@ -202,5 +202,14 @@ This especially exposes the risk of writing to a former head that has been consi
 
 So, because the view-watcher needs to be continuously polled, we can't really just depend on polling it whenever we try to send a request. So, we'll need to run the main client connection/reconnection in a reactor task, and present a service interface to the client internals.
 
+# Oh, god, where even was I.
+## Replicator
+
+At the moment, we have the replicator maintain a single cursor into the Log, which is used to read both the view changes and log records for the downstream. This turns out to be wrong, because it'll mean that we may end up treating an obsolete configuration as current, and trying to connect to a long since dead host.
+
+So, we need to stream all updates (filtering for config items) into the replicator, and each time we see an appropriate view change, tell it to reconnect.
+
+Then, each time receive a new view, (we'll need to check for staleness later, or have some other widget for that) we can try reconnecting to the downstream (if there is one), and then using a seperate cursor into the log, start pushing changes to the new downstream (resetting when we get an invalid sequence error).
+
 # References
 "Leveraging": Leveraging Sharding in the Design of Scalable Replication Protocols
