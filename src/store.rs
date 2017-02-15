@@ -1,5 +1,5 @@
 use {LogPos, Error, ErrorKind};
-use futures::{self, Future, BoxFuture, Poll, Async, task};
+use futures::{self, Future, BoxFuture, Poll, Async, task, Stream};
 use std::sync::{Arc, Mutex};
 use stable_bst::map::TreeMap;
 use std::collections::VecDeque;
@@ -8,7 +8,7 @@ use replica::LogEntry;
 
 pub trait Store {
     type AppendFut: Future<Item = (), Error = Error>;
-    type FetchStream: Future<Item = (LogPos, LogEntry), Error = Error>;
+    type FetchStream: Stream<Item = (LogPos, LogEntry), Error = Error>;
     fn append_entry(&self, current: LogPos, next: LogPos, value: LogEntry) -> Self::AppendFut;
     fn fetch_from(&self, current: LogPos) -> Self::FetchStream;
 }
@@ -94,16 +94,17 @@ impl Store for RamStore {
     }
 }
 
-impl Future for FetchStream {
+impl Stream for FetchStream {
     type Item = (LogPos, LogEntry);
     type Error = Error;
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         let mut inner = self.0.lock().expect("lock");
         let next = self.1;
         trace!("Polling: {:?} for {:?}", next, *inner);
         if let Some(val) = inner.log.get(&next) {
             trace!("Found: {:?}:{:?}", next, val);
-            return Ok(Async::Ready((next, val.clone())));
+            self.1 = next.next();
+            return Ok(Async::Ready(Some((next, val.clone()))));
         }
 
         inner.waiters.push_back(task::park());

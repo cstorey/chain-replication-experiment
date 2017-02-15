@@ -1,4 +1,4 @@
-use futures::{Poll, Future, Async};
+use futures::{Poll, Future, Stream, Async};
 use tokio_service::Service;
 use store::Store;
 use {LogPos, Error};
@@ -150,7 +150,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
         debug!("try_process_message: state: {:?}", self.state);
         let (off, val) = if let &mut ReplicatorState::Fetching(ref mut fetch_f) = &mut self.state {
             debug!("{}: Fetching", self.identity);
-            try_ready!(fetch_f.poll())
+            try_ready!(fetch_f.poll()).expect("first item of stream!")
         } else {
             return Ok(Async::Ready(()));
         };

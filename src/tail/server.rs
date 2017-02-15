@@ -1,5 +1,5 @@
 use service::{NewService, Service};
-use futures::{BoxFuture, Async, Future, Poll};
+use futures::{BoxFuture, Async, Future, Stream, Poll};
 use super::{TailRequest, TailResponse};
 use store::Store;
 use replica::{LogEntry, LogPos};
@@ -54,15 +54,16 @@ impl<S: Store> Future for TailFuture<S> {
                 TailFuture::Fetching(store, mut fut) => {
                     debug!("TailFuture::Fetching");
                     match try!(fut.poll()) {
-                        Async::Ready((pos, LogEntry::Data(val))) => {
+                        Async::Ready(Some((pos, LogEntry::Data(val)))) => {
                             debug!("poll => Data@{:?}", pos);
                             let resp = TailResponse::NextItem(pos, val);
                             return Ok(Async::Ready(resp));
                         }
-                        Async::Ready((pos, LogEntry::ViewChange(_))) => {
+                        Async::Ready(Some((pos, LogEntry::ViewChange(_)))) => {
                             debug!("poll => Config@{:?}", pos);
                             *self = TailFuture::Start(store, pos);
                         }
+                        Async::Ready(None) => unreachable!(),
                         Async::NotReady => {
                             *self = TailFuture::Fetching(store, fut);
                             return Ok(Async::NotReady);

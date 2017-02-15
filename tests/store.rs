@@ -1,7 +1,7 @@
 extern crate vastatrix;
 extern crate futures;
 extern crate env_logger;
-use futures::{Future, Async, task};
+use futures::{Future, Stream, Async, task};
 use vastatrix::{RamStore, Store};
 use vastatrix::{LogPos, LogEntry, HostConfig, ChainView};
 use vastatrix::{Error, ErrorKind};
@@ -27,7 +27,10 @@ fn can_append_one() {
     task::spawn(store.append_entry(current, next, LogEntry::Data(b"foobar".to_vec().into())))
         .wait_future()
         .expect("append_entry");
-    let (off, val) = task::spawn(store.fetch_from(current)).wait_future().expect("fetch");
+    let (off, val) = task::spawn(store.fetch_from(current))
+        .wait_stream()
+        .expect("an entry")
+        .expect("fetch");
 
     assert_eq!((off, val),
                (next, LogEntry::Data(b"foobar".to_vec().into())))
@@ -48,7 +51,10 @@ fn should_store_config() {
     task::spawn(store.append_entry(current, next, LogEntry::ViewChange(view.clone())))
         .wait_future()
         .expect("append_entry");
-    let (off, val) = task::spawn(store.fetch_from(current)).wait_future().expect("fetch");
+    let (off, val) = task::spawn(store.fetch_from(current))
+        .wait_stream()
+        .expect("an entry")
+        .expect("fetch");
 
     assert_eq!((off, val), (next, LogEntry::ViewChange(view)))
 }
@@ -60,14 +66,14 @@ fn fetching_one_is_lazy() {
     let current = LogPos::zero();
     let next = current.next();
     let mut fetch_f = task::spawn(store.fetch_from(current));
-    assert_eq!(fetch_f.poll_future(null_parker()).expect("poll-notready"),
+    assert_eq!(fetch_f.poll_stream(null_parker()).expect("poll-notready"),
                Async::NotReady);
 
     task::spawn(store.append_entry(current, next, LogEntry::Data(b"foobar".to_vec().into())))
         .wait_future()
         .expect("append_entry");
 
-    let (off, val) = fetch_f.wait_future().expect("fetch");
+    let (off, val) = fetch_f.wait_stream().expect("an-entry").expect("fetch");
     assert_eq!((off, val),
                (next, LogEntry::Data(b"foobar".to_vec().into())))
 }
@@ -82,12 +88,12 @@ fn writes_are_lazy() {
     let mut store_f =
         task::spawn(store.append_entry(current, next, LogEntry::Data(b"foobar".to_vec().into())));
     let mut fetch_f = task::spawn(store.fetch_from(current));
-    assert_eq!(fetch_f.poll_future(null_parker()).expect("poll-notready"),
+    assert_eq!(fetch_f.poll_stream(null_parker()).expect("poll-notready"),
                Async::NotReady);
 
     store_f.wait_future().expect("append_entry");
 
-    let (off, val) = fetch_f.wait_future().expect("fetch");
+    let (off, val) = fetch_f.wait_stream().expect("first item").expect("fetch");
     assert_eq!((off, val),
                (next, LogEntry::Data(b"foobar".to_vec().into())))
 }
@@ -108,9 +114,9 @@ fn can_write_many() {
         .wait_future()
         .expect("append_entry 2");
 
-    let fetch_f = store.fetch_from(LogPos::zero())
-        .and_then(|(curr, first)| store.fetch_from(curr).map(|(_, second)| vec![first, second]));
-    let res = task::spawn(fetch_f).wait_future().expect("fetch");
+    let fetch_stream = store.fetch_from(LogPos::zero());
+    let items = fetch_stream.map(|(_pos, it)| it).take(2).collect();
+    let res = task::spawn(items).wait_future().expect("fetch");
     assert_eq!(res,
                vec![LogEntry::Data(b"foo".to_vec().into()), LogEntry::Data(b"bar".to_vec().into())])
 }
@@ -288,7 +294,7 @@ fn writes_notify_waiters() {
         task::spawn(store.append_entry(current, next, LogEntry::Data(b"foobar".to_vec().into())));
 
     println!("Poll fetcher");
-    assert_eq!(fetch_t.poll_future(fetch_unparker.clone()).expect("poll-notready"),
+    assert_eq!(fetch_t.poll_stream(fetch_unparker.clone()).expect("poll-notready"),
                Async::NotReady);
 
     appender.wait_future().expect("append_entry");
@@ -297,4 +303,40 @@ fn writes_notify_waiters() {
 
     assert_eq!(sched_q.lock().expect("lock").pop_front(),
                Some(waiter_task_id));
+}
+
+#[test]
+fn can_stream_data() {
+    env_logger::init().unwrap_or(());
+    let sched_q = Arc::new(Mutex::new(VecDeque::new()));
+    let logentry = LogEntry::Data(b"foobar".to_vec().into());
+
+    let waiter_task_id = 0;
+    let store = RamStore::new();
+    let current = LogPos::zero();
+    let next = current.next();
+    println!("spawn fetcher");
+
+    let mut fetch_t = task::spawn(store.fetch_from(current));
+    let fetch_unparker = Arc::new(Unparker(waiter_task_id, sched_q.clone()));
+
+    println!("spawn appender");
+    let mut appender = task::spawn(store.append_entry(current, next, logentry.clone()));
+
+    println!("Poll fetcher");
+    assert_eq!(fetch_t.poll_stream(fetch_unparker.clone()).expect("poll-notready"),
+               Async::NotReady);
+
+    appender.wait_future().expect("append_entry");
+
+    println!("Pending: {:?}", sched_q);
+
+    assert_eq!(sched_q.lock().expect("lock").pop_front(),
+               Some(waiter_task_id));
+
+    let (pos, it) = match fetch_t.poll_stream(fetch_unparker.clone()).expect("poll-notready") {
+        Async::Ready(x) => x.expect("an item"),
+        Async::NotReady => panic!("Stream future should be ready!"),
+    };
+    assert_eq!(it, logentry);
 }
