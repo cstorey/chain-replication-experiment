@@ -35,7 +35,7 @@ fn main() {
     let mut offset = LogPos::zero();
     loop {
         println!("Reading:{:?}", offset);
-        let (pos, val) = core.run(client.fetch_next(offset)).expect("run read");
+        let (pos, val) = core.run(client.fetch_from(offset)).expect("run read");
         println!("Consume: {:?}: {}", pos, String::from_utf8_lossy(&val));
         offset = pos;
     }

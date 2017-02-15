@@ -218,7 +218,7 @@ mod test {
         let aview: ChainView = ChainView::of(vec![anidentity()]);
         core.run(tx.send(aview.clone())).expect("send");
 
-        let (_pos, entry) = core.run(timer.timeout(store.fetch_next(LogPos::zero()), timeout))
+        let (_pos, entry) = core.run(timer.timeout(store.fetch_from(LogPos::zero()), timeout))
             .expect("next change");
 
         assert_eq!(entry, LogEntry::ViewChange(aview));
@@ -249,7 +249,7 @@ mod test {
         let aview: ChainView = ChainView::of(vec![anidentity()]);
         core.run(tx.send(aview.clone())).expect("send");
 
-        let (_pos, entry) = core.run(timer.timeout(store.fetch_next(log_off0), timeout))
+        let (_pos, entry) = core.run(timer.timeout(store.fetch_from(log_off0), timeout))
             .expect("next change");
 
         assert_eq!(entry, LogEntry::ViewChange(aview));
@@ -274,7 +274,7 @@ mod test {
         let aview: ChainView = ChainView::of(vec![anidentity2(), anidentity()]);
         core.run(tx.send(aview.clone())).expect("send");
 
-        let result = core.run(timer.timeout(store.fetch_next(LogPos::zero()), timeout));
+        let result = core.run(timer.timeout(store.fetch_from(LogPos::zero()), timeout));
 
         assert!(result.is_err(), "Result should be error:{:?}", result);
 

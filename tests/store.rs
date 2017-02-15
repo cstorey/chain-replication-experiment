@@ -27,7 +27,7 @@ fn can_append_one() {
     task::spawn(store.append_entry(current, next, LogEntry::Data(b"foobar".to_vec().into())))
         .wait_future()
         .expect("append_entry");
-    let (off, val) = task::spawn(store.fetch_next(current)).wait_future().expect("fetch");
+    let (off, val) = task::spawn(store.fetch_from(current)).wait_future().expect("fetch");
 
     assert_eq!((off, val),
                (next, LogEntry::Data(b"foobar".to_vec().into())))
@@ -48,7 +48,7 @@ fn should_store_config() {
     task::spawn(store.append_entry(current, next, LogEntry::ViewChange(view.clone())))
         .wait_future()
         .expect("append_entry");
-    let (off, val) = task::spawn(store.fetch_next(current)).wait_future().expect("fetch");
+    let (off, val) = task::spawn(store.fetch_from(current)).wait_future().expect("fetch");
 
     assert_eq!((off, val), (next, LogEntry::ViewChange(view)))
 }
@@ -59,7 +59,7 @@ fn fetching_one_is_lazy() {
     let store = RamStore::new();
     let current = LogPos::zero();
     let next = current.next();
-    let mut fetch_f = task::spawn(store.fetch_next(current));
+    let mut fetch_f = task::spawn(store.fetch_from(current));
     assert_eq!(fetch_f.poll_future(null_parker()).expect("poll-notready"),
                Async::NotReady);
 
@@ -81,7 +81,7 @@ fn writes_are_lazy() {
 
     let mut store_f =
         task::spawn(store.append_entry(current, next, LogEntry::Data(b"foobar".to_vec().into())));
-    let mut fetch_f = task::spawn(store.fetch_next(current));
+    let mut fetch_f = task::spawn(store.fetch_from(current));
     assert_eq!(fetch_f.poll_future(null_parker()).expect("poll-notready"),
                Async::NotReady);
 
@@ -108,8 +108,8 @@ fn can_write_many() {
         .wait_future()
         .expect("append_entry 2");
 
-    let fetch_f = store.fetch_next(LogPos::zero())
-        .and_then(|(curr, first)| store.fetch_next(curr).map(|(_, second)| vec![first, second]));
+    let fetch_f = store.fetch_from(LogPos::zero())
+        .and_then(|(curr, first)| store.fetch_from(curr).map(|(_, second)| vec![first, second]));
     let res = task::spawn(fetch_f).wait_future().expect("fetch");
     assert_eq!(res,
                vec![LogEntry::Data(b"foo".to_vec().into()), LogEntry::Data(b"bar".to_vec().into())])
@@ -280,7 +280,7 @@ fn writes_notify_waiters() {
     let current = LogPos::zero();
     let next = current.next();
     println!("spawn fetcher");
-    let mut fetch_t = task::spawn(store.fetch_next(current));
+    let mut fetch_t = task::spawn(store.fetch_from(current));
     let fetch_unparker = Arc::new(Unparker(waiter_task_id, sched_q.clone()));
 
     println!("spawn appender");

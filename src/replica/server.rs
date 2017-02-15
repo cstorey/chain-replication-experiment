@@ -42,7 +42,7 @@ impl<S: Store> Service for ServerService<S> {
 }
 
 impl<S: Store + Send + Sync + 'static + Clone> NewService for ServerService<S>
-    where S::FetchFut: Send + 'static
+    where S::FetchStream: Send + 'static
 {
     type Request = ReplicaRequest;
     type Response = ReplicaResponse;

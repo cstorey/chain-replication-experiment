@@ -48,7 +48,7 @@ enum ReplicatorState<S: Store, N>
     where N: NewDownstreamService
 {
     Idle,
-    Fetching(S::FetchFut),
+    Fetching(S::FetchStream),
     Forwarding(<N::Item as DownstreamService>::Future),
 }
 
@@ -140,7 +140,7 @@ impl<S: Store, N: NewDownstreamService> Replicator<S, N> {
             debug!("{}: Idle, fetching after: {:?}",
                    self.identity,
                    self.last_seen_seq);
-            let fetch_f = self.store.fetch_next(self.last_seen_seq);
+            let fetch_f = self.store.fetch_from(self.last_seen_seq);
             self.state = ReplicatorState::Fetching(fetch_f);
         }
         Ok(Async::Ready(()))

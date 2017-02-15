@@ -110,7 +110,7 @@ impl<H, T> ThickClient<H, T>
     }
 
 
-    pub fn fetch_next(&self, after: LogPos) -> FetchNextFut<T> {
+    pub fn fetch_from(&self, after: LogPos) -> FetchNextFut<T> {
         let req = TailRequest::FetchNextAfter(after);
         FetchNextFut::Pending(self.tail.clone(), req)
     }

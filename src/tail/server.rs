@@ -22,7 +22,7 @@ impl<S: Store> TailService<S> {
 }
 
 // self.store
-// .fetch_next(pos)
+// .fetch_from(pos)
 // .map(|(pos, val)| match val {
 // LogEntry::Data(val) => TailResponse::NextItem(pos, val),
 // LogEntry::ViewChange(_) => unimplemented!(),
@@ -36,7 +36,7 @@ impl<S: Store> TailService<S> {
 //
 enum TailFuture<S: Store> {
     Start(Arc<S>, LogPos),
-    Fetching(Arc<S>, S::FetchFut),
+    Fetching(Arc<S>, S::FetchStream),
     Dead,
 }
 
@@ -48,7 +48,7 @@ impl<S: Store> Future for TailFuture<S> {
             match mem::replace(self, TailFuture::Dead) {
                 TailFuture::Start(store, pos) => {
                     debug!("TailFuture::Start:{:?}", pos);
-                    let f = store.fetch_next(pos);
+                    let f = store.fetch_from(pos);
                     *self = TailFuture::Fetching(store, f)
                 }
                 TailFuture::Fetching(store, mut fut) => {
@@ -76,7 +76,7 @@ impl<S: Store> Future for TailFuture<S> {
 }
 
 impl<S: Store + Send + Sync + 'static> Service for TailService<S>
-    where S::FetchFut: Send + 'static
+    where S::FetchStream: Send + 'static
 {
     // The type of the input requests we get.
     type Request = TailRequest;
@@ -94,7 +94,7 @@ impl<S: Store + Send + Sync + 'static> Service for TailService<S>
 }
 
 impl<S: Store + Send + Sync + 'static + Clone> NewService for TailService<S>
-    where S::FetchFut: Send + 'static
+    where S::FetchStream: Send + 'static
 {
     type Request = TailRequest;
     type Response = TailResponse;

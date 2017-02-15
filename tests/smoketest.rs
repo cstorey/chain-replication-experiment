@@ -47,9 +47,9 @@ fn smoketest_single_node() {
 
     info!("Wrote to offset:{:?}", (wpos0, wpos1));
 
-    let item_f = client.fetch_next(LogPos::zero())
+    let item_f = client.fetch_from(LogPos::zero())
         .and_then(|(pos0, val0)| {
-            client.fetch_next(pos0).map(move |second| vec![(pos0, val0), second])
+            client.fetch_from(pos0).map(move |second| vec![(pos0, val0), second])
         });
 
     let read = core.run(timer.timeout(item_f, timeout)).expect("run read");
@@ -97,9 +97,9 @@ fn smoketest_two_member_chain() {
 
     info!("Wrote to offset:{:?}", (wpos0, wpos1));
 
-    let item_f = client.fetch_next(LogPos::zero())
+    let item_f = client.fetch_from(LogPos::zero())
         .and_then(|(pos0, val0)| {
-            client.fetch_next(pos0).map(move |second| vec![(pos0, val0), second])
+            client.fetch_from(pos0).map(move |second| vec![(pos0, val0), second])
         });
 
     let read = core.run(timer.timeout(item_f, timeout)).expect("run read");
@@ -154,10 +154,10 @@ fn smoketest_three_member_chain() {
 
     info!("Wrote to offset:{:?}", (wpos0, wpos1));
 
-    let (pos0, val0) = core.run(timer.timeout(client.fetch_next(LogPos::zero()), timeout))
+    let (pos0, val0) = core.run(timer.timeout(client.fetch_from(LogPos::zero()), timeout))
         .expect("fetch first");
     info!("Got: {:?}", (&pos0, &val0));
-    let (pos1, val1) = core.run(timer.timeout(client.fetch_next(pos0), timeout))
+    let (pos1, val1) = core.run(timer.timeout(client.fetch_from(pos0), timeout))
         .expect("fetch second");
     info!("Got: {:?}", (&pos1, &val1));
 

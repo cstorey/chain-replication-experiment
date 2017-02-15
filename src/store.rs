@@ -8,9 +8,9 @@ use replica::LogEntry;
 
 pub trait Store {
     type AppendFut: Future<Item = (), Error = Error>;
-    type FetchFut: Future<Item = (LogPos, LogEntry), Error = Error>;
+    type FetchStream: Future<Item = (LogPos, LogEntry), Error = Error>;
     fn append_entry(&self, current: LogPos, next: LogPos, value: LogEntry) -> Self::AppendFut;
-    fn fetch_next(&self, current: LogPos) -> Self::FetchFut;
+    fn fetch_from(&self, current: LogPos) -> Self::FetchStream;
 }
 
 struct RamInner {
@@ -34,7 +34,7 @@ pub struct RamStore {
     inner: Arc<Mutex<RamInner>>,
 }
 
-pub struct FetchFut(Arc<Mutex<RamInner>>, LogPos);
+pub struct FetchStream(Arc<Mutex<RamInner>>, LogPos);
 
 impl RamStore {
     pub fn new() -> Self {
@@ -48,7 +48,7 @@ impl RamStore {
 
 impl Store for RamStore {
     type AppendFut = BoxFuture<(), Error>;
-    type FetchFut = FetchFut;
+    type FetchStream = FetchStream;
 
     fn append_entry(&self, assumed: LogPos, next: LogPos, val: LogEntry) -> Self::AppendFut {
         let inner = self.inner.clone();
@@ -89,12 +89,12 @@ impl Store for RamStore {
             .boxed()
     }
 
-    fn fetch_next(&self, current: LogPos) -> Self::FetchFut {
-        FetchFut(self.inner.clone(), current.next())
+    fn fetch_from(&self, current: LogPos) -> Self::FetchStream {
+        FetchStream(self.inner.clone(), current.next())
     }
 }
 
-impl Future for FetchFut {
+impl Future for FetchStream {
     type Item = (LogPos, LogEntry);
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
