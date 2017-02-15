@@ -1,6 +1,7 @@
 mod server;
 mod client;
 mod replicator;
+mod replicator2;
 mod messages;
 
 pub use self::server::{ServerService, ReplicaFut};

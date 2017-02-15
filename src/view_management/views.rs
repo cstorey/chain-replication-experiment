@@ -5,6 +5,9 @@ use store::Store;
 use replica::{HostConfig, ChainView, LogEntry, LogPos};
 use errors::*;
 
+/// The ViewManager is responsible for pulling a set of changes from an external view manager (eg: etcd)
+/// into our log.
+
 pub struct ViewManager<S: Store, V> {
     store: S,
     views: V,

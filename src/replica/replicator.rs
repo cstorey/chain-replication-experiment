@@ -336,6 +336,7 @@ mod test {
         }
     }
 
+    #[ignore]
     #[test]
     fn should_start_replicating_to_downstream_on_committed_config_message() {
         env_logger::init().unwrap_or(());
@@ -369,6 +370,7 @@ mod test {
         assert_eq!(entry0, LogEntry::ViewChange(view.clone()));
     }
 
+    #[ignore]
     #[test]
     fn should_send_next_log_entry_on_okay_from_downstream() {
         env_logger::init().unwrap_or(());
@@ -416,6 +418,7 @@ mod test {
         assert!(off1 > assumed1);
     }
 
+    #[ignore]
     #[test]
     fn should_restart_replication_on_badsequence_from_downstream() {
         env_logger::init().unwrap_or(());

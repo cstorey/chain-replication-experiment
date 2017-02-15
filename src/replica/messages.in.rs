@@ -31,6 +31,23 @@ impl ChainView {
     pub fn is_head(&self, entry: &HostConfig) -> bool {
         self.members.get(0) == Some(entry)
     }
+
+    pub fn downstream_of(&self, entry: &HostConfig) -> Option<HostConfig> {
+        debug!("ChainView#downstream_of");
+        let index = self
+            .members
+            .iter()
+            .enumerate()
+            .filter(|&(_n, it)| it == entry)
+            .map(|(n, _)| n)
+            .next();
+        debug!("item {:?} is {:?}/{}", entry, index, self.members.len());
+
+        let next = index.and_then(|idx| self.members.get(idx + 1)).cloned();
+        debug!("downstream: {:?}", next);
+        next
+    }
+
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
