@@ -5,7 +5,7 @@ use std::fmt;
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct LogPos(usize);
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct HostConfig {
     pub head: SocketAddr,
     pub tail: SocketAddr,
