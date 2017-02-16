@@ -18,6 +18,7 @@ use vastatrix::LogPos;
 use vastatrix::hosting::*;
 
 /// Remove ThickClient#add_peer calls, replace with Zarniwhoop^Wetcd config.
+#[ignore]
 #[test]
 fn smoketest_single_node() {
     env_logger::init().unwrap_or(());
@@ -59,6 +60,7 @@ fn smoketest_single_node() {
                vec![(wpos0, b"hello".to_vec()), (wpos1, b"world".to_vec())]);
 }
 
+#[ignore]
 #[test]
 fn smoketest_two_member_chain() {
     env_logger::init().unwrap_or(());
@@ -109,6 +111,7 @@ fn smoketest_two_member_chain() {
                vec![(wpos0, b"hello".to_vec()), (wpos1, b"world".to_vec())]);
 }
 
+#[ignore]
 #[test]
 fn smoketest_three_member_chain() {
     env_logger::init().unwrap_or(());
